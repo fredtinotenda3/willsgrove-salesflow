@@ -13,6 +13,7 @@ import {
   Tag,
   Boxes,
 } from "lucide-react";
+import Link from "next/link";
 import Sidebar from "../components/sidebar";
 
 const PAGE_SIZE = 50;
@@ -161,8 +162,8 @@ export default function ProductsPage() {
     <div className="flex min-h-screen bg-[#F7F8F6] text-[#17251E]">
       <Sidebar />
 
-      <main className="min-w-0 flex-1 md:ml-[260px]">
-        <header className="flex h-[76px] items-center justify-between border-b border-[#E8ECE7] bg-white px-5 md:px-9">
+      <main className="min-w-0 flex-1 md:ml-65">
+        <header className="flex h-19 items-center justify-between border-b border-[#E8ECE7] bg-white px-5 md:px-9">
           <div>
             <p className="text-xs text-[#89948D]">Workspace / Products</p>
             <h1 className="mt-1 text-lg font-semibold">Products</h1>
@@ -173,7 +174,7 @@ export default function ProductsPage() {
           </div>
         </header>
 
-        <div className="mx-auto max-w-[1500px] p-5 md:p-9">
+        <div className="mx-auto max-w-375 p-5 md:p-9">
           <div className="mb-7">
             <div className="mb-2 flex items-center gap-2">
               <span className="rounded-full bg-[#EAF5EC] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[#347447]">
@@ -189,6 +190,13 @@ export default function ProductsPage() {
             <p className="mt-1 text-sm text-[#7D8981]">
               Products imported from the SAP Business One product export.
             </p>
+
+            <Link
+              href="/products/import"
+              className="mt-4 inline-flex items-center rounded-lg bg-[#315C43] px-4 py-2 text-sm font-medium text-white hover:bg-[#274D37]"
+            >
+              Import from SAP
+            </Link>
           </div>
 
           <div className="mb-7 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
