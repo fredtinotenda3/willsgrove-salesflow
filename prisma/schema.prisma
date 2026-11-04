@@ -1,0 +1,367 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserRole {
+  SALESPERSON
+  SALES_MANAGER
+  ADMINISTRATOR
+}
+
+enum RecordStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum OrderSource {
+  EMAIL
+  WHATSAPP
+  MANUAL
+}
+
+enum OrderStatus {
+  DRAFT
+  RECEIVED
+  PENDING_VERIFICATION
+  READY_FOR_APPROVAL
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum VerificationStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  VERIFIED
+  FLAGGED
+}
+
+enum PriceDecisionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  NEEDS_REVIEW
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum DocumentType {
+  CUSTOMER_PO
+  SUPPORTING_DOCUMENT
+  OTHER
+}
+
+model User {
+  id           String       @id @default(cuid())
+  name         String
+  email        String       @unique
+  passwordHash String
+  role         UserRole     @default(SALESPERSON)
+  status       RecordStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  createdOrders     CustomerOrder[]       @relation("OrderCreator")
+  uploadedDocuments OrderDocument[]       @relation("DocumentUploader")
+  verifications     ProductVerification[] @relation("VerificationUser")
+  priceDecisions    PriceDecision[]       @relation("PriceDecisionUser")
+  approvals         OrderApproval[]       @relation("ApprovalUser")
+  statusChanges     OrderStatusHistory[]  @relation("StatusChangeUser")
+  auditEvents       AuditEvent[]          @relation("AuditActor")
+}
+
+model Customer {
+  id              String       @id @default(cuid())
+  name            String
+  sapCustomerCode String?      @unique
+  email           String?
+  phone           String?
+  category        String?
+  status          RecordStatus @default(ACTIVE)
+  notes           String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  locations CustomerLocation[]
+  orders    CustomerOrder[]
+
+  @@index([name])
+  @@index([status])
+}
+
+model CustomerLocation {
+  id           String  @id @default(cuid())
+  customerId   String
+  label        String
+  addressLine1 String
+  addressLine2 String?
+  city         String?
+  province     String?
+  isDefault    Boolean @default(false)
+  isActive     Boolean @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  customer Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  orders   CustomerOrder[]
+
+  @@index([customerId])
+}
+
+model Product {
+  id          String       @id @default(cuid())
+  sapItemCode String       @unique
+  itemName    String
+  barcode     String?
+  category    String?
+  status      RecordStatus @default(ACTIVE)
+
+  // Preserve the original SAP row for traceability.
+  sourceData Json?
+  importedAt DateTime?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  orderLines OrderLine[]
+  stockLines StockSnapshotLine[]
+
+  @@index([itemName])
+  @@index([category])
+  @@index([status])
+  @@index([barcode])
+}
+
+model CustomerOrder {
+  id                 String  @id @default(cuid())
+  reference          String  @unique
+  customerId         String
+  customerLocationId String?
+  createdById        String
+
+  customerPoReference String?
+  source              OrderSource
+  status              OrderStatus @default(DRAFT)
+
+  orderDate             DateTime? @db.Date
+  requestedDeliveryDate DateTime? @db.Date
+
+  deliveryAddress String?
+  currency        String  @default("USD")
+
+  subtotal Decimal? @db.Decimal(18, 4)
+  taxTotal Decimal? @db.Decimal(18, 4)
+  total    Decimal? @db.Decimal(18, 4)
+
+  internalNotes String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  customer         Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  customerLocation CustomerLocation? @relation(fields: [customerLocationId], references: [id], onDelete: SetNull)
+  createdBy        User              @relation("OrderCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  lines         OrderLine[]
+  documents     OrderDocument[]
+  approvals     OrderApproval[]
+  statusHistory OrderStatusHistory[]
+
+  @@index([customerId])
+  @@index([status])
+  @@index([orderDate])
+  @@index([createdAt])
+}
+
+model OrderLine {
+  id         String @id @default(cuid())
+  orderId    String
+  lineNumber Int
+
+  // Preserve the wording on the customer's original PO.
+  originalProductDescription String
+
+  productId           String?
+  sapItemCodeSnapshot String?
+
+  requestedQuantity Decimal @db.Decimal(18, 4)
+  requestedUnitCode String
+
+  customerUnitPrice Decimal? @db.Decimal(18, 4)
+  approvedUnitPrice Decimal? @db.Decimal(18, 4)
+  lineTotal         Decimal? @db.Decimal(18, 4)
+
+  verificationStatus VerificationStatus @default(NOT_STARTED)
+
+  salesNotes String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  order          CustomerOrder         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  product        Product?              @relation(fields: [productId], references: [id], onDelete: SetNull)
+  verifications  ProductVerification[]
+  priceDecisions PriceDecision[]
+
+  @@unique([orderId, lineNumber])
+  @@index([productId])
+  @@index([verificationStatus])
+}
+
+model OrderDocument {
+  id           String  @id @default(cuid())
+  orderId      String?
+  uploadedById String
+
+  documentType     DocumentType @default(CUSTOMER_PO)
+  originalFileName String
+  storageKey       String       @unique
+  mimeType         String
+  fileSize         BigInt
+  checksum         String?
+
+  extractedText String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  order      CustomerOrder? @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  uploadedBy User           @relation("DocumentUploader", fields: [uploadedById], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+}
+
+model ProductVerification {
+  id           String @id @default(cuid())
+  orderLineId  String
+  verifiedById String
+
+  productMatched  Boolean @default(false)
+  quantityChecked Boolean @default(false)
+  unitMatched     Boolean @default(false)
+
+  status VerificationStatus
+  notes  String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  orderLine  OrderLine @relation(fields: [orderLineId], references: [id], onDelete: Restrict)
+  verifiedBy User      @relation("VerificationUser", fields: [verifiedById], references: [id], onDelete: Restrict)
+
+  @@index([orderLineId])
+}
+
+model PriceDecision {
+  id          String @id @default(cuid())
+  orderLineId String
+  decidedById String
+
+  customerUnitPrice Decimal  @db.Decimal(18, 4)
+  approvedUnitPrice Decimal? @db.Decimal(18, 4)
+
+  status PriceDecisionStatus
+  notes  String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  orderLine OrderLine @relation(fields: [orderLineId], references: [id], onDelete: Restrict)
+  decidedBy User      @relation("PriceDecisionUser", fields: [decidedById], references: [id], onDelete: Restrict)
+
+  @@index([orderLineId])
+}
+
+model OrderApproval {
+  id          String  @id @default(cuid())
+  orderId     String
+  decidedById String?
+
+  status ApprovalStatus @default(PENDING)
+  notes  String?
+
+  decidedAt DateTime? @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+
+  order     CustomerOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  decidedBy User?         @relation("ApprovalUser", fields: [decidedById], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([status])
+}
+
+model StockSnapshot {
+  id             String   @id @default(cuid())
+  snapshotAt     DateTime @db.Timestamptz(6)
+  sourceFileName String?
+  importedAt     DateTime @default(now()) @db.Timestamptz(6)
+  notes          String?
+
+  lines StockSnapshotLine[]
+
+  @@index([snapshotAt])
+}
+
+model StockSnapshotLine {
+  id         String @id @default(cuid())
+  snapshotId String
+  productId  String
+
+  warehouseCode String
+  warehouseName String?
+  quantity      Decimal @db.Decimal(18, 4)
+  unitCode      String
+
+  snapshot StockSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  product  Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([snapshotId, productId, warehouseCode])
+  @@index([productId])
+}
+
+model OrderStatusHistory {
+  id          String  @id @default(cuid())
+  orderId     String
+  changedById String?
+
+  fromStatus OrderStatus?
+  toStatus   OrderStatus
+  notes      String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  order     CustomerOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  changedBy User?         @relation("StatusChangeUser", fields: [changedById], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+}
+
+model AuditEvent {
+  id      String  @id @default(cuid())
+  actorId String?
+
+  action     String
+  entityType String
+  entityId   String
+
+  beforeData Json?
+  afterData  Json?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([createdAt])
+}
