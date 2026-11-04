@@ -6,7 +6,6 @@ import {
   readSapCsvUpload,
 } from "@/lib/product-import";
 
-export const runtime = "nodejs";
 
 function readCount(value: FormDataEntryValue | null): number | null {
   if (typeof value !== "string" || !/^\d+$/.test(value)) {

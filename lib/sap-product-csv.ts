@@ -16,13 +16,32 @@ export interface SapCsvError {
   message: string;
 }
 
+export interface SapCsvWarning {
+  row: number;
+  sapItemCode: string;
+  field: "BARCODE" | "ITEM DESCRIPTION";
+  originalValue: string;
+  message: string;
+}
+
 export interface SapCsvParseResult {
   success: boolean;
   products: SapProductRow[];
   errors: SapCsvError[];
+  warnings: SapCsvWarning[];
   duplicateCodes: string[];
   totalRows: number;
 }
+
+// SAP products with no ITEM DESCRIPTION are still imported. The description is
+// stored as an empty string (never invented), a warning is reported, and the
+// screens should show a "No description" fallback when itemName is empty.
+
+// A usable barcode contains digits only. Anything else (for example Excel
+// scientific notation such as 4.06214E+12, "-", or internal text codes) is
+// stored as null in the barcode field. The original text is always kept in
+// sourceData, and a warning is reported.
+const VALID_BARCODE_PATTERN = /^\d+$/;
 
 const REQUIRED_HEADERS = [
   "CODE",
@@ -105,6 +124,7 @@ export function parseSapProductCsv(
 ): SapCsvParseResult {
   const products: SapProductRow[] = [];
   const errors: SapCsvError[] = [];
+  const warnings: SapCsvWarning[] = [];
   const duplicateCodes: string[] = [];
 
   const seenCodes = new Set<string>();
@@ -128,6 +148,7 @@ export function parseSapProductCsv(
               : "Unable to parse CSV file.",
         },
       ],
+      warnings: [],
       duplicateCodes: [],
       totalRows: 0,
     };
@@ -143,6 +164,7 @@ export function parseSapProductCsv(
           message: "CSV must contain a header and at least one product row.",
         },
       ],
+      warnings: [],
       duplicateCodes: [],
       totalRows: 0,
     };
@@ -197,6 +219,7 @@ export function parseSapProductCsv(
       success: false,
       products: [],
       errors: [{ row: 1, message: messages.join(" ") }],
+      warnings: [],
       duplicateCodes: [],
       totalRows: records.length - 1,
     };
@@ -236,15 +259,6 @@ export function parseSapProductCsv(
       continue;
     }
 
-    if (!itemName) {
-      errors.push({
-        row: rowNumber,
-        message: `Product ${sapItemCode} has no ITEM DESCRIPTION.`,
-      });
-
-      continue;
-    }
-
     if (seenCodes.has(sapItemCode)) {
       duplicateCodes.push(sapItemCode);
 
@@ -258,10 +272,36 @@ export function parseSapProductCsv(
 
     seenCodes.add(sapItemCode);
 
+    if (!itemName) {
+      warnings.push({
+        row: rowNumber,
+        sapItemCode,
+        field: "ITEM DESCRIPTION",
+        originalValue: "",
+        message: `Product ${sapItemCode} has no ITEM DESCRIPTION in SAP. It will be imported with an empty description.`,
+      });
+    }
+
+    let validBarcode: string | null = null;
+
+    if (barcode) {
+      if (VALID_BARCODE_PATTERN.test(barcode)) {
+        validBarcode = barcode;
+      } else {
+        warnings.push({
+          row: rowNumber,
+          sapItemCode,
+          field: "BARCODE",
+          originalValue: barcode,
+          message: `Product ${sapItemCode} has a barcode that is not numeric ("${barcode}"). It will be stored as empty; the original text is kept in the SAP source data.`,
+        });
+      }
+    }
+
     products.push({
       sapItemCode,
       itemName,
-      barcode: barcode || null,
+      barcode: validBarcode,
       category: category || null,
       sourceData: {
         CODE: sapItemCode,
@@ -276,6 +316,7 @@ export function parseSapProductCsv(
     success: errors.length === 0 && products.length > 0,
     products,
     errors,
+    warnings,
     duplicateCodes: [...new Set(duplicateCodes)],
     totalRows: records.length - 1,
   };

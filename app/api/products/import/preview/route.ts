@@ -5,7 +5,6 @@ import {
   readSapCsvUpload,
 } from "@/lib/product-import";
 
-export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
   try {
@@ -30,7 +29,9 @@ export async function POST(request: NextRequest) {
           totalRows: parsed.totalRows,
           validRows: parsed.products.length,
           errorCount: parsed.errors.length,
+          warningCount: parsed.warnings.length,
           errors: parsed.errors,
+          warnings: parsed.warnings,
           duplicateCodes: parsed.duplicateCodes,
         },
         { status: 422 }
@@ -50,11 +51,13 @@ export async function POST(request: NextRequest) {
         changedProducts: plan.changedProducts.length,
         unchangedProducts: plan.unchangedProducts.length,
         errorCount: parsed.errors.length,
+        warningCount: parsed.warnings.length,
       },
       newProducts: plan.newProducts,
       changedProducts: plan.changedProducts,
       unchangedProducts: plan.unchangedProducts,
       errors: parsed.errors,
+      warnings: parsed.warnings,
       duplicateCodes: parsed.duplicateCodes,
       importExecuted: false,
     });
