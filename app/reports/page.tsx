@@ -183,14 +183,14 @@ export default function ReportsPage() {
     (order) => order.status === "Pending Verification"
   ).length;
 
-  const statusData: { name: OrderStatus; count: number }[] = [
+  const statusData = ([
     { name: "Received", count: 0 },
     { name: "Pending Verification", count: 0 },
     { name: "Approved", count: 0 },
     { name: "Picking", count: 0 },
     { name: "Dispatched", count: 0 },
     { name: "Delivered", count: 0 },
-  ].map((item) => ({
+  ] as { name: OrderStatus; count: number }[]).map((item) => ({
     ...item,
     count: reportOrders.filter(
       (order) => order.status === item.name

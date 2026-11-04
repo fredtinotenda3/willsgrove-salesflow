@@ -1,9 +1,8 @@
-
 export interface SapProductRow {
   sapItemCode: string;
   itemName: string;
   barcode: string | null;
-  category: string;
+  category: string | null;
   sourceData: {
     CODE: string;
     "ITEM DESCRIPTION": string;
@@ -246,15 +245,6 @@ export function parseSapProductCsv(
       continue;
     }
 
-    if (!category) {
-      errors.push({
-        row: rowNumber,
-        message: `Product ${sapItemCode} has no ITEM GROUP.`,
-      });
-
-      continue;
-    }
-
     if (seenCodes.has(sapItemCode)) {
       duplicateCodes.push(sapItemCode);
 
@@ -272,7 +262,7 @@ export function parseSapProductCsv(
       sapItemCode,
       itemName,
       barcode: barcode || null,
-      category,
+      category: category || null,
       sourceData: {
         CODE: sapItemCode,
         "ITEM DESCRIPTION": itemName,

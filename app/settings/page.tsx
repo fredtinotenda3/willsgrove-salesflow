@@ -23,6 +23,7 @@ import {
   X,
   MapPin,
   Server,
+  DollarSign,
   ShoppingBag,
 } from "lucide-react";
 import Sidebar from "../components/sidebar";
@@ -666,7 +667,7 @@ export default function SettingsPage() {
                     />
 
                     <RuleToggle
-                      icon={DollarSignIcon}
+                      icon={DollarSign}
                       title="Require selling price approval"
                       description="Compare customer-submitted prices with Willsgrove-approved prices."
                       checked={rules.requireSellingPriceApproval}
@@ -734,7 +735,7 @@ export default function SettingsPage() {
 
                   <div className="space-y-1">
                     <RuleToggle
-                      icon={ShoppingBagIcon}
+                      icon={ShoppingBag}
                       title="New order received"
                       description="Notify users when a new customer order is registered."
                       checked={notifications.newOrder}
@@ -1153,11 +1154,3 @@ function IntegrationRow({
   );
 }
 
-// Small icon aliases used by the settings controls.
-function DollarSignIcon(props: React.ComponentProps<typeof Building2>) {
-  return <span {...props} className="text-inherit">$</span>;
-}
-
-function ShoppingBagIcon(props: React.ComponentProps<typeof Building2>) {
-  return <ShoppingBag {...props} />;
-}
