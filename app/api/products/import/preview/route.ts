@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { requireUserOrResponse } from "@/lib/auth/current-user";
 import { parseSapProductCsv } from "@/lib/sap-product-csv";
 import {
   planProductImport,
@@ -9,7 +10,14 @@ const SAMPLE_LIMIT = 20;
 const WARNING_LIMIT = 50;
 const ERROR_LIMIT = 100;
 
+// Read-only (no database writes -- see executeProductImport in the sibling
+// /import route for the actual write path), so this intentionally checks
+// authentication only and not CSRF: CSRF protection in this codebase is
+// reserved for state-changing requests.
 export async function POST(request: NextRequest) {
+  const auth = await requireUserOrResponse();
+  if (!auth.ok) return auth.response;
+
   try {
     const formData = await request.formData();
     const upload = await readSapCsvUpload(formData);

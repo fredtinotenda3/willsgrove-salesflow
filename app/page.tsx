@@ -1,11 +1,12 @@
+import { redirect } from "next/navigation";
+import { getCurrentUser } from "@/lib/auth/current-user";
+import { getDashboardOrderCounts } from "@/lib/order-queries";
 import Sidebar from "./components/sidebar";
 
 import {
   Search,
   Bell,
   Plus,
-  ArrowUpRight,
-  ArrowDownRight,
   ShoppingCart,
   Clock3,
   PackageCheck,
@@ -19,48 +20,68 @@ import {
   FileText,
 } from "lucide-react";
 
-const statistics = [
-  {
-    title: "Total Orders",
-    value: "128",
-    change: "+12.8%",
-    description: "Compared to last month",
-    positive: true,
-    icon: ShoppingCart,
-    iconBg: "bg-blue-50",
-    iconColor: "text-blue-600",
-  },
-  {
-    title: "Pending Verification",
-    value: "12",
-    change: "4 urgent",
-    description: "Awaiting sales review",
-    positive: false,
-    icon: Clock3,
-    iconBg: "bg-amber-50",
-    iconColor: "text-amber-600",
-  },
-  {
-    title: "Awaiting Fulfilment",
-    value: "18",
-    change: "+3 today",
-    description: "Approved orders",
-    positive: true,
-    icon: PackageCheck,
-    iconBg: "bg-purple-50",
-    iconColor: "text-purple-600",
-  },
-  {
-    title: "Completed Deliveries",
-    value: "94",
-    change: "+8.4%",
-    description: "Compared to last month",
-    positive: true,
-    icon: Truck,
-    iconBg: "bg-green-50",
-    iconColor: "text-green-600",
-  },
-];
+// Cache Components (next.config.ts: cacheComponents: true) can't prerender
+// a request-time auth + DB read into the static shell -- this page reads
+// the session and live order counts directly (not through an API route),
+// so it needs the request every time. Restructuring behind a <Suspense>
+// boundary per Next's recommended pattern is deferred for this milestone;
+// `instant = false` is Next's own documented escape hatch for migrating
+// one route at a time (see docs: authentication-with-cache-components).
+export const instant = false;
+
+/**
+ * The 4 top-of-dashboard counts are the only real (database-backed) data
+ * on this page at this milestone, per agreed scope -- everything else
+ * below (pipeline stages, order list preview, activity feed) is still
+ * illustrative/static content, unchanged from the original mock.
+ *
+ * Counts are of non-demo orders only (see isDemo on CustomerOrder), so
+ * they will read 0 until a real order exists -- that's correct, not a
+ * bug: seeded demo data must never inflate a real business metric.
+ *
+ * "Awaiting Fulfilment" / "Completed Deliveries" have no dedicated status
+ * in the schema (OrderStatus has no FULFILLED/DELIVERED value), so they're
+ * derived from the closest available signals: APPROVED orders not yet
+ * handed to SAP, and orders with a recorded invoicedAt. Flagged for
+ * Stanley to confirm this mapping against how SAP B1 actually reports
+ * fulfilment/delivery -- see PROGRESS.md.
+ */
+function buildStatistics(counts: Awaited<ReturnType<typeof getDashboardOrderCounts>>) {
+  return [
+    {
+      title: "Total Orders",
+      value: String(counts.total),
+      description: "Non-demo orders recorded",
+      icon: ShoppingCart,
+      iconBg: "bg-blue-50",
+      iconColor: "text-blue-600",
+    },
+    {
+      title: "Pending Verification",
+      value: String(counts.pendingVerification),
+      description: "Awaiting sales review",
+      icon: Clock3,
+      iconBg: "bg-amber-50",
+      iconColor: "text-amber-600",
+    },
+    {
+      title: "Awaiting Fulfilment",
+      value: String(counts.awaitingFulfilment),
+      description: "Approved, not yet sent to SAP",
+      icon: PackageCheck,
+      iconBg: "bg-purple-50",
+      iconColor: "text-purple-600",
+    },
+    {
+      title: "Completed Deliveries",
+      value: String(counts.completedDeliveries),
+      description: "Invoiced orders",
+      icon: Truck,
+      iconBg: "bg-green-50",
+      iconColor: "text-green-600",
+    },
+  ];
+}
 
 const pipeline = [
   {
@@ -221,7 +242,18 @@ function SectionHeading({
   );
 }
 
-export default function Home() {
+export default async function Home() {
+  // Real auth enforcement, not just proxy.ts's optimistic cookie check --
+  // this component reads live order data directly, with no route handler
+  // in between to re-check authorization, so the check has to live here.
+  const user = await getCurrentUser();
+  if (!user) {
+    redirect("/login");
+  }
+
+  const counts = await getDashboardOrderCounts();
+  const statistics = buildStatistics(counts);
+
   return (
     <div className="min-h-screen bg-[#F7F8F6]">
       <Sidebar />
@@ -333,22 +365,6 @@ export default function Home() {
                     <h3 className="text-3xl font-bold tracking-tight text-[#17251E]">
                       {stat.value}
                     </h3>
-
-                    <span
-                      className={`mb-1 flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-semibold ${
-                        stat.positive
-                          ? "bg-green-50 text-green-700"
-                          : "bg-amber-50 text-amber-700"
-                      }`}
-                    >
-                      {stat.positive ? (
-                        <ArrowUpRight size={12} />
-                      ) : (
-                        <Clock3 size={12} />
-                      )}
-
-                      {stat.change}
-                    </span>
 
                   </div>
 

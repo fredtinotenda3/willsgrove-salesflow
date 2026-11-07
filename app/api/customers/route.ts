@@ -1,5 +1,7 @@
 import { NextRequest } from "next/server";
 import { readJsonObject } from "@/lib/http";
+import { verifyCsrfOrigin } from "@/lib/auth/csrf";
+import { requireUserOrResponse } from "@/lib/auth/current-user";
 import {
   getCustomerById,
   listCustomers,
@@ -9,6 +11,11 @@ import { validateCreateCustomer } from "@/lib/customer-validation";
 import { createCustomer } from "@/lib/customers";
 
 export async function GET(request: NextRequest) {
+  // Re-checked here against the database -- proxy.ts's cookie check is
+  // optimistic only (see lib/auth/current-user.ts).
+  const auth = await requireUserOrResponse();
+  if (!auth.ok) return auth.response;
+
   try {
     const parsed = parseCustomerListQuery(request.nextUrl.searchParams);
 
@@ -36,6 +43,14 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const csrf = verifyCsrfOrigin(request);
+  if (!csrf.ok) {
+    return Response.json({ success: false, message: csrf.message }, { status: 403 });
+  }
+
+  const auth = await requireUserOrResponse();
+  if (!auth.ok) return auth.response;
+
   try {
     const body = await readJsonObject(request);
 

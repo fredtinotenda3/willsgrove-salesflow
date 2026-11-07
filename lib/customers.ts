@@ -40,8 +40,15 @@ const duplicateCodeFailure: MutationFailure = {
 };
 
 export async function createCustomer(
-  input: CreateCustomerInput
+  input: CreateCustomerInput,
+  // isDemo is intentionally not part of CreateCustomerInput (and therefore
+  // never settable via the public /api/customers route) -- only
+  // prisma/seed.ts passes { isDemo: true }, so a demo row can only ever be
+  // produced by the seed script, never by an HTTP request.
+  options?: { isDemo?: boolean }
 ): Promise<CreateCustomerResult> {
+  const isDemo = options?.isDemo ?? false;
+
   try {
     const customer = await prisma.$transaction(async (tx) => {
       const created = await tx.customer.create({
@@ -52,8 +59,9 @@ export async function createCustomer(
           phone: input.phone,
           category: input.category,
           notes: input.notes,
+          isDemo,
           ...(input.location
-            ? { locations: { create: { ...input.location, isDefault: true } } }
+            ? { locations: { create: { ...input.location, isDefault: true, isDemo } } }
             : {}),
         },
         select: { id: true },

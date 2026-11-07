@@ -1,10 +1,14 @@
 import { NextRequest } from "next/server";
+import { requireUserOrResponse } from "@/lib/auth/current-user";
 import {
   listProducts,
   parseProductListQuery,
 } from "@/lib/product-queries";
 
 export async function GET(request: NextRequest) {
+  const auth = await requireUserOrResponse();
+  if (!auth.ok) return auth.response;
+
   try {
     const parsed = parseProductListQuery(request.nextUrl.searchParams);
 

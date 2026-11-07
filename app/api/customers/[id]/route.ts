@@ -1,5 +1,7 @@
 import { NextRequest } from "next/server";
 import { isValidId, readJsonObject } from "@/lib/http";
+import { verifyCsrfOrigin } from "@/lib/auth/csrf";
+import { requireUserOrResponse } from "@/lib/auth/current-user";
 import { getCustomerById } from "@/lib/customer-queries";
 import { validateUpdateCustomer } from "@/lib/customer-validation";
 import { updateCustomer } from "@/lib/customers";
@@ -7,6 +9,9 @@ import { updateCustomer } from "@/lib/customers";
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function GET(_request: NextRequest, context: RouteContext) {
+  const auth = await requireUserOrResponse();
+  if (!auth.ok) return auth.response;
+
   try {
     const { id } = await context.params;
 
@@ -41,6 +46,14 @@ export async function GET(_request: NextRequest, context: RouteContext) {
 }
 
 export async function PATCH(request: NextRequest, context: RouteContext) {
+  const csrf = verifyCsrfOrigin(request);
+  if (!csrf.ok) {
+    return Response.json({ success: false, message: csrf.message }, { status: 403 });
+  }
+
+  const auth = await requireUserOrResponse();
+  if (!auth.ok) return auth.response;
+
   try {
     const { id } = await context.params;
 

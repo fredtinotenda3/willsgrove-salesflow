@@ -32,6 +32,10 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...except the template: it must be committed so `Copy-Item .env.example
+# .env.local` (see SETUP-WINDOWS.md) has something to copy from. It never
+# contains a real secret -- only placeholders and generation instructions.
+!.env.example
 
 # vercel
 .vercel

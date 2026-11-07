@@ -1,4 +1,6 @@
 import { NextRequest } from "next/server";
+import { verifyCsrfOrigin } from "@/lib/auth/csrf";
+import { requireUserOrResponse } from "@/lib/auth/current-user";
 import { parseSapProductCsv } from "@/lib/sap-product-csv";
 import {
   executeProductImport,
@@ -16,6 +18,14 @@ function readCount(value: FormDataEntryValue | null): number | null {
 }
 
 export async function POST(request: NextRequest) {
+  const csrf = verifyCsrfOrigin(request);
+  if (!csrf.ok) {
+    return Response.json({ success: false, message: csrf.message }, { status: 403 });
+  }
+
+  const auth = await requireUserOrResponse();
+  if (!auth.ok) return auth.response;
+
   try {
     const formData = await request.formData();
 

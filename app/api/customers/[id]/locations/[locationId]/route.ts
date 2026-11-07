@@ -1,5 +1,7 @@
 import { NextRequest } from "next/server";
 import { isValidId, readJsonObject } from "@/lib/http";
+import { verifyCsrfOrigin } from "@/lib/auth/csrf";
+import { requireUserOrResponse } from "@/lib/auth/current-user";
 import { getCustomerById } from "@/lib/customer-queries";
 import { validateUpdateLocation } from "@/lib/location-validation";
 import { updateLocation } from "@/lib/locations";
@@ -7,6 +9,14 @@ import { updateLocation } from "@/lib/locations";
 type RouteContext = { params: Promise<{ id: string; locationId: string }> };
 
 export async function PATCH(request: NextRequest, context: RouteContext) {
+  const csrf = verifyCsrfOrigin(request);
+  if (!csrf.ok) {
+    return Response.json({ success: false, message: csrf.message }, { status: 403 });
+  }
+
+  const auth = await requireUserOrResponse();
+  if (!auth.ok) return auth.response;
+
   try {
     const { id, locationId } = await context.params;
 

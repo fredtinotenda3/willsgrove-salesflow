@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Building2,
   Users,
@@ -19,14 +19,33 @@ import {
   Database,
   ChevronRight,
   UserPlus,
-  Pencil,
   X,
   MapPin,
   Server,
   DollarSign,
   ShoppingBag,
+  Copy,
+  Loader2,
+  AlertTriangle,
 } from "lucide-react";
 import Sidebar from "../components/sidebar";
+
+type AppUser = {
+  id: string;
+  name: string;
+  email: string;
+  role: "SALESPERSON" | "SALES_MANAGER" | "ADMINISTRATOR";
+  status: "ACTIVE" | "INACTIVE";
+  mustChangePassword: boolean;
+  isDemo: boolean;
+  createdAt: string;
+};
+
+const ROLE_LABELS: Record<AppUser["role"], string> = {
+  SALESPERSON: "Salesperson",
+  SALES_MANAGER: "Sales Manager",
+  ADMINISTRATOR: "Administrator",
+};
 
 type SettingsSection =
   | "workspace"
@@ -114,36 +133,95 @@ export default function SettingsPage() {
     inAppNotifications: true,
   });
 
-  const [users, setUsers] = useState([
-    {
-      id: 1,
-      name: "Sales Administrator",
-      email: "sales.admin@example.com",
-      role: "Administrator",
-      status: "Active",
-    },
-    {
-      id: 2,
-      name: "Sales Manager",
-      email: "sales.manager@example.com",
-      role: "Sales Manager",
-      status: "Active",
-    },
-    {
-      id: 3,
-      name: "Sales User",
-      email: "sales.user@example.com",
-      role: "Salesperson",
-      status: "Active",
-    },
-  ]);
+  const [users, setUsers] = useState<AppUser[]>([]);
+  const [usersLoading, setUsersLoading] = useState(true);
+  const [usersError, setUsersError] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ id: string; role: AppUser["role"] } | null>(null);
 
   const [showAddUser, setShowAddUser] = useState(false);
-  const [newUser, setNewUser] = useState({
+  const [newUser, setNewUser] = useState<{ name: string; email: string; role: AppUser["role"] }>({
     name: "",
     email: "",
-    role: "Salesperson",
+    role: "SALESPERSON",
   });
+  const [addUserError, setAddUserError] = useState<string | null>(null);
+  const [addingUser, setAddingUser] = useState(false);
+  const [pendingUserAction, setPendingUserAction] = useState<string | null>(null);
+
+  // Shown once, right after a user is created -- the temporary password is
+  // never retrievable again after this (see lib/auth/password.ts).
+  const [createdCredential, setCreatedCredential] = useState<{ email: string; password: string } | null>(null);
+
+  // Pure fetch + parse, with no setState calls, so it can be safely called
+  // directly from the mount effect below without tripping the
+  // react-hooks/set-state-in-effect rule (calling setState synchronously
+  // within an effect body -- even via an invoked async function's
+  // pre-`await` statements -- forces an extra synchronous render on
+  // mount). `loadUsers()` below wraps this with the loading/error state
+  // transitions for the manual-refresh call sites (after creating or
+  // toggling a user), where resetting those flags is actually desired.
+  async function fetchUsersList(): Promise<
+    { success: true; users: AppUser[] } | { success: false; message: string }
+  > {
+    try {
+      const response = await fetch("/api/users", { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        return { success: false, message: data.message ?? "Unable to load users." };
+      }
+      return { success: true, users: data.users };
+    } catch {
+      return {
+        success: false,
+        message: "Could not reach the server. Check your connection and try again.",
+      };
+    }
+  }
+
+  async function loadUsers() {
+    setUsersLoading(true);
+    setUsersError(null);
+    const result = await fetchUsersList();
+    if (!result.success) {
+      setUsersError(result.message);
+      setUsersLoading(false);
+      return;
+    }
+    setUsers(result.users);
+    setUsersLoading(false);
+  }
+
+  useEffect(() => {
+    let ignore = false;
+
+    // No setState before this `await`-equivalent `.then()` boundary: the
+    // initial `usersLoading`/`usersError` state already reflects "loading,
+    // no error" (see the `useState` calls above), so nothing needs
+    // resetting on mount -- only the result of the fetch needs applying.
+    fetchUsersList().then((result) => {
+      if (ignore) return;
+      if (!result.success) {
+        setUsersError(result.message);
+      } else {
+        setUsers(result.users);
+      }
+      setUsersLoading(false);
+    });
+
+    fetch("/api/auth/session", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (ignore) return;
+        if (data.user) {
+          setCurrentUser({ id: data.user.id, role: data.user.role });
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   const sections: {
     id: SettingsSection;
@@ -200,53 +278,69 @@ export default function SettingsPage() {
     showSaved("Notification preferences saved in this prototype.");
   }
 
-  function addUser() {
+  async function addUser() {
+    setAddUserError(null);
+
     if (!newUser.name.trim() || !newUser.email.trim()) {
-      alert("Please enter the user's name and email address.");
+      setAddUserError("Please enter the user's name and email address.");
       return;
     }
 
-    const emailExists = users.some(
-      (user) => user.email.toLowerCase() === newUser.email.trim().toLowerCase()
-    );
+    setAddingUser(true);
+    try {
+      const response = await fetch("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newUser.name.trim(),
+          email: newUser.email.trim(),
+          role: newUser.role,
+        }),
+      });
+      const data = await response.json();
 
-    if (emailExists) {
-      alert("A user with this email address already exists.");
-      return;
+      if (!response.ok || !data.success) {
+        setAddUserError(
+          data.fieldErrors?.email ?? data.fieldErrors?.name ?? data.message ?? "Unable to create the user."
+        );
+        return;
+      }
+
+      setCreatedCredential({ email: newUser.email.trim(), password: data.temporaryPassword });
+      setNewUser({ name: "", email: "", role: "SALESPERSON" });
+      setShowAddUser(false);
+      await loadUsers();
+    } catch {
+      setAddUserError("Could not reach the server. Check your connection and try again.");
+    } finally {
+      setAddingUser(false);
     }
-
-    setUsers((current) => [
-      ...current,
-      {
-        id: Math.max(0, ...current.map((user) => user.id)) + 1,
-        name: newUser.name.trim(),
-        email: newUser.email.trim(),
-        role: newUser.role,
-        status: "Active",
-      },
-    ]);
-
-    setNewUser({
-      name: "",
-      email: "",
-      role: "Salesperson",
-    });
-
-    setShowAddUser(false);
-    showSaved("Demo user added to the local page state.");
   }
 
-  function toggleUserStatus(id: number) {
-    setUsers((current) =>
-      current.map((user) =>
-        user.id === id
-          ? {
-              ...user,
-              status: user.status === "Active" ? "Inactive" : "Active",
-            }
-          : user
-      )
-    );
+  async function toggleUserStatus(user: AppUser) {
+    const nextStatus = user.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+    setPendingUserAction(user.id);
+
+    try {
+      const response = await fetch(`/api/users/${user.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        showSaved(data.message ?? "Unable to update this user.");
+        return;
+      }
+
+      await loadUsers();
+      showSaved(`${user.name} is now ${nextStatus === "ACTIVE" ? "active" : "inactive"}.`);
+    } catch {
+      showSaved("Could not reach the server. Check your connection and try again.");
+    } finally {
+      setPendingUserAction(null);
+    }
   }
 
   function toggleRule(key: keyof typeof rules) {
@@ -264,8 +358,10 @@ export default function SettingsPage() {
   }
 
   const activeUsers = users.filter(
-    (user) => user.status === "Active"
+    (user) => user.status === "ACTIVE"
   ).length;
+
+  const isAdmin = currentUser?.role === "ADMINISTRATOR";
 
   return (
     <div className="flex min-h-screen bg-[#F7F8F6] text-[#17251E]">
@@ -309,12 +405,15 @@ export default function SettingsPage() {
             <Info size={19} className="mt-0.5 shrink-0 text-amber-700" />
             <div>
               <p className="text-sm font-semibold text-amber-900">
-                Prototype settings
+                Partially live
               </p>
               <p className="mt-1 text-xs leading-5 text-amber-800">
-                Changes are held in local page state and are not saved to a
-                database. User roles and processing rules are demonstrations,
-                not enforced security controls.
+                Users &amp; Roles below is real: it reads and writes actual
+                application users, and only an Administrator account can
+                add a user or change a user&apos;s status. Workspace,
+                Order Processing, Notifications and System Information are
+                still prototype sections -- changes there are held in local
+                page state and are not saved to a database.
               </p>
             </div>
           </div>
@@ -492,27 +591,82 @@ export default function SettingsPage() {
 
               {activeSection === "users" && (
                 <>
+                  {createdCredential && (
+                    <div className="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-bold text-emerald-900">
+                            User created -- share this temporary password now
+                          </p>
+                          <p className="mt-1 text-xs leading-5 text-emerald-800">
+                            This password for <strong>{createdCredential.email}</strong> is shown
+                            only once and cannot be retrieved again. The user must change it the
+                            first time they sign in.
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setCreatedCredential(null)}
+                          className="rounded-lg p-1.5 text-emerald-700 hover:bg-emerald-100"
+                          aria-label="Dismiss"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                      <div className="mt-3 flex items-center gap-2 rounded-xl border border-emerald-300 bg-white px-4 py-3">
+                        <code className="flex-1 select-all text-sm font-semibold text-emerald-900">
+                          {createdCredential.password}
+                        </code>
+                        <button
+                          onClick={() => navigator.clipboard?.writeText(createdCredential.password)}
+                          className="flex items-center gap-1.5 rounded-lg border border-emerald-200 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                        >
+                          <Copy size={13} />
+                          Copy
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   <SettingsPanel
                     title="Users & Roles"
-                    description="Review application users and their proposed access roles."
+                    description="Application users and their access roles. This section is live."
                     icon={Users}
                     action={
-                      <button
-                        onClick={() => setShowAddUser(true)}
-                        className="flex items-center gap-2 rounded-xl bg-[#183B2D] px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#24513D]"
-                      >
-                        <UserPlus size={15} />
-                        Add User
-                      </button>
+                      isAdmin ? (
+                        <button
+                          onClick={() => {
+                            setAddUserError(null);
+                            setShowAddUser(true);
+                          }}
+                          className="flex items-center gap-2 rounded-xl bg-[#183B2D] px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#24513D]"
+                        >
+                          <UserPlus size={15} />
+                          Add User
+                        </button>
+                      ) : undefined
                     }
                   >
+                    {!isAdmin && (
+                      <div className="mb-5 flex items-start gap-2 rounded-xl border border-[#E8EDE8] bg-[#F7F9F6] p-3 text-xs text-[#68766D]">
+                        <ShieldCheck size={15} className="mt-0.5 shrink-0" />
+                        Only an Administrator can add users or change their status.
+                      </div>
+                    )}
+
+                    {usersError && (
+                      <div className="mb-5 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+                        <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                        {usersError}
+                      </div>
+                    )}
+
                     <div className="mb-5 grid grid-cols-2 gap-3">
                       <div className="rounded-xl bg-[#F7F9F6] p-4">
                         <p className="text-xs text-[#849087]">
                           Total users
                         </p>
                         <p className="mt-1 text-2xl font-bold">
-                          {users.length}
+                          {usersLoading ? "—" : users.length}
                         </p>
                       </div>
                       <div className="rounded-xl bg-[#F7F9F6] p-4">
@@ -520,62 +674,91 @@ export default function SettingsPage() {
                           Active users
                         </p>
                         <p className="mt-1 text-2xl font-bold">
-                          {activeUsers}
+                          {usersLoading ? "—" : activeUsers}
                         </p>
                       </div>
                     </div>
 
-                    <div className="space-y-3">
-                      {users.map((user) => (
-                        <div
-                          key={user.id}
-                          className="flex flex-col justify-between gap-4 rounded-xl border border-[#E8EDE8] p-4 sm:flex-row sm:items-center"
-                        >
-                          <div className="flex min-w-0 items-center gap-3">
-                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#EDF3E9] text-sm font-bold text-[#496A42]">
-                              {user.name
-                                .split(" ")
-                                .map((part) => part[0])
-                                .slice(0, 2)
-                                .join("")
-                                .toUpperCase()}
+                    {usersLoading ? (
+                      <div className="flex items-center justify-center gap-2 py-10 text-xs text-[#849087]">
+                        <Loader2 size={16} className="animate-spin" />
+                        Loading users…
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {users.map((user) => (
+                          <div
+                            key={user.id}
+                            className="flex flex-col justify-between gap-4 rounded-xl border border-[#E8EDE8] p-4 sm:flex-row sm:items-center"
+                          >
+                            <div className="flex min-w-0 items-center gap-3">
+                              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#EDF3E9] text-sm font-bold text-[#496A42]">
+                                {user.name
+                                  .split(" ")
+                                  .map((part) => part[0])
+                                  .filter(Boolean)
+                                  .slice(0, 2)
+                                  .join("")
+                                  .toUpperCase()}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-semibold">
+                                  {user.name}
+                                  {user.mustChangePassword && (
+                                    <span className="ml-2 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+                                      Password not yet set
+                                    </span>
+                                  )}
+                                </p>
+                                <p className="truncate text-xs text-[#849087]">
+                                  {user.email}
+                                </p>
+                                <p className="mt-1 text-xs font-medium text-[#52645A]">
+                                  {ROLE_LABELS[user.role]}
+                                </p>
+                              </div>
                             </div>
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold">
-                                {user.name}
-                              </p>
-                              <p className="truncate text-xs text-[#849087]">
-                                {user.email}
-                              </p>
-                              <p className="mt-1 text-xs font-medium text-[#52645A]">
-                                {user.role}
-                              </p>
+
+                            <div className="flex items-center gap-3">
+                              <span
+                                className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                                  user.status === "ACTIVE"
+                                    ? "bg-emerald-50 text-emerald-700"
+                                    : "bg-slate-100 text-slate-600"
+                                }`}
+                              >
+                                {user.status === "ACTIVE" ? "Active" : "Inactive"}
+                              </span>
+
+                              {isAdmin && (
+                                <button
+                                  onClick={() => toggleUserStatus(user)}
+                                  disabled={pendingUserAction === user.id || user.id === currentUser?.id}
+                                  title={
+                                    user.id === currentUser?.id
+                                      ? "You cannot deactivate your own account."
+                                      : undefined
+                                  }
+                                  className="rounded-lg border border-[#E3E9E3] px-3 py-2 text-xs font-semibold text-[#52645A] hover:bg-[#F7F9F6] disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {pendingUserAction === user.id
+                                    ? "Saving…"
+                                    : user.status === "ACTIVE"
+                                      ? "Deactivate"
+                                      : "Activate"}
+                                </button>
+                              )}
                             </div>
                           </div>
+                        ))}
 
-                          <div className="flex items-center gap-3">
-                            <span
-                              className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                                user.status === "Active"
-                                  ? "bg-emerald-50 text-emerald-700"
-                                  : "bg-slate-100 text-slate-600"
-                              }`}
-                            >
-                              {user.status}
-                            </span>
-
-                            <button
-                              onClick={() => toggleUserStatus(user.id)}
-                              className="rounded-lg border border-[#E3E9E3] px-3 py-2 text-xs font-semibold text-[#52645A] hover:bg-[#F7F9F6]"
-                            >
-                              {user.status === "Active"
-                                ? "Deactivate"
-                                : "Activate"}
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                        {users.length === 0 && (
+                          <p className="py-6 text-center text-xs text-[#849087]">
+                            No users found.
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </SettingsPanel>
 
                   <SettingsPanel
@@ -892,14 +1075,15 @@ export default function SettingsPage() {
       </main>
 
       {/* Add user modal */}
-      {showAddUser && (
+      {showAddUser && isAdmin && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
             <div className="mb-5 flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-bold">Add User</h2>
                 <p className="mt-1 text-xs text-[#849087]">
-                  Add an illustrative user to this prototype.
+                  Creates a real account with a system-generated temporary
+                  password. The new user must change it at first login.
                 </p>
               </div>
               <button
@@ -910,6 +1094,13 @@ export default function SettingsPage() {
                 <X size={19} />
               </button>
             </div>
+
+            {addUserError && (
+              <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                {addUserError}
+              </div>
+            )}
 
             <div className="space-y-4">
               <Field label="Full Name">
@@ -939,13 +1130,13 @@ export default function SettingsPage() {
                 <select
                   value={newUser.role}
                   onChange={(e) =>
-                    setNewUser({ ...newUser, role: e.target.value })
+                    setNewUser({ ...newUser, role: e.target.value as AppUser["role"] })
                   }
                   className="settings-input"
                 >
-                  <option value="Salesperson">Salesperson</option>
-                  <option value="Sales Manager">Sales Manager</option>
-                  <option value="Administrator">Administrator</option>
+                  <option value="SALESPERSON">Salesperson</option>
+                  <option value="SALES_MANAGER">Sales Manager</option>
+                  <option value="ADMINISTRATOR">Administrator</option>
                 </select>
               </Field>
             </div>
@@ -953,15 +1144,18 @@ export default function SettingsPage() {
             <div className="mt-6 flex gap-3">
               <button
                 onClick={() => setShowAddUser(false)}
-                className="flex-1 rounded-xl border border-[#E3E9E3] px-4 py-3 text-sm font-semibold text-[#68766D] hover:bg-[#F7F9F6]"
+                disabled={addingUser}
+                className="flex-1 rounded-xl border border-[#E3E9E3] px-4 py-3 text-sm font-semibold text-[#68766D] hover:bg-[#F7F9F6] disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 onClick={addUser}
-                className="flex-1 rounded-xl bg-[#183B2D] px-4 py-3 text-sm font-semibold text-white hover:bg-[#24513D]"
+                disabled={addingUser}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#183B2D] px-4 py-3 text-sm font-semibold text-white hover:bg-[#24513D] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Add User
+                {addingUser && <Loader2 size={15} className="animate-spin" />}
+                {addingUser ? "Adding…" : "Add User"}
               </button>
             </div>
           </div>

@@ -69,6 +69,15 @@ model User {
   role         UserRole     @default(SALESPERSON)
   status       RecordStatus @default(ACTIVE)
 
+  // Forces a password change on next login. Set true for the seeded admin
+  // (whose initial password comes from an environment variable) and cleared
+  // once the user sets their own password.
+  mustChangePassword Boolean @default(false)
+
+  // True only for rows created by prisma/seed.ts for demo/testing purposes.
+  // Never true for a real account such as the seeded admin.
+  isDemo Boolean @default(false)
+
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
@@ -79,6 +88,33 @@ model User {
   approvals         OrderApproval[]       @relation("ApprovalUser")
   statusChanges     OrderStatusHistory[]  @relation("StatusChangeUser")
   auditEvents       AuditEvent[]          @relation("AuditActor")
+  sessions          Session[]
+
+  @@index([isDemo])
+}
+
+model Session {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // The cookie carries a jose-signed JWT whose only claim is this session's
+  // id; the signature (keyed by AUTH_SECRET) is what makes the cookie
+  // unforgeable, so no token/secret is stored here. This row exists purely
+  // so a session can be looked up, checked for revocation/expiry against
+  // fresh data, and revoked server-side (logout, forced password change,
+  // admin action) even though the signed cookie itself keeps working until
+  // its JWT `exp`.
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+  expiresAt DateTime  @db.Timestamptz(6)
+  revokedAt DateTime? @db.Timestamptz(6)
+
+  userAgent String?
+  ipAddress String?
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model Customer {
@@ -91,6 +127,8 @@ model Customer {
   status          RecordStatus @default(ACTIVE)
   notes           String?
 
+  isDemo Boolean @default(false)
+
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
@@ -99,6 +137,7 @@ model Customer {
 
   @@index([name])
   @@index([status])
+  @@index([isDemo])
 }
 
 model CustomerLocation {
@@ -112,6 +151,8 @@ model CustomerLocation {
   isDefault    Boolean @default(false)
   isActive     Boolean @default(true)
 
+  isDemo Boolean @default(false)
+
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
@@ -119,6 +160,7 @@ model CustomerLocation {
   orders   CustomerOrder[]
 
   @@index([customerId])
+  @@index([isDemo])
 }
 
 model Product {
@@ -133,6 +175,12 @@ model Product {
   sourceData Json?
   importedAt DateTime?
 
+  // True only for the small set of placeholder products prisma/seed.ts
+  // creates to exercise demo orders. Real SAP items imported through
+  // /products/import are never demo, regardless of how few are referenced
+  // by seeded orders.
+  isDemo Boolean @default(false)
+
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
@@ -143,6 +191,7 @@ model Product {
   @@index([category])
   @@index([status])
   @@index([barcode])
+  @@index([isDemo])
 }
 
 model CustomerOrder {
@@ -168,6 +217,25 @@ model CustomerOrder {
 
   internalNotes String?
 
+  // Lets a client safely retry a create-order submission (e.g. after a
+  // dropped response) without risking a duplicate order. Enforced by a
+  // unique constraint; lib/orders.ts returns the original order on a repeat.
+  idempotencyKey String? @unique
+
+  // Baseline timing capture (Milestone 0 acceptance). Nullable because an
+  // order may be mid-flow; set by lib/orders.ts as each stage happens, not
+  // backfilled or guessed. Feeds throughput/funnel reporting from
+  // Milestone 8 onward without re-deriving every read from
+  // OrderStatusHistory joins.
+  receivedAt     DateTime? @db.Timestamptz(6)
+  extractedAt    DateTime? @db.Timestamptz(6)
+  reviewedAt     DateTime? @db.Timestamptz(6)
+  approvedAt     DateTime? @db.Timestamptz(6)
+  handedToSapAt  DateTime? @db.Timestamptz(6)
+  invoicedAt     DateTime? @db.Timestamptz(6)
+
+  isDemo Boolean @default(false)
+
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
@@ -184,6 +252,7 @@ model CustomerOrder {
   @@index([status])
   @@index([orderDate])
   @@index([createdAt])
+  @@index([isDemo])
 }
 
 model OrderLine {
@@ -208,6 +277,8 @@ model OrderLine {
 
   salesNotes String?
 
+  isDemo Boolean @default(false)
+
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
@@ -219,6 +290,7 @@ model OrderLine {
   @@unique([orderId, lineNumber])
   @@index([productId])
   @@index([verificationStatus])
+  @@index([isDemo])
 }
 
 model OrderDocument {
