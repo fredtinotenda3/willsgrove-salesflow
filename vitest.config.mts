@@ -26,5 +26,14 @@ export default defineConfig({
     // running test files in their own isolated process pools prevents one
     // file's env mutation from leaking into another.
     isolate: true,
+    // lib/auth/password.ts uses bcryptjs (pure-JS, no native compiler
+    // toolchain -- chosen so it installs cleanly on Windows) at a
+    // deliberately real-world bcrypt cost factor (12 rounds). That cost
+    // factor is a security choice and should not be weakened just to make
+    // tests faster; a single hash+verify round trip has been observed to
+    // take just over Vitest's 5000ms default on slower hardware, which
+    // failed the test on a timeout rather than an assertion. Raised here,
+    // once, for every test, instead of lowering the real cost factor.
+    testTimeout: 20000,
   },
 });

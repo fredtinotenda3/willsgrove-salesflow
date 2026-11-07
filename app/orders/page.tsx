@@ -1,17 +1,24 @@
-
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Sidebar from "../components/sidebar";
+import {
+  ORDER_STATUSES,
+  ORDER_STATUS_LABELS as STATUS_LABELS,
+  ORDER_STATUS_STYLES as STATUS_STYLES,
+  orderSourceLabel,
+  type OrderStatusValue,
+  formatOrderDate as formatDate,
+  formatOrderAmount as formatAmount,
+  initialsFor,
+  avatarColorFor,
+} from "@/lib/order-display";
 
 import {
   Search,
   Bell,
   Plus,
-  Filter,
-  Download,
-  ChevronDown,
   FileText,
   MessageCircle,
   Mail,
@@ -20,201 +27,176 @@ import {
   PackageCheck,
   ShoppingCart,
   Eye,
+  AlertCircle,
+  Loader2,
 } from "lucide-react";
 
-type OrderStatus =
-  | "Received"
-  | "Pending Verification"
-  | "Approved"
-  | "Picking"
-  | "Dispatched"
-  | "Delivered";
-
-type Order = {
-  reference: string;
-  customer: string;
-  initials: string;
-  orderDate: string;
-  deliveryDate: string;
-  amount: number;
-  items: number;
-  source: "Email" | "WhatsApp" | "Manual";
-  status: OrderStatus;
-  avatar: string;
-};
-
-const initialOrders: Order[] = [
-  {
-    reference: "PO-219246",
-    customer: "Gweru Pick n Pay",
-    initials: "GP",
-    orderDate: "03 Nov 2026",
-    deliveryDate: "04 Nov 2026",
-    amount: 2643.41,
-    items: 36,
-    source: "Email",
-    status: "Pending Verification",
-    avatar: "bg-orange-100 text-orange-700",
-  },
-  {
-    reference: "PO-219245",
-    customer: "TM Supermarket",
-    initials: "TM",
-    orderDate: "03 Nov 2026",
-    deliveryDate: "04 Nov 2026",
-    amount: 1825.60,
-    items: 24,
-    source: "WhatsApp",
-    status: "Approved",
-    avatar: "bg-blue-100 text-blue-700",
-  },
-  {
-    reference: "PO-219244",
-    customer: "OK Zimbabwe",
-    initials: "OK",
-    orderDate: "02 Nov 2026",
-    deliveryDate: "03 Nov 2026",
-    amount: 3410.25,
-    items: 42,
-    source: "Email",
-    status: "Picking",
-    avatar: "bg-purple-100 text-purple-700",
-  },
-  {
-    reference: "PO-219243",
-    customer: "SPAR Borrowdale",
-    initials: "SB",
-    orderDate: "02 Nov 2026",
-    deliveryDate: "03 Nov 2026",
-    amount: 960.00,
-    items: 15,
-    source: "Email",
-    status: "Dispatched",
-    avatar: "bg-orange-100 text-orange-700",
-  },
-  {
-    reference: "PO-219242",
-    customer: "Pick n Pay Bulawayo",
-    initials: "PB",
-    orderDate: "01 Nov 2026",
-    deliveryDate: "02 Nov 2026",
-    amount: 2120.80,
-    items: 31,
-    source: "Manual",
-    status: "Delivered",
-    avatar: "bg-teal-100 text-teal-700",
-  },
-  {
-    reference: "PO-219241",
-    customer: "Food Lovers Market",
-    initials: "FL",
-    orderDate: "01 Nov 2026",
-    deliveryDate: "03 Nov 2026",
-    amount: 1475.50,
-    items: 19,
-    source: "WhatsApp",
-    status: "Received",
-    avatar: "bg-green-100 text-green-700",
-  },
-  {
-    reference: "PO-219240",
-    customer: "Choppies",
-    initials: "CH",
-    orderDate: "31 Oct 2026",
-    deliveryDate: "02 Nov 2026",
-    amount: 2890.00,
-    items: 33,
-    source: "Email",
-    status: "Pending Verification",
-    avatar: "bg-yellow-100 text-yellow-700",
-  },
-  {
-    reference: "PO-219239",
-    customer: "Bon Marché",
-    initials: "BM",
-    orderDate: "31 Oct 2026",
-    deliveryDate: "01 Nov 2026",
-    amount: 785.40,
-    items: 12,
-    source: "Manual",
-    status: "Delivered",
-    avatar: "bg-pink-100 text-pink-700",
-  },
-  {
-    reference: "PO-219238",
-    customer: "OK Zimbabwe",
-    initials: "OK",
-    orderDate: "30 Oct 2026",
-    deliveryDate: "01 Nov 2026",
-    amount: 1920.00,
-    items: 28,
-    source: "Email",
-    status: "Approved",
-    avatar: "bg-purple-100 text-purple-700",
-  },
-];
-
-const statusOptions = [
-  "All Orders",
-  "Received",
-  "Pending Verification",
-  "Approved",
-  "Picking",
-  "Dispatched",
-  "Delivered",
-];
-
-const statusStyles: Record<OrderStatus, string> = {
-  Received: "bg-blue-50 text-blue-700",
-  "Pending Verification": "bg-amber-50 text-amber-700",
-  Approved: "bg-green-50 text-green-700",
-  Picking: "bg-purple-50 text-purple-700",
-  Dispatched: "bg-orange-50 text-orange-700",
-  Delivered: "bg-emerald-50 text-emerald-700",
-};
-
-function SourceIcon({ source }: { source: Order["source"] }) {
-  if (source === "Email") {
-    return <Mail size={14} className="text-blue-500" />;
-  }
-
-  if (source === "WhatsApp") {
-    return <MessageCircle size={14} className="text-green-600" />;
-  }
-
+function SourceIcon({ source }: { source: string }) {
+  if (source === "EMAIL") return <Mail size={14} className="text-blue-500" />;
+  if (source === "WHATSAPP") return <MessageCircle size={14} className="text-green-600" />;
   return <FileText size={14} className="text-gray-500" />;
 }
 
+type ApiOrderSummary = {
+  id: string;
+  reference: string;
+  customerPoReference: string | null;
+  status: OrderStatusValue;
+  source: string;
+  orderDate: string | null;
+  requestedDeliveryDate: string | null;
+  total: string | null;
+  currency: string;
+  isDemo: boolean;
+  createdAt: string;
+  customer: { id: string; name: string } | null;
+  lineCount: number;
+};
+
+type OrderListResponse = {
+  success: boolean;
+  message?: string;
+  orders: ApiOrderSummary[];
+  pagination: { page: number; pageSize: number; totalItems: number; totalPages: number };
+};
+
+async function fetchOrderCount(status: OrderStatusValue | null): Promise<number | null> {
+  const params = new URLSearchParams({ pageSize: "1" });
+  if (status) params.set("status", status);
+  try {
+    const response = await fetch(`/api/orders?${params.toString()}`, { cache: "no-store" });
+    const data = (await response.json()) as OrderListResponse;
+    if (!response.ok || !data.success) return null;
+    return data.pagination.totalItems;
+  } catch {
+    return null;
+  }
+}
+
 export default function OrdersPage() {
-  const [orders] = useState<Order[]>(initialOrders);
-  const [activeStatus, setActiveStatus] = useState("All Orders");
+  const [orders, setOrders] = useState<ApiOrderSummary[]>([]);
+  const [pagination, setPagination] = useState({ page: 1, pageSize: 50, totalItems: 0, totalPages: 1 });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const [activeStatus, setActiveStatus] = useState<OrderStatusValue | "ALL">("ALL");
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
 
-  const filteredOrders = useMemo(() => {
-    return orders.filter((order) => {
-      const matchesStatus =
-        activeStatus === "All Orders" ||
-        order.status === activeStatus;
+  const [counts, setCounts] = useState<{
+    total: number | null;
+    pendingVerification: number | null;
+    readyForApproval: number | null;
+    approved: number | null;
+  }>({ total: null, pendingVerification: null, readyForApproval: null, approved: null });
 
-      const matchesSearch =
-        order.reference.toLowerCase().includes(search.toLowerCase()) ||
-        order.customer.toLowerCase().includes(search.toLowerCase());
+  // Debounce the search box so every keystroke doesn't fire a request.
+  // Resetting to page 1 happens here (and in the status-tab click
+  // handlers below) rather than in a separate effect keyed on
+  // [activeStatus, debouncedSearch] -- an effect whose whole job is
+  // mirroring one piece of state into another, with no real
+  // subscription, is exactly the "derived state via effect" anti-pattern
+  // react-hooks/set-state-in-effect flags (see CHANGES.md).
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search.trim());
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
 
-      return matchesStatus && matchesSearch;
+  useEffect(() => {
+    let ignore = false;
+
+    const params = new URLSearchParams({ page: String(page), pageSize: "20" });
+    if (activeStatus !== "ALL") params.set("status", activeStatus);
+    if (debouncedSearch) params.set("search", debouncedSearch);
+
+    Promise.resolve()
+      .then(() => {
+        setLoading(true);
+        setLoadError(null);
+        return fetch(`/api/orders?${params.toString()}`, { cache: "no-store" });
+      })
+      .then((response) => response.json().then((data: OrderListResponse) => ({ response, data })))
+      .then(({ response, data }) => {
+        if (ignore) return;
+        if (!response.ok || !data.success) {
+          setLoadError(data.message ?? "Unable to load orders.");
+          setOrders([]);
+          return;
+        }
+        setOrders(data.orders);
+        setPagination(data.pagination);
+      })
+      .catch(() => {
+        if (!ignore) {
+          setLoadError("Could not reach the server. Check your connection and try again.");
+          setOrders([]);
+        }
+      })
+      .finally(() => {
+        if (!ignore) setLoading(false);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [activeStatus, debouncedSearch, page]);
+
+  // Summary-card counts: four cheap (pageSize=1) calls to the same /api/orders
+  // endpoint used above, reading only pagination.totalItems -- real numbers
+  // from the database, not estimated or fabricated, and no new API route.
+  useEffect(() => {
+    let ignore = false;
+    Promise.all([
+      fetchOrderCount(null),
+      fetchOrderCount("PENDING_VERIFICATION"),
+      fetchOrderCount("READY_FOR_APPROVAL"),
+      fetchOrderCount("APPROVED"),
+    ]).then(([total, pendingVerification, readyForApproval, approved]) => {
+      if (ignore) return;
+      setCounts({ total, pendingVerification, readyForApproval, approved });
     });
-  }, [orders, activeStatus, search]);
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
-  const pendingCount = orders.filter(
-    (order) => order.status === "Pending Verification"
-  ).length;
-
-  const approvedCount = orders.filter(
-    (order) => order.status === "Approved"
-  ).length;
-
-  const deliveredCount = orders.filter(
-    (order) => order.status === "Delivered"
-  ).length;
+  const summaryCards = useMemo(
+    () => [
+      {
+        title: "Total Orders",
+        value: counts.total,
+        icon: ShoppingCart,
+        color: "bg-blue-50 text-blue-600",
+        note: "All recorded orders",
+      },
+      {
+        title: "Pending Verification",
+        value: counts.pendingVerification,
+        icon: Clock3,
+        color: "bg-amber-50 text-amber-600",
+        note: "Requires sales review",
+      },
+      {
+        title: "Ready for Approval",
+        value: counts.readyForApproval,
+        icon: CheckCircle2,
+        color: "bg-purple-50 text-purple-600",
+        note: "Verification complete",
+      },
+      {
+        title: "Approved Orders",
+        value: counts.approved,
+        icon: PackageCheck,
+        color: "bg-green-50 text-green-600",
+        note: "Ready for fulfilment",
+      },
+    ],
+    [counts]
+  );
 
   return (
     <div className="min-h-screen bg-[#F7F8F6]">
@@ -224,43 +206,18 @@ export default function OrdersPage() {
         {/* Header */}
         <header className="sticky top-0 z-30 flex h-[76px] items-center justify-between border-b border-[#E8EBE6] bg-white px-8">
           <div>
-            <p className="text-xs text-gray-400">
-              Workspace / Sales Management / Orders
-            </p>
-
-            <h2 className="mt-1 text-lg font-bold text-[#17251E]">
-              Orders
-            </h2>
+            <p className="text-xs text-gray-400">Workspace / Sales Management / Orders</p>
+            <h2 className="mt-1 text-lg font-bold text-[#17251E]">Orders</h2>
           </div>
 
           <div className="flex items-center gap-5">
             <button className="text-gray-400 hover:text-gray-700">
               <Search size={19} />
             </button>
-
             <button className="relative text-gray-400 hover:text-gray-700">
               <Bell size={19} />
               <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-red-500" />
             </button>
-
-            <div className="h-8 w-px bg-gray-200" />
-
-            <div className="flex items-center gap-2">
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#D7F36B] text-xs font-bold text-[#173D2E]">
-                SA
-              </div>
-
-              <div>
-                <p className="text-xs font-semibold text-gray-800">
-                  Sales Administrator
-                </p>
-                <p className="text-[10px] text-gray-400">
-                  Administrator
-                </p>
-              </div>
-
-              <ChevronDown size={14} className="text-gray-400" />
-            </div>
           </div>
         </header>
 
@@ -269,10 +226,7 @@ export default function OrdersPage() {
           {/* Page heading */}
           <section className="flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-[#17251E]">
-                Order Management
-              </h1>
-
+              <h1 className="text-2xl font-bold tracking-tight text-[#17251E]">Order Management</h1>
               <p className="mt-2 text-sm text-gray-500">
                 Receive, verify and manage customer purchase orders.
               </p>
@@ -289,62 +243,22 @@ export default function OrdersPage() {
 
           {/* Summary cards */}
           <section className="grid grid-cols-4 gap-5">
-            {[
-              {
-                title: "Total Orders",
-                value: orders.length,
-                icon: ShoppingCart,
-                color: "bg-blue-50 text-blue-600",
-                note: "All recorded orders",
-              },
-              {
-                title: "Pending Verification",
-                value: pendingCount,
-                icon: Clock3,
-                color: "bg-amber-50 text-amber-600",
-                note: "Requires sales review",
-              },
-              {
-                title: "Approved Orders",
-                value: approvedCount,
-                icon: CheckCircle2,
-                color: "bg-green-50 text-green-600",
-                note: "Ready for fulfilment",
-              },
-              {
-                title: "Delivered Orders",
-                value: deliveredCount,
-                icon: PackageCheck,
-                color: "bg-purple-50 text-purple-600",
-                note: "Successfully delivered",
-              },
-            ].map((card) => {
+            {summaryCards.map((card) => {
               const Icon = card.icon;
-
               return (
-                <div
-                  key={card.title}
-                  className="rounded-xl border border-[#E8EBE6] bg-white p-5"
-                >
+                <div key={card.title} className="rounded-xl border border-[#E8EBE6] bg-white p-5">
                   <div className="flex items-center justify-between">
-                    <p className="text-xs font-medium text-gray-500">
-                      {card.title}
-                    </p>
-
-                    <div
-                      className={`flex h-9 w-9 items-center justify-center rounded-lg ${card.color}`}
-                    >
+                    <p className="text-xs font-medium text-gray-500">{card.title}</p>
+                    <div className={`flex h-9 w-9 items-center justify-center rounded-lg ${card.color}`}>
                       <Icon size={18} />
                     </div>
                   </div>
 
                   <h3 className="mt-4 text-3xl font-bold text-[#17251E]">
-                    {card.value}
+                    {card.value === null ? "—" : card.value}
                   </h3>
 
-                  <p className="mt-2 text-[11px] text-gray-400">
-                    {card.note}
-                  </p>
+                  <p className="mt-2 text-[11px] text-gray-400">{card.note}</p>
                 </div>
               );
             })}
@@ -353,75 +267,54 @@ export default function OrdersPage() {
           {/* Orders table */}
           <section className="overflow-hidden rounded-xl border border-[#E8EBE6] bg-white">
             {/* Table heading */}
-            <div className="flex items-center justify-between p-6">
-              <div>
-                <h2 className="text-[15px] font-bold text-[#17251E]">
-                  Customer Orders
-                </h2>
-
-                <p className="mt-1 text-xs text-gray-400">
-                  View and manage incoming customer purchase orders.
-                </p>
-              </div>
-
-              <div className="flex gap-2">
-                <button className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2.5 text-xs font-medium text-gray-600 hover:bg-gray-50">
-                  <Filter size={14} />
-                  Filters
-                </button>
-
-                <button className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2.5 text-xs font-medium text-gray-600 hover:bg-gray-50">
-                  <Download size={14} />
-                  Export
-                </button>
-              </div>
+            <div className="p-6">
+              <h2 className="text-[15px] font-bold text-[#17251E]">Customer Orders</h2>
+              <p className="mt-1 text-xs text-gray-400">
+                View and manage incoming customer purchase orders.
+              </p>
             </div>
 
             {/* Status tabs */}
             <div className="flex gap-6 overflow-x-auto border-b border-gray-100 px-6">
-              {statusOptions.map((status) => {
-                const count =
-                  status === "All Orders"
-                    ? orders.length
-                    : orders.filter((order) => order.status === status).length;
+              <button
+                onClick={() => {
+                  setActiveStatus("ALL");
+                  setPage(1);
+                }}
+                className={`shrink-0 border-b-2 py-4 text-xs font-medium transition ${
+                  activeStatus === "ALL"
+                    ? "border-[#28583F] text-[#28583F]"
+                    : "border-transparent text-gray-400 hover:text-gray-700"
+                }`}
+              >
+                All Orders
+              </button>
 
-                return (
-                  <button
-                    key={status}
-                    onClick={() => setActiveStatus(status)}
-                    className={`flex shrink-0 items-center gap-2 border-b-2 py-4 text-xs font-medium transition ${
-                      activeStatus === status
-                        ? "border-[#28583F] text-[#28583F]"
-                        : "border-transparent text-gray-400 hover:text-gray-700"
-                    }`}
-                  >
-                    {status}
-
-                    <span
-                      className={`rounded-md px-1.5 py-0.5 text-[10px] ${
-                        activeStatus === status
-                          ? "bg-green-50 text-green-700"
-                          : "bg-gray-100 text-gray-500"
-                      }`}
-                    >
-                      {count}
-                    </span>
-                  </button>
-                );
-              })}
+              {ORDER_STATUSES.map((status) => (
+                <button
+                  key={status}
+                  onClick={() => {
+                    setActiveStatus(status);
+                    setPage(1);
+                  }}
+                  className={`shrink-0 border-b-2 py-4 text-xs font-medium transition ${
+                    activeStatus === status
+                      ? "border-[#28583F] text-[#28583F]"
+                      : "border-transparent text-gray-400 hover:text-gray-700"
+                  }`}
+                >
+                  {STATUS_LABELS[status]}
+                </button>
+              ))}
             </div>
 
             {/* Search bar */}
             <div className="flex items-center justify-between gap-4 border-b border-gray-100 px-6 py-4">
               <div className="relative w-full max-w-md">
-                <Search
-                  size={16}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
-                />
-
+                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input
                   type="text"
-                  placeholder="Search by order reference or customer..."
+                  placeholder="Search by order reference, PO reference or customer..."
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
                   className="h-10 w-full rounded-lg border border-gray-200 bg-white pl-9 pr-4 text-xs outline-none transition placeholder:text-gray-400 focus:border-[#7C9D87] focus:ring-2 focus:ring-green-50"
@@ -429,9 +322,16 @@ export default function OrdersPage() {
               </div>
 
               <p className="whitespace-nowrap text-[11px] text-gray-400">
-                {filteredOrders.length} orders found
+                {pagination.totalItems} order{pagination.totalItems === 1 ? "" : "s"} found
               </p>
             </div>
+
+            {loadError && (
+              <div className="flex items-center gap-2 border-b border-red-100 bg-red-50 px-6 py-3 text-xs text-red-700">
+                <AlertCircle size={14} />
+                {loadError}
+              </div>
+            )}
 
             {/* Table */}
             <div className="overflow-x-auto">
@@ -441,31 +341,24 @@ export default function OrdersPage() {
                     <th className="px-6 py-4 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
                       Order Reference
                     </th>
-
                     <th className="px-6 py-4 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
                       Customer
                     </th>
-
                     <th className="px-6 py-4 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
                       Source
                     </th>
-
                     <th className="px-6 py-4 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
                       Order Date
                     </th>
-
                     <th className="px-6 py-4 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
                       Delivery
                     </th>
-
                     <th className="px-6 py-4 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
                       Amount
                     </th>
-
                     <th className="px-6 py-4 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
                       Status
                     </th>
-
                     <th className="px-6 py-4 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
                       Action
                     </th>
@@ -473,91 +366,93 @@ export default function OrdersPage() {
                 </thead>
 
                 <tbody>
-                  {filteredOrders.map((order) => (
-                    <tr
-                      key={order.reference}
-                      className="border-b border-gray-50 transition hover:bg-gray-50/70"
-                    >
-                      <td className="whitespace-nowrap px-6 py-4">
-                        <Link
-                          href={`/orders/${order.reference}`}
-                          className="text-xs font-semibold text-[#28583F] transition hover:text-[#6A8D43] hover:underline"
-                        >
-                          {order.reference}
-                        </Link>
-
-                        <p className="mt-1 text-[10px] text-gray-400">
-                          {order.items} line items
-                        </p>
-                      </td>
-
-                      <td className="whitespace-nowrap px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          <div
-                            className={`flex h-8 w-8 items-center justify-center rounded-lg text-[10px] font-bold ${order.avatar}`}
-                          >
-                            {order.initials}
-                          </div>
-
-                          <p className="text-xs font-medium text-gray-700">
-                            {order.customer}
-                          </p>
+                  {loading && (
+                    <tr>
+                      <td colSpan={8} className="px-6 py-16 text-center">
+                        <div className="flex flex-col items-center gap-2 text-gray-400">
+                          <Loader2 size={22} className="animate-spin" />
+                          <p className="text-xs">Loading orders...</p>
                         </div>
-                      </td>
-
-                      <td className="whitespace-nowrap px-6 py-4">
-                        <div className="flex items-center gap-2 text-xs text-gray-500">
-                          <SourceIcon source={order.source} />
-                          {order.source}
-                        </div>
-                      </td>
-
-                      <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-500">
-                        {order.orderDate}
-                      </td>
-
-                      <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-500">
-                        {order.deliveryDate}
-                      </td>
-
-                      <td className="whitespace-nowrap px-6 py-4 text-xs font-semibold text-gray-700">
-                        ${order.amount.toLocaleString("en-US", {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}
-                      </td>
-
-                      <td className="whitespace-nowrap px-6 py-4">
-                        <span
-                          className={`rounded-full px-2.5 py-1.5 text-[10px] font-semibold ${statusStyles[order.status]}`}
-                        >
-                          {order.status}
-                        </span>
-                      </td>
-
-                      <td className="px-6 py-4">
-                        <Link
-                          href={`/orders/${order.reference}`}
-                          title={`View ${order.reference}`}
-                          aria-label={`View order ${order.reference}`}
-                          className="inline-flex text-gray-400 transition hover:text-[#28583F]"
-                        >
-                          <Eye size={17} />
-                        </Link>
                       </td>
                     </tr>
-                  ))}
+                  )}
 
-                  {filteredOrders.length === 0 && (
+                  {!loading &&
+                    orders.map((order) => {
+                      const customerName = order.customer?.name ?? "Unknown customer";
+                      return (
+                        <tr key={order.id} className="border-b border-gray-50 transition hover:bg-gray-50/70">
+                          <td className="whitespace-nowrap px-6 py-4">
+                            <Link
+                              href={`/orders/${order.id}`}
+                              className="text-xs font-semibold text-[#28583F] transition hover:text-[#6A8D43] hover:underline"
+                            >
+                              {order.reference}
+                            </Link>
+                            <p className="mt-1 text-[10px] text-gray-400">
+                              {order.lineCount} line item{order.lineCount === 1 ? "" : "s"}
+                              {order.isDemo && " · Demo"}
+                            </p>
+                          </td>
+
+                          <td className="whitespace-nowrap px-6 py-4">
+                            <div className="flex items-center gap-3">
+                              <div
+                                className={`flex h-8 w-8 items-center justify-center rounded-lg text-[10px] font-bold ${avatarColorFor(customerName)}`}
+                              >
+                                {initialsFor(customerName)}
+                              </div>
+                              <p className="text-xs font-medium text-gray-700">{customerName}</p>
+                            </div>
+                          </td>
+
+                          <td className="whitespace-nowrap px-6 py-4">
+                            <div className="flex items-center gap-2 text-xs text-gray-500">
+                              <SourceIcon source={order.source} />
+                              {orderSourceLabel(order.source)}
+                            </div>
+                          </td>
+
+                          <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-500">
+                            {formatDate(order.orderDate)}
+                          </td>
+
+                          <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-500">
+                            {formatDate(order.requestedDeliveryDate)}
+                          </td>
+
+                          <td className="whitespace-nowrap px-6 py-4 text-xs font-semibold text-gray-700">
+                            {formatAmount(order.total, order.currency)}
+                          </td>
+
+                          <td className="whitespace-nowrap px-6 py-4">
+                            <span
+                              className={`rounded-full px-2.5 py-1.5 text-[10px] font-semibold ${STATUS_STYLES[order.status]}`}
+                            >
+                              {STATUS_LABELS[order.status]}
+                            </span>
+                          </td>
+
+                          <td className="px-6 py-4">
+                            <Link
+                              href={`/orders/${order.id}`}
+                              title={`View ${order.reference}`}
+                              aria-label={`View order ${order.reference}`}
+                              className="inline-flex text-gray-400 transition hover:text-[#28583F]"
+                            >
+                              <Eye size={17} />
+                            </Link>
+                          </td>
+                        </tr>
+                      );
+                    })}
+
+                  {!loading && !loadError && orders.length === 0 && (
                     <tr>
                       <td colSpan={8} className="px-6 py-16 text-center">
                         <div className="flex flex-col items-center">
                           <Search size={25} className="text-gray-300" />
-
-                          <p className="mt-3 text-sm font-semibold text-gray-600">
-                            No orders found
-                          </p>
-
+                          <p className="mt-3 text-sm font-semibold text-gray-600">No orders found</p>
                           <p className="mt-1 text-xs text-gray-400">
                             Try changing your search or status filter.
                           </p>
@@ -572,19 +467,27 @@ export default function OrdersPage() {
             {/* Table footer */}
             <div className="flex items-center justify-between border-t border-gray-100 px-6 py-4">
               <p className="text-[11px] text-gray-400">
-                Showing {filteredOrders.length} of {orders.length} orders
+                Page {pagination.page} of {pagination.totalPages} · {pagination.totalItems} total
               </p>
 
               <div className="flex items-center gap-2">
-                <button className="rounded-lg border border-gray-200 px-3 py-2 text-[11px] text-gray-400">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={pagination.page <= 1}
+                  className="rounded-lg border border-gray-200 px-3 py-2 text-[11px] text-gray-500 disabled:cursor-not-allowed disabled:text-gray-300"
+                >
                   Previous
                 </button>
 
-                <button className="rounded-lg bg-[#173D2E] px-3 py-2 text-[11px] font-semibold text-white">
-                  1
-                </button>
+                <span className="rounded-lg bg-[#173D2E] px-3 py-2 text-[11px] font-semibold text-white">
+                  {pagination.page}
+                </span>
 
-                <button className="rounded-lg border border-gray-200 px-3 py-2 text-[11px] text-gray-500">
+                <button
+                  onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))}
+                  disabled={pagination.page >= pagination.totalPages}
+                  className="rounded-lg border border-gray-200 px-3 py-2 text-[11px] text-gray-500 disabled:cursor-not-allowed disabled:text-gray-300"
+                >
                   Next
                 </button>
               </div>

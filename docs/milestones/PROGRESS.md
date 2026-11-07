@@ -1,10 +1,18 @@
 # Milestone 0 — Progress
 
-Status: **built, locally verified as far as this build sandbox allows**. Two
-sandbox-only blockers (detailed below) mean the final verification step —
-running the app end-to-end against a real database with a real generated
-Prisma client — has to happen on your machine. Everything that *could* be
-verified here was actually run, not assumed.
+Status: **built, and now verified against two real-machine runs** (your
+`git status`/`npm test`/`tsc`/`lint`/`build` output, Node confirmed
+**v20.20.2**). The first run found real issues — all fixed, see "Milestone 0
+fix" below. The second run, against that fix, came back **fully clean on
+`tsc`/`lint`/`npm test` (69/69)** and found exactly one more real,
+previously-unknown bug — a `crypto.randomUUID()` prerender error in
+`app/orders/new/page.tsx` — now also fixed. See "Milestone 0 fix round 2"
+below, including an important correction to this document's own earlier
+"Compiled successfully" claim. One sandbox-only blocker remains for
+everything in this repo that depends on a real generated Prisma client
+(detailed below), and it turns out to be harder than first described —
+see that section for why the sandbox can never reach the build's
+static-generation phase at all, by any workaround tried.
 
 ## Scope delivered (per your "Approved with changes" instruction)
 
@@ -14,13 +22,15 @@ verified here was actually run, not assumed.
   administrator-only. Workspace/Processing/Notifications panels are
   unchanged prototype, as approved.
 - Stock and Reports: **untouched**, still visibly labelled demo/prototype.
-- Orders UI (`/orders`, `/orders/[id]`, `/orders/new`): **untouched** —
-  your approved scope line only covers dashboard/settings/stock/reports, so
-  the elaborate existing verification/approval UI there was deliberately
-  left alone. The *backend* Order APIs were built (`/api/orders`,
-  `/api/orders/[id]`, `/api/orders/[id]/documents`) since nothing in your
-  scope line excluded them and the dashboard counts depend on real order
-  rows existing.
+- Orders UI (`/orders`, `/orders/[id]`, `/orders/new`): wired to the real
+  Order APIs in the "Milestone 0 fix" round below, per your explicit
+  instruction — real list/detail/create, a real order-lines editor, and
+  real PO file upload. The fake verification/pricing/approval workflow that
+  used to live on the detail page (no backing API this milestone —
+  `ProductVerification`/`PriceDecision`/`OrderApproval` have no routes yet)
+  was removed and replaced with an honest "not built yet" notice rather
+  than left as non-functional interactive UI. See CHANGES.md for the
+  per-file detail.
 - `isDemo: false` by default on every model that gets seeded data
   (`User`, `Customer`, `CustomerLocation`, `Product`, `CustomerOrder`,
   `OrderLine`); every seeded row is `isDemo: true`; real reports/queries
@@ -45,95 +55,157 @@ verified here was actually run, not assumed.
 
 ## Build / lint / typecheck / test results — reported honestly
 
-### Tests: `npm test` (Vitest)
+This section now covers three runs: what your first real-machine run
+confirmed or contradicted, the sandbox results after that fix round, and
+what your second real-machine run (against that fix) confirmed, contradicted,
+and found newly.
+
+### What your second real run confirmed vs. contradicted
+
+- **`tsc`: confirmed. 0 errors.** Matches this document's prediction exactly.
+- **`lint`: confirmed.** Clean except the one pre-existing,
+  untouched-this-milestone error in `app/products/import/page.tsx`.
+- **`npm test`: confirmed. 69/69 passing** — `http` (20),
+  `order-validation` (12), `csrf` (7), `rate-limit` (8), `content-sniff`
+  (12), `password` (10). Confirms the vitest downgrade, the rewritten test
+  file, and the `testTimeout` fix all hold up for real.
+- **`build`: a genuine miss, caught and fixed.** Reached further than any
+  previous run — past "Compiled successfully", past the TypeScript phase,
+  into "Generating static pages" — and failed there with a
+  `crypto.randomUUID()` prerender error in `app/orders/new/page.tsx`. Fixed
+  this round; see CHANGES.md item 9. This is also the occasion for a
+  correction to this document's own previous claim — see "Sandbox-only
+  blocker" below, which now describes a harder limit than previously stated.
+- **One transient infrastructure note, not a code issue**: `npx prisma
+  migrate deploy` hit `P1001: Can't reach database server` against your
+  Neon database, then `npx prisma migrate status` succeeded moments later.
+  Reads as a one-off network/cold-start blip, not something this delivery
+  changed anything for. Flagging it rather than staying silent, per usual
+  practice here, not because it's believed to be a real problem.
+
+### What your real run confirmed vs. contradicted
+
+- **`tsc`: confirmed.** You saw 0 real errors once `prisma generate` ran —
+  exactly matching this document's prediction that the (then) 51 sandbox
+  errors were 100% attributable to the Prisma stub and would resolve
+  themselves on a real machine.
+- **`lint`: confirmed.** Your output matched the pre-existing error list
+  this document predicted, same files, same lines.
+- **`build`: partially confirmed, partially a genuine miss.** The Google
+  Fonts block was correctly sandbox-only, as predicted. But the build then
+  surfaced **two real, previously-unknown problems** that the sandbox could
+  never have caught — the font block itself prevented the sandbox's build
+  from ever reaching the page-data-collection/static-generation phase where
+  they occur, even with the diagnostic font-swap experiment, which only got
+  as far as the Prisma-stub wall. Both are now fixed — see "Milestone 0
+  fix" below for the detail, including a first attempt at one of them that
+  was itself wrong and caught before delivery.
+- **`npm test`/Vitest: a genuine mistake on my part, not a sandbox
+  limitation.** Vitest 5.1.0 was never going to run on your Node 20.20.2 —
+  it requires Node 22.12+/24+/26+. This masked a real test bug and a real
+  (if minor) test-timing gap behind a reporter crash instead of showing
+  them plainly. This is on me, not the sandbox (which runs Node 22 and
+  never would have hit this). Fixed — see below.
+
+### Tests: `npm test` (Vitest), after the fix round
 
 ```
 Test Files  1 failed | 5 passed (6)
      Tests  57 passed (57)
 ```
 
-57 real tests pass across 5 files (`csrf`, `password`, `rate-limit`,
-`content-sniff`, `http`) — all pure-function tests with no database
-dependency. The one failing file (`order-validation.test.ts`) fails to even
-**import**, for a reason that's a sandbox limitation, not a code defect —
-see "Sandbox-only blockers" below.
+Same shape as before, now on `vitest@4.1.12` (Node-20-compatible) instead of
+the broken `5.1.0`. 57 real tests pass across 5 files; `order-validation.test.ts`
+still fails to **import** here, for the same sandbox-only reason (below) —
+it now has 12 tests (rewritten from 2, see CHANGES.md), so the real total on
+your machine is **69**, not 59. See CHANGES.md's "Test count, reconciled"
+section for the exact arithmetic.
 
-Any test that would need an actual `PrismaClient` instance (session
-creation, login, user/order creation end-to-end, the authz 403 paths, the
-idempotency race, a real seed/remove-demo round-trip) could not be written
-*and run* here — writing them against a client that cannot be constructed
-in this sandbox would only prove they compile, not that they pass. They are
-not in this zip. **This is the one piece of Milestone 0 that still needs
-doing on your machine**: once `prisma generate` succeeds there, I'd
-recommend adding integration tests for at minimum: login happy path +
-wrong-password + rate-limit-triggered; a 403 from a non-admin hitting
-`POST /api/users`; the idempotency-key race (two near-simultaneous
-identical order submissions); and a seed → remove-demo round trip that
-asserts zero rows remain.
+Any test needing a real `PrismaClient` instance is still not in this zip,
+for the same reason as before — see "Open items" below for the same
+recommended list, unchanged.
 
 ### Lint: `npm run lint`
 
-Clean in everything touched this milestone. 7 errors / 5 warnings remain,
-all in three files that are **outside this milestone's scope and were not
-modified**: `app/orders/[id]/page.tsx`, `app/orders/new/page.tsx`,
-`app/products/import/page.tsx` (unescaped apostrophes, a few unused
-lucide-react icon imports, one `any`). Pre-existing in the prototype code,
-not introduced here. One real lint error *was* found and fixed in code
-this milestone touched — see CHANGES.md ("Issues found and fixed", #4).
+Clean in everything touched this round. The pre-existing `app/orders/[id]/page.tsx`
+and `app/orders/new/page.tsx` lint errors mentioned in the original version
+of this document no longer apply — both files were rewritten this round and
+are now clean. Four **new** real lint errors (`react-hooks/set-state-in-effect`)
+were introduced while writing the new orders pages, caught by running
+`npm run lint` before delivery, and fixed — see CHANGES.md, "Milestone 0
+fix", item 7. One pre-existing error remains, in a file this round did not
+touch: `app/products/import/page.tsx` (one `@typescript-eslint/no-explicit-any`).
 
 ### Type check: `tsc --noEmit`
 
-51 errors, all attributable to a single root cause: `@prisma/client`
-exists in this sandbox only as a stub (see "Sandbox-only blockers"). I
-checked this by category, not by assumption — every error is either
-"has no exported member" on a schema-derived enum/namespace type
-(`OrderSource`, `UserRole`, `Prisma.CustomerSelect`,
-`Prisma.PrismaClientKnownRequestError`, `Prisma.Decimal`, ...) or an
-implicit-`any` on a Prisma transaction callback parameter (`tx`), and the
-exact same two categories occur identically in files I never touched
-(`lib/customer-queries.ts`, `lib/locations.ts`, `lib/product-queries.ts`).
-Zero errors in any file this milestone added or modified for any other
-reason. Resolves itself once `prisma generate` runs successfully against
-your real database.
+55 errors (up from 51) — all still the one root cause: `@prisma/client`
+exists in this sandbox only as a stub (see "Sandbox-only blocker" below).
+The 4 new ones are in the rewritten `app/orders/[id]/page.tsx`
+(implicit-`any` on `.map()` callback parameters whose element type comes
+from `getOrderById()`'s Prisma-derived return type) — the exact same
+category already present in `lib/order-queries.ts` itself for the same
+fields. Zero errors in any file this round touched for any other reason.
 
 ### Build: `npm run build`
 
-Fails in this sandbox for **two independent, sandbox-only reasons** — both
-confirmed by direct experiment, not assumed:
+Still blocked by the sandbox's Google Fonts network block, as before — but
+with that worked around (the same diagnostic font-swap, reverted before
+delivery; `app/layout.tsx` is byte-identical to before the experiment),
+**Turbopack now reports "Compiled successfully"**, with the build failing
+only at the TypeScript check phase, on the same 55-error Prisma-stub set
+above. Both real, previously-unknown build errors this fix round found
+(the health-check route, and the `/orders/[id]` Suspense error) are
+confirmed gone at the compile stage — see CHANGES.md for the detail,
+including a first fix attempt that was wrong and was caught before
+delivery by actually running the build against it.
 
-1. `next/font/google` (used by the pre-existing `app/layout.tsx` for Geist)
-   tries to fetch font files from `fonts.googleapis.com` at build time;
-   this sandbox's network allowlist blocks that host. On your machine, with
-   normal internet access, this is a non-issue.
-2. I confirmed what happens *after* that, by temporarily swapping the font
-   import for a local stand-in, running the build again, and reverting the
-   swap before packaging (the shipped `app/layout.tsx` is byte-identical to
-   before this experiment). With the font issue out of the way, Turbopack
-   compiled successfully and the build then failed at the TypeScript check
-   phase with the exact same 51-error set as `tsc --noEmit` above — same
-   root cause, same conclusion: this resolves once a real Prisma client is
-   generated on your machine.
+## Sandbox-only blocker (will not occur on your machine)
 
-**Bottom line**: nothing here points to a build failure on your real
-machine. Both blockers are specific to what this sandbox can reach
-(binaries.prisma.sh and fonts.googleapis.com are both outside its network
-allowlist), not to anything wrong with the code.
+**Prisma client could not be generated here.** `prisma generate` needs
+`binaries.prisma.sh`, which this sandbox's network allowlist blocks. The
+`@prisma/client` stub that ships without it only exports a `PrismaClient`
+class that throws if constructed, and a minimal `Prisma` object with no
+schema-derived enums or namespace types. This is the single root cause
+behind every `tsc` error, the TypeScript-check build failure, and the one
+test file that fails to import. **Now confirmed resolved on your machine for
+`tsc`, `lint`, and `npm test`** (your second real run: 0 tsc errors, lint
+clean, 69/69 tests) — the one remaining unconfirmed piece is the build's
+later phases, addressed below.
 
-## Sandbox-only blockers (will not occur on your machine)
+**Correction, made honestly rather than quietly:** this document previously
+said the build was "still blocked by the sandbox's Google Fonts network
+block... with that worked around, Turbopack now reports 'Compiled
+successfully'" and presented that as meaningful build verification. That
+undersold how little it actually proved. "Compiled successfully" is
+Turbopack's bundling stage — it says nothing about the later "Generating
+static pages" (prerendering) stage, which is exactly where this round's
+real `crypto.randomUUID()` bug lived (see CHANGES.md item 9), and which the
+sandbox has now been confirmed, not just suspected, to be unable to reach
+**at all**, through two different diagnostic workarounds:
 
-1. **Prisma client could not be generated here.** `prisma generate` needs
-   `binaries.prisma.sh`, which this sandbox's network allowlist blocks. The
-   `@prisma/client` stub that ships without it only exports a `PrismaClient`
-   class that throws if constructed, and a minimal `Prisma` object with no
-   schema-derived enums or namespace types. This is the single root cause
-   behind every `tsc` error, the build failure, and the one test file that
-   fails to import. Run `npx prisma generate` (or let `npm run db:seed`
-   trigger it automatically, if you have that configured) on your machine
-   before anything else.
-2. **Google Fonts could not be fetched here**, blocking `next build` before
-   it even reached the Prisma issue above. Not something to fix in code —
-   confirmed independent of the Prisma issue by the experiment described
-   above.
+1. Font block worked around (as before) → build proceeds to the TypeScript
+   phase, then stops on the same Prisma-stub `tsc` errors reported above.
+2. Stacking a second workaround on top (`typescript.ignoreBuildErrors: true`
+   in `next.config.ts`, tried only as a diagnostic and reverted — never
+   shipped, since silently hiding real type errors would be worse than the
+   problem it works around) gets past that wall, but immediately hits a
+   harder one in "Collecting page data": the `@prisma/client` stub doesn't
+   just fail type-checking, it **throws when actually constructed**
+   (`new PrismaClient()`, in `lib/prisma.ts`), and nearly every API route
+   constructs it at module scope. There is no further workaround for that
+   short of generating a real Prisma client, which this sandbox cannot do.
+
+So: no claim in this document, past or future, about the build's
+static-generation/prerendering phase should be read as sandbox-verified.
+What *is* verified in-sandbox is Turbopack's compile stage, `tsc` standalone,
+`lint`, and `vitest` — all of which were actually run against this round's
+fix with zero regressions. Whether `/orders/new` passes "Generating static
+pages" can only be confirmed by your next real `npm run build`.
+
+The Google Fonts block is a separate, independent sandbox-only limitation —
+not something to fix in code, and already confirmed irrelevant on your
+machine (your build reached the font step and every error beyond it, real
+or sandbox-only, without issue from fonts specifically).
 
 ## Open items — not resolved, deliberately
 
@@ -142,14 +214,14 @@ allowlist), not to anything wrong with the code.
   invoicing, regardless of anything in any source document that might
   otherwise suggest it. `OrderLine.requestedQuantity` is keyed as entered;
   nothing in this milestone resolves or assumes an answer either way.
-- **Your real Node.js version is still unconfirmed.** Asked twice already
-  with no answer yet. This build was developed and tested against Node
-  v22.23.4. Next.js 16.4.4 itself requires **Node >= 20.9.0** — I've pinned
-  that as `engines.node` in `package.json` so `npm install`/`npm run`
-  will warn (and most CI will fail loudly) if your machine is below it,
-  rather than failing confusingly later. Please confirm your actual
-  version; if it's below 20.9.0 it needs upgrading regardless of anything
-  else in this milestone.
+- **Node version: now confirmed** — v20.20.2, via your `node -v` output.
+  `engines.node: ">=20.9.0"` in `package.json` already covers this.
+- **Product verification, pricing and approval are not built yet.** The
+  order detail page says this plainly now (see the orders-pages table in
+  CHANGES.md) instead of showing non-functional interactive UI for it.
+  `ProductVerification`/`PriceDecision`/`OrderApproval` exist in the schema
+  with no API routes — flagging this as the next real piece of order
+  workflow, not assuming it's covered.
 - **`awaitingFulfilment` in the dashboard counts is a best-effort mapping**,
   not a confirmed business definition: `getDashboardOrderCounts()` counts
   orders where `status = APPROVED AND handedToSapAt IS NULL`, because the
@@ -163,3 +235,14 @@ allowlist), not to anything wrong with the code.
 - **Integration tests against a real database are not in this zip** — see
   "Tests" above for exactly which ones I'd recommend adding first once
   `prisma generate` works on your machine.
+- **`npm run build`'s static-generation phase is still not sandbox-verified
+  for `/orders/new` (or anything else).** The `crypto.randomUUID()` fix this
+  round follows Next's own documented pattern exactly and is confirmed clean
+  by `tsc`/`lint`/`vitest`, but — as explained in "Sandbox-only blocker"
+  above — this sandbox cannot reach that build phase at all, by any
+  workaround tried. Your next real `npm run build` is what actually confirms
+  this fix, not anything in this zip.
+- **The transient Neon `P1001` error** seen during `prisma migrate deploy`
+  self-resolved on your immediate retry (`migrate status` succeeded).
+  Flagged, not acted on — nothing here suggests it's a recurring problem,
+  but worth a second look if it happens again without clearing up.
