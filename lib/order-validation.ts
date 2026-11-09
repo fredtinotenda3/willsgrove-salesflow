@@ -1,6 +1,26 @@
 import { z } from "zod";
-import { OrderSource } from "@prisma/client";
 import { isValidDateOnlyString } from "@/lib/dates";
+
+// Milestone 2B. The public /api/orders create-order endpoint is manual
+// order entry by a human -- EMAIL/WHATSAPP/MANUAL are the only sources
+// that have ever meant "a person is typing this order in," and that
+// stays true now that OrderSource (prisma/schema.prisma) also has
+// PDF/IMAGE/EXCEL/CSV for Milestone 2A/2B's document-intake flow. Those
+// four are set only by lib/review/confirm-review.ts, from a reviewed
+// OrderDocument, never from a raw client payload to this endpoint -- so
+// this schema deliberately validates against this fixed three-value
+// tuple, not the full live OrderSource enum, as a real least-privilege
+// tightening (OWASP input validation: accept only the values a given
+// endpoint actually has a legitimate reason to receive), not merely a
+// convenience. A prior version used `z.nativeEnum(OrderSource)`, which
+// (a) would have let a client successfully claim `source: "EXCEL"`
+// through manual entry, and (b) needed `OrderSource` imported as a
+// runtime value from `@prisma/client` purely to build this validator --
+// the same category of unnecessary coupling to the generated client that
+// Milestone 2A's router.ts/po-intake.ts were deliberately written to
+// avoid. Fixed here instead of merely worked around: this validator has
+// no genuine need to depend on the full live enum at all.
+const MANUAL_ENTRY_ORDER_SOURCES = ["EMAIL", "WHATSAPP", "MANUAL"] as const;
 
 /**
  * Decimal-as-string pattern for every money/quantity field: the project
@@ -9,13 +29,16 @@ import { isValidDateOnlyString } from "@/lib/dates";
  * string and only ever converted via Prisma.Decimal, never Number(), at the
  * point of use in lib/orders.ts.
  */
-const decimalString = z
+// Exported (not just module-local) so lib/review/confirm-review-validation.ts
+// (Milestone 2B) reuses exactly these, rather than a second, drift-prone
+// copy of the same regex/rules.
+export const decimalString = z
   .string()
   .trim()
   .regex(/^\d{1,14}(\.\d{1,4})?$/, "Must be a positive decimal number with up to 4 decimal places.")
   .refine((value) => Number(value) > 0, "Must be greater than zero.");
 
-const optionalDecimalString = z
+export const optionalDecimalString = z
   .string()
   .trim()
   .regex(/^\d{1,14}(\.\d{1,4})?$/, "Must be a positive decimal number with up to 4 decimal places.")
@@ -33,7 +56,7 @@ const optionalDecimalString = z
  * converting to a real Date happens in lib/orders.ts, at the one place
  * that value actually reaches Prisma, not here.
  */
-const dateOnlyString = z
+export const dateOnlyString = z
   .string()
   .trim()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be a date in YYYY-MM-DD format.")
@@ -71,7 +94,7 @@ export const createOrderSchema = z.object({
   customerId: z.string().trim().min(1, "Customer is required.").max(64),
   customerLocationId: z.string().trim().min(1).max(64).nullable().optional(),
   customerPoReference: z.string().trim().max(100).nullable().optional(),
-  source: z.nativeEnum(OrderSource, { message: "source must be EMAIL, WHATSAPP or MANUAL." }),
+  source: z.enum(MANUAL_ENTRY_ORDER_SOURCES, { message: "source must be EMAIL, WHATSAPP or MANUAL." }),
   orderDate: dateOnlyString,
   requestedDeliveryDate: dateOnlyString,
   deliveryAddress: z.string().trim().max(500).nullable().optional(),

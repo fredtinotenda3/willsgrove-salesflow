@@ -1,13 +1,18 @@
 import { describe, it, expect } from "vitest";
 import { createOrderSchema, orderLineInputSchema } from "@/lib/order-validation";
 
-// NOTE: this file imports `OrderSource` from `@prisma/client` as a runtime
-// value (for `z.nativeEnum(OrderSource)`). In the build sandbox used to
-// develop this milestone, `@prisma/client` is only a stub (the real client
-// could never be generated there -- see PROGRESS.md) and does not export
-// schema-derived enums at all, so this file fails to even import there.
-// On a real machine, once `prisma generate` has run, it imports and runs
-// normally -- confirmed: this is the behavior these tests describe.
+// Milestone 2B update: this file previously could not even be imported in
+// the build sandbox, because lib/order-validation.ts used to import
+// `OrderSource` from `@prisma/client` as a runtime value (for
+// `z.nativeEnum(OrderSource)`), and this sandbox's stub `@prisma/client`
+// exports every schema-derived enum as `undefined` (see PROGRESS.md's
+// "Sandbox-only blocker"). That dependency was removed as part of a real
+// correctness tightening (see lib/order-validation.ts's own comment on
+// MANUAL_ENTRY_ORDER_SOURCES): the public create-order endpoint only ever
+// needs to accept EMAIL/WHATSAPP/MANUAL, so the schema now validates
+// against a plain literal tuple instead of the full live enum, needing no
+// runtime import of the Prisma client at all. This file now runs
+// identically in the sandbox and on a real machine.
 
 describe("createOrderSchema", () => {
   it("validates a well-formed order payload", () => {

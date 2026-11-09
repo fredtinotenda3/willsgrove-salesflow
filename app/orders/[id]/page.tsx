@@ -33,7 +33,9 @@ import {
   Phone,
   Clock3,
   AlertTriangle,
+  RotateCcw,
 } from "lucide-react";
+import HandoverPanel from "./handover-panel";
 
 // Same Cache Components escape hatch already used on the dashboard
 // (app/page.tsx) and for the same reason: this page reads the current
@@ -111,11 +113,24 @@ export default async function OrderDetailPage({ params }: RouteParams) {
               </p>
             </div>
 
-            <div className="rounded-xl border border-[#E8EBE6] bg-white px-5 py-4 text-right">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Order Total</p>
-              <p className="mt-1 text-xl font-bold text-[#17251E]">
-                {formatOrderAmount(order.total, order.currency)}
-              </p>
+            <div className="flex items-start gap-3">
+              {/* Milestone 2C: one-click re-order -- pre-fills a NEW
+                  manual order with this order's lines/quantities for a
+                  human to review and submit; nothing is created yet. */}
+              <Link
+                href={`/orders/new?repeatFrom=${order.id}`}
+                className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-xs font-semibold text-gray-600 transition hover:bg-gray-50"
+              >
+                <RotateCcw size={14} />
+                Repeat this order
+              </Link>
+
+              <div className="rounded-xl border border-[#E8EBE6] bg-white px-5 py-4 text-right">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Order Total</p>
+                <p className="mt-1 text-xl font-bold text-[#17251E]">
+                  {formatOrderAmount(order.total, order.currency)}
+                </p>
+              </div>
             </div>
           </section>
 
@@ -433,6 +448,9 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                   )}
                 </dl>
               </section>
+
+              {/* Milestone 2C: manual, per-order SAP handover generation */}
+              <HandoverPanel orderId={order.id} />
 
               {/* Internal notes */}
               {order.internalNotes && (

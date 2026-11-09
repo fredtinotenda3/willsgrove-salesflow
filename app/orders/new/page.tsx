@@ -177,6 +177,15 @@ export default function NewOrderPage() {
   const [createdOrder, setCreatedOrder] = useState<{ id: string; reference: string } | null>(null);
   const [documentUploads, setDocumentUploads] = useState<DocumentUploadState[]>([]);
 
+  // Milestone 2C: one-click re-order. repeatBannerText/repeatLoadError are
+  // purely informational (the staff member still reviews and submits
+  // manually -- nothing is created by loading this page). pendingRepeatLocationIdRef
+  // is consumed by the locations-loading effect below, not read directly here.
+  const [repeatBannerText, setRepeatBannerText] = useState<string | null>(null);
+  const [repeatLoadError, setRepeatLoadError] = useState<string | null>(null);
+  const repeatFromAppliedRef = useRef(false);
+  const pendingRepeatLocationIdRef = useRef<string | null>(null);
+
   // Debounced customer search. Nothing is reset synchronously when the
   // query is empty -- the results dropdown's own JSX guard
   // (`customerQuery.trim() !== ""`) already hides stale results, so no
@@ -222,8 +231,17 @@ export default function NewOrderPage() {
             (loc: CustomerLocation) => loc.isActive
           );
           setLocations(activeLocations);
+          // Milestone 2C: one-click re-order. Prefer the ORIGINAL order's
+          // own location (if it's still an active location for this
+          // customer) over this effect's own default-location fallback.
+          // Consumed (and cleared) here exactly once per customer
+          // selection, so picking a different customer afterwards falls
+          // back to today's plain default-location behavior unchanged.
+          const pendingLocationId = pendingRepeatLocationIdRef.current;
+          pendingRepeatLocationIdRef.current = null;
+          const pendingLocation = pendingLocationId ? activeLocations.find((loc) => loc.id === pendingLocationId) : undefined;
           const defaultLocation = activeLocations.find((loc) => loc.isDefault);
-          setCustomerLocationId(defaultLocation?.id ?? "");
+          setCustomerLocationId(pendingLocation?.id ?? defaultLocation?.id ?? "");
         }
       })
       .catch(() => {
@@ -237,6 +255,106 @@ export default function NewOrderPage() {
       ignore = true;
     };
   }, [selectedCustomer]);
+
+  // Milestone 2C: one-click re-order. Reads `?repeatFrom=<orderId>` via
+  // window.location.search directly (NOT Next's useSearchParams() hook)
+  // to sidestep that hook's Suspense-boundary requirement entirely on
+  // this already-"use client" page -- same prerender-safety reasoning as
+  // the crypto.randomUUID() comments elsewhere in this file: this effect
+  // only ever runs client-side, after the real request.
+  useEffect(() => {
+    if (repeatFromAppliedRef.current) return;
+    repeatFromAppliedRef.current = true;
+
+    const repeatFrom = new URLSearchParams(window.location.search).get("repeatFrom");
+    if (!repeatFrom) return;
+
+    let ignore = false;
+    (async () => {
+      try {
+        const orderResponse = await fetch(`/api/orders/${repeatFrom}`, { cache: "no-store" });
+        const orderBody = await orderResponse.json();
+        if (ignore) return;
+        if (!orderResponse.ok || !orderBody.success) {
+          setRepeatLoadError(orderBody.message ?? "Could not load that order to repeat it.");
+          return;
+        }
+
+        const original = orderBody.order as {
+          reference: string;
+          deliveryAddress: string | null;
+          customer: { id: string } | null;
+          customerLocation: { id: string } | null;
+          lines: {
+            originalProductDescription: string;
+            productId: string | null;
+            sapItemCodeSnapshot: string | null;
+            requestedQuantity: string;
+            requestedUnitCode: string;
+            customerUnitPrice: string | null;
+          }[];
+        };
+
+        if (!original.customer) {
+          setRepeatLoadError("That order has no customer on file and can't be repeated.");
+          return;
+        }
+
+        const customerResponse = await fetch(`/api/customers/${original.customer.id}`, { cache: "no-store" });
+        const customerBody = await customerResponse.json();
+        if (ignore) return;
+        if (!customerResponse.ok || !customerBody.success) {
+          setRepeatLoadError("Could not load the customer for that order.");
+          return;
+        }
+        const customerData = customerBody.customer as { id: string; name: string; sapCustomerCode: string | null };
+
+        setSource("MANUAL");
+        setSelectedCustomer({
+          id: customerData.id,
+          name: customerData.name,
+          sapCustomerCode: customerData.sapCustomerCode,
+          primaryLocation: null,
+        });
+        // Consumed by the locations-loading effect above, once that
+        // effect's own fetch (triggered by setSelectedCustomer above)
+        // resolves -- never read directly in this effect.
+        pendingRepeatLocationIdRef.current = original.customerLocation?.id ?? null;
+        setDeliveryAddress(original.deliveryAddress ?? "");
+
+        if (original.lines.length > 0) {
+          setLines(
+            original.lines.map((line) => ({
+              ...newLine(),
+              originalProductDescription: line.originalProductDescription,
+              // No single-product-lookup endpoint exists to re-derive the
+              // product's display name from just a productId -- the SAP
+              // item code snapshot is the pragmatic placeholder shown in
+              // the search box; the human reviews/re-searches as needed.
+              productQuery: line.sapItemCodeSnapshot ?? "",
+              productId: line.productId,
+              sapItemCodeSnapshot: line.sapItemCodeSnapshot,
+              requestedQuantity: line.requestedQuantity,
+              requestedUnitCode: line.requestedUnitCode,
+              customerUnitPrice: line.customerUnitPrice ?? "",
+            }))
+          );
+        }
+
+        // customerPoReference/internalNotes/orderDate/requestedDeliveryDate
+        // are deliberately left blank -- per the approved scope, a repeat
+        // order is a fresh order the human re-enters those for, not a
+        // literal clone of the original's paperwork.
+        setRepeatBannerText(`Pre-filled from order ${original.reference} -- review the lines and dates, then submit.`);
+      } catch {
+        if (!ignore) setRepeatLoadError("Could not reach the server to load that order.");
+      }
+    })();
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   function updateLine(key: string, patch: Partial<LineDraft>) {
     setLines((prev) => prev.map((line) => (line.key === key ? { ...line, ...patch } : line)));
@@ -581,6 +699,19 @@ export default function NewOrderPage() {
               Back to Orders
             </Link>
           </div>
+
+          {repeatBannerText && (
+            <div className="flex items-center gap-2 rounded-lg border border-[#D9EFE0] bg-[#F0FBF4] px-4 py-3 text-xs text-[#1F7A43]">
+              <CheckCircle2 size={15} />
+              {repeatBannerText}
+            </div>
+          )}
+          {repeatLoadError && (
+            <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">
+              <AlertCircle size={15} />
+              {repeatLoadError}
+            </div>
+          )}
 
           {formError && (
             <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">

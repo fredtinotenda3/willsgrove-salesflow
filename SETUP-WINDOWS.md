@@ -539,3 +539,444 @@ doesn't think this migration is still pending:
 ```powershell
 npx prisma migrate resolve --rolled-back 20261109090000_add_sap_master_data
 ```
+
+## 12. Milestone 2A: PO intake, document storage, classification, extraction
+
+This migration is purely additive — no column dropped, no table dropped,
+and the two existing `OrderSource` values (`EMAIL`/`WHATSAPP`) and
+`OrderDocument`'s previous columns are untouched. As with Milestone 1, it
+cannot be validated or generated in the build sandbox — run these for real
+on your machine.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_po_intake_extraction
+
+# 2. Regenerate the Prisma client so it knows about the new OrderSource
+#    values, the four new enums, OrderDocument's new columns, and the new
+#    ExtractionRun model
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+```
+
+If `prisma migrate dev` reports schema drift because you've been running
+against the hand-written SQL already, use `migrate deploy` instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Configure the extraction provider
+
+Add to your `.env` (see `.env.example` for the full comment block):
+
+```
+# Leave unset to use the mock provider (works with no API key at all --
+# fine for development and for trying out the intake flow before you have
+# a real key).
+ANTHROPIC_API_KEY=
+# Optional -- defaults to claude-sonnet-5-5 if unset.
+ANTHROPIC_MODEL=
+# Optional -- set to "mock" to force the mock provider even with a real
+# key configured (useful for predictable demos that shouldn't spend a
+# real API call).
+EXTRACTION_PROVIDER=
+```
+
+Nothing else needs configuring for CSV/Excel intake — those never call an
+AI provider regardless of this configuration.
+
+### Manual test script (no coding required)
+
+This covers both the "no API key" path (what you'll see before you have a
+real Anthropic key) and the deterministic Excel/CSV path (which never
+needs one).
+
+1. Leave `ANTHROPIC_API_KEY` unset (or blank) for now. Start the app and
+   open **PO Intake** in the sidebar.
+2. **CSV test**: create a small CSV file (e.g. in Excel, saved as CSV) with
+   columns `Description, Quantity, Unit` and two rows, something like
+   `Baby Marrow 250G Punnet, 10, PNT` and `Tomatoes Box, 5, BOX`. Upload it
+   via the "Upload a file" option. Confirm:
+   - The document appears in the list with status **Extracted**.
+   - Opening it shows an extraction run with provider **DETERMINISTIC**
+     (no AI call was made).
+   - Both lines show the exact description you typed and quantity `10`
+     / `5`, with no price filled in.
+3. **Excel test**: repeat step 2 but save the same two rows as a real
+   `.xlsx` file instead of CSV. Confirm the same result — provider
+   **DETERMINISTIC**, same two lines.
+4. **Pasted WhatsApp text test (mock provider, no key)**: switch to
+   "Paste text", choose **WhatsApp**, and paste something like:
+   ```
+   10 Baby Marrow 250g punnet
+   Tomatoes, usual box please
+   ```
+   Confirm the extraction run shows provider **MOCK**, the first line's
+   quantity is `10`, and the second line's quantity is **blank/null** with
+   a warning shown next to it (it should never guess a number for "usual
+   box please").
+5. **Re-extract**: on any document above, use the re-extract action.
+   Confirm a *second* extraction run appears underneath the first —
+   the original run is never overwritten or removed.
+6. **With a real Anthropic key**: once you have `ANTHROPIC_API_KEY` set,
+   restart the app and upload a real scanned/photographed PO (PDF or
+   JPEG/PNG). Confirm the extraction run shows provider **ANTHROPIC** and
+   a plausible model name, and spot-check that the extracted lines match
+   what's actually on the document — particularly that it never merges
+   two different pack sizes of the same product into one line, and that
+   it leaves quantity/price `null` rather than guessing wherever the
+   document doesn't clearly state one. This step is the one piece of this
+   milestone that could not be verified before reaching your machine —
+   see `docs/milestones/PROGRESS.md`.
+7. The acceptance test for this milestone
+   (`tests/acceptance-po-intake-deterministic.test.ts`) runs
+   unconditionally with no database needed — `npm test` already confirms
+   the CSV/Excel/pasted-text logic above in the sandbox; steps 1–6 are
+   what confirm the actual upload/paste/re-extract flow and a real
+   Anthropic call end to end on your machine.
+
+### 12a. Undoing this migration
+
+**This is destructive** — it drops the new `ExtractionRun` table, the four
+new columns on `OrderDocument`, and the four new enum types, along with
+any data already stored in them. Back up first:
+
+```powershell
+pg_dump -Fc -d <your-database-name> -f backup-before-undo-milestone-2a.dump
+```
+
+```sql
+ALTER TABLE "ExtractionRun" DROP CONSTRAINT "ExtractionRun_documentId_fkey";
+
+DROP INDEX "ExtractionRun_isDemo_idx";
+DROP INDEX "ExtractionRun_status_idx";
+DROP INDEX "ExtractionRun_documentId_idx";
+DROP INDEX "OrderDocument_status_idx";
+DROP INDEX "OrderDocument_documentGroupId_idx";
+
+DROP TABLE "ExtractionRun";
+
+ALTER TABLE "OrderDocument"
+  DROP COLUMN "pageNumber",
+  DROP COLUMN "documentGroupId",
+  DROP COLUMN "status",
+  DROP COLUMN "classification",
+  DROP COLUMN "sourceChannel";
+
+DROP TYPE "ExtractionRunStatus";
+DROP TYPE "ExtractionProvider";
+DROP TYPE "DocumentIntakeStatus";
+DROP TYPE "DocumentClassification";
+```
+
+**`OrderSource`'s four new values (`PDF`/`IMAGE`/`EXCEL`/`CSV`) cannot be
+cleanly dropped** — Postgres has no `ALTER TYPE ... DROP VALUE`. If you
+need to fully reverse this migration including those enum values (rather
+than just leaving the four extra, unused values in place, which is
+harmless), the only way is to recreate the type: create a new
+`OrderSource_old` enum with just `EMAIL`/`WHATSAPP`/`MANUAL`, convert every
+column that uses `OrderSource` (`OrderDocument.sourceChannel` from this
+migration, and `CustomerOrder.source` from Milestone 0) to it, drop the
+current `OrderSource` type, and rename `OrderSource_old` to `OrderSource`
+— and this would also then require this migration's own `ADD COLUMN`
+rollback above to run first (since `OrderDocument.sourceChannel` has to
+exist to be converted, then dropped by the block above). Given how invasive
+that is for a value that costs nothing to simply leave unused, leaving the
+four extra enum values in place is the recommended path for any partial
+rollback.
+
+Apply the reversible part the same way as section 10/11's rollback
+(`psql`, a GUI client, or `npx prisma db execute --file
+.\rollback-milestone-2a.sql --schema prisma/schema.prisma`), then revert
+`prisma/schema.prisma` to remove the same changes and run `npx prisma
+generate` again. Also tell Prisma's migration history about the rollback:
+
+```powershell
+npx prisma migrate resolve --rolled-back 20261109100000_add_po_intake_extraction
+```
+
+## 13. Milestone 2B: matching, aliases, duplicate detection, human review
+
+This migration is purely additive — no column dropped, no table dropped,
+no existing column's type or nullability changed. As with Milestones 1
+and 2A, it cannot be validated or generated in the build sandbox — run
+these for real on your machine.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_matching_review_aliases
+
+# 2. Regenerate the Prisma client so it knows about the new
+#    ExtractedOrderLine/ProductAlias/CustomerAlias models, the two new
+#    enums, and DocumentIntakeStatus's new CONFIRMED value
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+```
+
+If `prisma migrate dev` reports schema drift because you've been running
+against the hand-written SQL already, use `migrate deploy` instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+**Verify the two hand-added partial unique indexes actually exist** — these
+are not something `prisma migrate dev`/`generate` can create from
+`schema.prisma` alone (see `docs/milestones/PROGRESS.md`'s Milestone 2B
+section for why), so it's worth a quick direct check after migrating:
+
+```sql
+SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'ProductAlias';
+```
+
+You should see `ProductAlias_global_normalizedText_key` (with `WHERE
+("customerId" IS NULL)`) and `ProductAlias_customer_normalizedText_key`
+(with `WHERE ("customerId" IS NOT NULL)`) in the output, alongside the
+ordinary plain indexes.
+
+### Run this milestone's real database acceptance test
+
+Unlike Milestone 2A's acceptance test, this milestone's core deliverable
+*is* database rows (`ExtractedOrderLine`, `ProductAlias`, `CustomerAlias`,
+the created `CustomerOrder`), so its one true acceptance test needs a
+real database and cannot run unconditionally in the sandbox. Run it here,
+once, after seeding:
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+(Or, in one line: `$env:RUN_DB_INTEGRATION_TESTS="1"; npm test`.) This
+also runs the pre-existing `tests/orders-db.integration.test.ts`. Both
+clean up their own rows afterward (all `isDemo: true`).
+
+### Manual test script (no coding required)
+
+1. Start the app, open **PO Intake**, and open (or create, per section
+   12's steps 2–4) a document that's already reached status
+   **Extracted**.
+2. Click **Review & confirm**. Confirm the workspace loads: the
+   extracted customer name/store, a resolved customer match (or a
+   prompt to search for one if nothing matched confidently), and one row
+   per extracted line with its matched product (or a prompt to search
+   for one).
+3. **Accept a well-matched order**: leave every line's product match as
+   suggested, fill in or confirm the order date/requested delivery date,
+   and click **Confirm order**. Confirm you land on a success state
+   linking to the new order, and that opening that order (**Orders** in
+   the sidebar) shows the correct customer, lines, quantities, and
+   products.
+4. **Confirm with a manual override**: open a different extracted
+   document whose description doesn't closely match anything in your
+   catalogue (or use a deliberately odd pasted-text line, e.g. "usual
+   veggie box" with no code). Confirm the line shows no confident match;
+   search for and select a real product manually, fill in quantity/unit,
+   and confirm. Then re-submit a near-identical pasted-text document with
+   the *same* odd wording — confirm the line now matches your manually
+   chosen product automatically (labelled **Learned alias**, 100%
+   confidence) without you picking it again. This is the alias-learning
+   loop working end to end.
+5. **Trigger and acknowledge a duplicate warning**: confirm an order with
+   a customer PO reference, e.g. `"PO-1001"`. Then open a *different*
+   document for the *same customer* with the *same* `"PO-1001"` PO
+   reference in its header and try to confirm it. Confirm a duplicate
+   warning appears, the **Confirm order** button is disabled or the
+   confirm request is rejected until you tick the acknowledge checkbox,
+   and after ticking it and confirming again, a second order is created
+   (intentionally — the human explicitly said this isn't actually a
+   duplicate).
+6. **Exclude a line**: on any document with more than one line, mark one
+   line **Exclude** with a short reason, leave the rest **Accept**, and
+   confirm. Confirm the resulting order has only the accepted line(s),
+   and that re-opening the document's review workspace shows the
+   excluded line's status as excluded (not pending, not accepted).
+7. **Re-confirm guard**: try to open a document that's already confirmed
+   and confirm it again (e.g. by calling the confirm endpoint a second
+   time, or revisiting an already-confirmed review page and re-submitting
+   if the UI allows it). Confirm this is rejected rather than creating a
+   second order for the same document.
+
+### 13a. Undoing this migration
+
+**This is destructive** — it drops the three new tables and the two new
+enum types, along with any rows already stored in them. Back up first:
+
+```powershell
+pg_dump -Fc -d <your-database-name> -f backup-before-undo-milestone-2b.dump
+```
+
+```sql
+ALTER TABLE "ExtractedOrderLine" DROP CONSTRAINT "ExtractedOrderLine_extractionRunId_fkey";
+ALTER TABLE "ExtractedOrderLine" DROP CONSTRAINT "ExtractedOrderLine_matchedProductId_fkey";
+ALTER TABLE "ExtractedOrderLine" DROP CONSTRAINT "ExtractedOrderLine_reviewedById_fkey";
+ALTER TABLE "ExtractedOrderLine" DROP CONSTRAINT "ExtractedOrderLine_resultingOrderLineId_fkey";
+ALTER TABLE "ProductAlias" DROP CONSTRAINT "ProductAlias_customerId_fkey";
+ALTER TABLE "ProductAlias" DROP CONSTRAINT "ProductAlias_productId_fkey";
+ALTER TABLE "ProductAlias" DROP CONSTRAINT "ProductAlias_createdById_fkey";
+ALTER TABLE "CustomerAlias" DROP CONSTRAINT "CustomerAlias_customerId_fkey";
+ALTER TABLE "CustomerAlias" DROP CONSTRAINT "CustomerAlias_createdById_fkey";
+
+DROP TABLE "ExtractedOrderLine";
+DROP TABLE "ProductAlias";
+DROP TABLE "CustomerAlias";
+
+DROP TYPE "ExtractedLineMatchSource";
+DROP TYPE "ExtractedLineStatus";
+```
+
+**`DocumentIntakeStatus`'s new `CONFIRMED` value cannot be cleanly
+dropped** — Postgres has no `ALTER TYPE ... DROP VALUE`. As with
+Milestone 2A's `OrderSource` additions, the only way to fully remove it is
+to recreate the enum type and convert every column that uses it
+(`OrderDocument.status`) — invasive for a value that costs nothing to
+leave unused, so leaving it in place is the recommended path for any
+partial rollback.
+
+Apply the reversible part the same way as previous rollbacks (`psql`, a
+GUI client, or `npx prisma db execute --file
+.\rollback-milestone-2b.sql --schema prisma/schema.prisma`), then revert
+`prisma/schema.prisma` to remove the same changes and run `npx prisma
+generate` again. Also tell Prisma's migration history about the rollback:
+
+```powershell
+npx prisma migrate resolve --rolled-back 20261109140000_add_matching_review_aliases
+```
+
+## 14. Milestone 2C: SAP handover, multi-store splitting, repeat orders
+
+This migration is purely additive — one new enum, one new table, no
+column dropped, no existing column's type or nullability changed. As
+with every previous milestone's migration, it cannot be validated or
+generated in the build sandbox — run these for real on your machine.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_order_handover
+
+# 2. Regenerate the Prisma client so it knows about the new
+#    OrderHandover model and the HandoverFormat enum
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+```
+
+If `prisma migrate dev` reports schema drift because you've been running
+against the hand-written SQL already, use `migrate deploy` instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Run this milestone's real database acceptance tests
+
+Like Milestone 2B's, this milestone's core deliverables are real
+files/database rows (a readable `.xlsx`, real split `CustomerOrder`
+rows) that a no-DB test cannot prove. Run them here, once, after seeding:
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+(Or, in one line: `$env:RUN_DB_INTEGRATION_TESTS="1"; npm test`.) This
+runs the new `tests/handover-db.integration.test.ts`, the new split-order
+test appended to `tests/matching-review-db.integration.test.ts`, and
+every pre-existing gated integration test. All clean up their own rows
+and stored files afterward (everything created `isDemo: true`).
+
+### Manual test script (no coding required)
+
+1. **Generate a handover in each format**: open an existing confirmed
+   order (**Orders** in the sidebar → any order with at least one line).
+   In the new **SAP Handover** panel, click **Generate Excel**. Confirm a
+   new row appears under **Past handovers** and downloading it opens a
+   real, readable spreadsheet with your order's lines, SAP item codes,
+   and official descriptions. Click **Generate CSV** — confirm a second,
+   separate row appears (the Excel one is still there, unchanged) and the
+   downloaded `.csv` opens cleanly in Excel with the same line content.
+   Click **Copy to clipboard** — confirm a "Copied" message appears, then
+   paste into a blank spreadsheet or text editor and confirm you get
+   tab-separated columns (SAP code, description, quantity, unit, note)
+   with no header row.
+2. **Unmatched-line flagging**: generate a handover for an order that has
+   at least one line with no resolved product (or temporarily remove a
+   product's catalogue entry a line points at). Confirm that line still
+   appears in every format — never silently dropped — with an empty SAP
+   item code and a note explaining it needs manual attention in SAP.
+3. **`handedToSapAt` is set once**: before generating anything, check the
+   order's details don't show a "handed to SAP" time. Generate one
+   handover, then generate a second, different-format handover for the
+   same order. Confirm (via the database or an admin view, if available)
+   that `handedToSapAt` was set by the first generation and did **not**
+   change on the second.
+4. **Split one document into several orders**: open **PO Intake**, open a
+   document at status **Extracted** whose pasted text/lines actually name
+   two different customers (or just pick any document with 2+ lines for
+   a dry run), and click **Review & confirm**. On one line, click
+   **Assign to a different store**, search for and select a different
+   customer than the document's own resolved one, and confirm the chip
+   "Different store: `<name>`" appears. Leave the other line(s)
+   unassigned (using the document's own resolved customer) and click
+   **Confirm order**. Confirm the success banner lists **two** separate
+   orders, each linking to a real order page, each showing only its own
+   line(s) and its own customer.
+5. **Repeat an order**: open any existing order and click **Repeat this
+   order**. Confirm you land on **Receive New Order** with a green
+   "Pre-filled from order `<reference>`" banner, the same customer
+   already selected, the same delivery address, and one line per original
+   line (product, quantity, unit all pre-filled) — and that
+   `customerPoReference`/dates/internal notes are blank, ready for you to
+   re-enter. Adjust something if you like, then submit, and confirm a
+   genuinely new order is created (the original is untouched).
+
+### 14a. Undoing this migration
+
+**This is destructive** — it drops the new table and enum type, along
+with any rows already stored in it. Back up first:
+
+```powershell
+pg_dump -Fc -d <your-database-name> -f backup-before-undo-milestone-2c.dump
+```
+
+```sql
+ALTER TABLE "OrderHandover" DROP CONSTRAINT "OrderHandover_orderId_fkey";
+ALTER TABLE "OrderHandover" DROP CONSTRAINT "OrderHandover_generatedById_fkey";
+
+DROP TABLE "OrderHandover";
+
+DROP TYPE "HandoverFormat";
+```
+
+This does **not** delete the Excel/CSV files this milestone's handovers
+stored on disk (under the local storage driver's upload directory, same
+as every document upload) — remove those separately if you want them
+gone too; they're otherwise harmless orphans referencing rows that no
+longer exist.
+
+Apply the reversible part the same way as previous rollbacks (`psql`, a
+GUI client, or `npx prisma db execute --file
+.\rollback-milestone-2c.sql --schema prisma/schema.prisma`), then revert
+`prisma/schema.prisma` to remove the same changes and run `npx prisma
+generate` again. Also tell Prisma's migration history about the rollback:
+
+```powershell
+npx prisma migrate resolve --rolled-back 20261109150000_add_order_handover
+```

@@ -1279,3 +1279,326 @@ client — the sandbox will never catch it. `lib/customers.ts`/`lib/locations.ts
 (pre-existing, already shipped) sidestep it entirely by typing their
 before/after diffs as `Record<string, string | null>`, which has an
 explicit index signature and is safe either way.
+
+# Milestone 2A — PO intake, document storage, classification, extraction
+
+Per your approved, revised Milestone 2 report: no SAP pricing anywhere in
+this sub-build (price fields are traceability-only, never read for a
+pricing decision); the real goal this sub-build serves is getting a
+customer PO — Excel, CSV, PDF, image, or pasted WhatsApp/email text — into
+the system as a stored document with its header/lines extracted into a
+structured, versioned, auditable shape, deterministically wherever
+possible. Matching to SAP item codes, human review, and the Excel/CSV/
+clipboard handover are explicitly out of scope here — Milestones 2B and 2C.
+
+## Database / Prisma
+
+| File | Change | Reason |
+|---|---|---|
+| `prisma/schema.prisma` | Modified | Additive only. `OrderSource` gains `PDF`, `IMAGE`, `EXCEL`, `CSV`. Four new enums: `DocumentClassification`, `DocumentIntakeStatus`, `ExtractionProvider`, `ExtractionRunStatus`. `OrderDocument` gains `sourceChannel`, `classification`, `status` (default `RECEIVED`), `documentGroupId`/`pageNumber` (reserved, unused by any code path yet), and the `extractionRuns` relation. New model `ExtractionRun` — one append-only row per extraction attempt, carrying provider/model/promptVersion, timing, status, `extractedHeader`/`extractedLines`/`rawResponse` (all `Json`), `errorMessage`, and the existing `isDemo` convention. See `docs/milestones/PROGRESS.md`'s Milestone 2A section for the full rationale, including the deliberate deviation from my own earlier report (extending `OrderDocument` instead of a parallel `PurchaseOrderDocument` model, once I'd actually read the real current schema). |
+| `prisma/migrations/20261109100000_add_po_intake_extraction/migration.sql` | Added | Hand-written (this sandbox cannot run `prisma generate`/`migrate dev`), matching the schema change above exactly: `ALTER TYPE ... ADD VALUE` ×4 (one statement per value), `CREATE TYPE` ×4, `ALTER TABLE OrderDocument ADD COLUMN` ×5 (all nullable or defaulted), `CREATE TABLE ExtractionRun`, indexes, FK. Purely additive — no column drops, renames, or type narrowing; safe against a database that already has real `OrderDocument` rows. |
+
+## New: extraction engine (`lib/extraction/`)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/extraction/schema.ts` | Added | `PO_EXTRACTION_SCHEMA_VERSION`, `extractionLineSchema`/`extractionHeaderSchema`/`extractionResultSchema` (zod), `validateExtractionResult()`. The one versioned shape every extraction path must produce before anything is persisted. Every field a document might simply not state is nullable with no fallback other than `null` — "never invent a quantity, unit, price, customer, or date" is enforced at the type level, not just by convention. Quantities/prices are decimal-as-string (same pattern as `lib/order-validation.ts`), never a JS number. |
+| `lib/extraction/provider.ts` | Added | `ExtractionInput` (discriminated union: document/image/text), `ExtractionProviderOutcome`, `ExtractionProviderImpl` — the one interface every provider (mock, Anthropic) implements, so `lib/extraction/router.ts` never needs to know which concrete provider it's calling. |
+| `lib/extraction/providers/mock-fixtures.ts` | Added | Four canned, schema-valid fixtures for document/image input: "default", "baby-marrow-variants" (four distinct pack sizes/preparations of one vegetable, deliberately never merged — exercises the never-merge-pack-sizes rule end to end), "missing-quantity", "unrelated-document". |
+| `lib/extraction/providers/mock.ts` | Added | `MockExtractionProvider` (works with zero API key, per your requirement) + `parsePastedText()` — a **real** deterministic regex-based line parser for pasted text (leading/trailing quantity patterns like `"10 Baby Marrow 250g"` / `"Tomatoes x5"`), not a canned fixture, so dev/test/demo pasted-text runs exercise genuine parsing logic. Document/image input returns one of the four fixtures above, selectable via `fixtureKey`. |
+| `lib/extraction/providers/anthropic.ts` | Added | `AnthropicExtractionProvider`, using the real, actually-installed `@anthropic-ai/sdk@1.6.0`'s native structured output (`messages.parse()` + `output_config.format: zodOutputFormat(extractionResultSchema)`), verified against this project's real installed SDK types. Server-side only; reads `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL` from the environment, never hardcoded; bounded retries (default 2) and timeout (default 60s) passed to the SDK client. The system prompt directly encodes the Milestone 2 brief's product-identification rules (never invent a value, preserve exact wording, never merge pack sizes, flag anything ambiguous). `createAnthropicProvider()` returns `null` (never throws) with no key configured, so callers fall back to mock cleanly. **Real and callable; not yet verified against a live API key** — see PROGRESS.md. |
+| `lib/extraction/deterministic/shared.ts` | Added | `resolvePoColumns()` (loose, regex-based header-synonym matching for a customer's own spreadsheet layout — deliberately different from Milestone 1's strict `checkHeaders()` exact-match policy for fixed SAP exports), `sanitizeDecimalCell()`, `buildLinesFromRows()`. Shared by both the CSV and Excel deterministic parsers so the column-matching and row-building logic exists exactly once. |
+| `lib/extraction/deterministic/csv.ts` | Added | `parseCustomerPoCsv()` — reuses the low-level tokenizer from Milestone 1's `lib/csv-parser.ts` rather than a third hand-rolled CSV state machine. Never calls an AI provider. |
+| `lib/extraction/deterministic/excel.ts` | Added | `parseCustomerPoExcel()`, `cellToText()` — reads a customer's `.xlsx` PO using `exceljs`, first worksheet only, header row matched loosely via `resolvePoColumns()`. Never calls an AI provider. |
+| `lib/extraction/router.ts` | Added | `dispatchExtraction()` — the single dispatch point from "a document/text arrived on channel X" to "here is its extraction outcome." EXCEL/CSV always go deterministic; PDF/IMAGE/EMAIL/WHATSAPP go through `selectAiProvider()` (Anthropic when a key is configured and `EXTRACTION_PROVIDER` isn't forced to `"mock"`, otherwise mock). Imports `OrderSource`/`ExtractionProvider` from `@prisma/client` as **types only** and uses plain string literals for every runtime value — see "Issues found and fixed," below. |
+
+## New: PO intake orchestration, API, and UI
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/po-intake.ts` | Added | `createPoIntake()` (file upload or pasted-text submission → stored `OrderDocument` → dispatched extraction, all in one call), `reExtractPoDocument()` (re-runs extraction against the original stored bytes, creating a new `ExtractionRun` row rather than overwriting the previous one), `runExtraction()`, `storeBytes()`, `sniffedTypeToChannel()`. Pasted text is encoded as UTF-8 bytes and stored through the same `StorageDriver` as any file upload, so every `OrderDocument` row has real stored bytes/checksum/storage key regardless of channel. The file's channel is derived from **sniffed byte signatures** (`lib/storage/content-sniff.ts`, Milestone 0, reused unchanged), never a client-claimed MIME type. No Postgres transaction is held open across the extraction call — document creation, extraction, and recording the outcome are three separate transactions/calls. Every extraction path's output is re-validated against `validateExtractionResult()` at runtime before being persisted, regardless of its TypeScript type. Same type-only-import fix as `router.ts` — see "Issues found and fixed," below. |
+| `lib/po-intake-queries.ts` | Added | `listPoIntakeDocuments()`, `getPoIntakeDocumentDetail()` — read-side queries for the list/detail API routes and the UI page. |
+| `app/api/po-intake/route.ts` | Added | `GET` (list) and `POST` (file upload via `multipart/form-data`, or a JSON paste submission) — the entry point for both intake flows. |
+| `app/api/po-intake/[id]/route.ts` | Added | `GET` — document detail, including every extraction run and its structured output. |
+| `app/api/po-intake/[id]/re-extract/route.ts` | Added | `POST` — re-run extraction for an existing document. |
+| `app/orders/intake/page.tsx` | Added | PO intake UI: upload-or-paste form, document list, and a detail panel showing every extraction attempt's structured header/lines, with warnings surfaced per line. |
+| `app/components/sidebar.tsx` | Modified | Added a "PO Intake" entry (new `Inbox` icon) under WORKSPACE, after "New Order". |
+| `lib/http.ts` | Modified | Pulled `sanitizeFileName()` out of `app/api/orders/[id]/documents/route.ts`'s private copy into this shared module, so `app/api/po-intake/route.ts` doesn't need a second, duplicate implementation. |
+| `app/api/orders/[id]/documents/route.ts` | Modified | Import changed to `sanitizeFileName` from `@/lib/http`; the now-redundant local copy of the function was removed. No behavior change. |
+| `.env.example` | Modified | Added a documented block for `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `EXTRACTION_PROVIDER`. |
+
+## Dependencies
+
+| File | Change | Reason |
+|---|---|---|
+| `package.json` / `package-lock.json` | Modified | Real `npm install exceljs@4.4.0 @anthropic-ai/sdk@1.6.0 --save --no-audit --no-fund` against the real npm registry (not hand-edited) — `exceljs` for reading customer Excel POs now and writing the Milestone 2C handover later (one Excel library for the whole project), `@anthropic-ai/sdk` for the real extraction provider. |
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/extraction-schema.test.ts` | Added | 8 tests against `validateExtractionResult()` — schema-version mismatch, invalid decimal shape, null-quantity acceptance, unrecognized classification, empty description, zero-line `UNRELATED` document, invalid calendar date. |
+| `tests/mock-extraction-provider.test.ts` | Added | Tests for `parsePastedText()` (leading/trailing quantity, no-guess-when-absent, multi-line splitting, blank-line skipping, verbatim preservation) and `MockExtractionProvider` (provider labelling, schema-valid output, empty-text → `UNRELATED`, fixture selection, unknown-fixture fallback). |
+| `tests/deterministic-csv-parser.test.ts` | Added | 8 tests against `parseCustomerPoCsv()` — header synonyms, unit-vs-unit-price disambiguation, unparseable-quantity flagging (never guessing), blank-description skipping, missing-description-column failure, empty-file failure, leading-zero preservation. |
+| `tests/deterministic-excel-parser.test.ts` | Added | 5 tests against `parseCustomerPoExcel()`, building real in-memory `.xlsx` buffers via `exceljs` itself rather than needing checked-in binary fixtures — real round-trip parsing, numeric-cell-as-decimal-string, blank-row skipping, missing-column failure, corrupted-buffer failure. |
+| `tests/acceptance-po-intake-deterministic.test.ts` | Added | Milestone 2A's end-to-end acceptance test, from the approved report's own acceptance criteria. Chains the real `dispatchExtraction()` — the exact function `lib/po-intake.ts` calls for every live upload/paste — across CSV, Excel, and pasted-WhatsApp-text submissions of the same order: CSV/Excel report `provider: "DETERMINISTIC"` (never reaching an AI provider), a leading-zero code embedded in free text survives untouched, a WhatsApp message with no key configured falls back to `provider: "MOCK"` and never guesses a missing quantity, and two different pack sizes of "Baby Marrow" stay as two distinct lines. Needs no database, so it runs unconditionally in the sandbox. |
+
+## Issues found and fixed during this milestone
+
+- **Prisma-enum-as-runtime-value, caught before any test ran, not after**:
+  the first drafts of `lib/extraction/router.ts` and `lib/po-intake.ts`
+  imported `OrderSource`/`ExtractionProvider`/`DocumentClassification`/
+  `DocumentIntakeStatus`/`ExtractionRunStatus` as runtime values from
+  `@prisma/client` and dereferenced members like `OrderSource.EXCEL`.
+  Verified directly (`node -e "console.log(require('@prisma/client').OrderSource)"`
+  → `undefined`) that this sandbox's stub client exports every one of
+  these as `undefined` — the same root cause as the pre-existing,
+  already-accepted `tests/order-validation.test.ts` failure. Rather than
+  accept a second category of sandbox-only test failures for brand-new
+  code with no genuine need to touch the broken stub, both files now
+  import these as **types only** (`import type {...}`) and use plain
+  string literals (`"EXCEL"`, `"DETERMINISTIC"`, etc.) for every runtime
+  value — correct, not just a workaround, since Prisma's generated enum
+  field types are string-literal unions, not nominal class instances.
+  Fixed before writing a single test against either file; confirmed by
+  the fact that all four new provider/parser test files and the
+  acceptance test pass cleanly in this sandbox once the fix was in place.
+  On your real machine, with a real generated client, the original code
+  would also have worked — this exists purely so this sandbox's own
+  `vitest` run is informative rather than blocked, and is good practice
+  regardless.
+- **`exceljs`'s own type declarations conflict with modern `@types/node`,
+  real and machine-independent** (not sandbox-related): `exceljs`'s
+  `index.d.ts` declares a bogus ambient global `interface Buffer extends
+  ArrayBuffer {}` that merges with `@types/node`'s real, generic
+  `Buffer<TArrayBuffer>` global interface, making every call to
+  `workbook.xlsx.load(buffer)` a type error — `tsconfig.json`'s
+  `skipLibCheck: true` doesn't help, because it only skips checking
+  *inside* `.d.ts` files, not usage sites in ordinary `.ts` files. This
+  would occur on your real machine too, with the same `exceljs@4.4.0`.
+  Fixed with a single, narrowly-scoped, commented `as any` cast at the one
+  call site in `lib/extraction/deterministic/excel.ts` (casting to the
+  bare `Buffer` identifier doesn't help — it resolves to the exact same
+  broken merged type the function already expects).
+- **Test-file typing bug, also machine-independent**:
+  `tests/extraction-schema.test.ts`'s `validResult()` helper had no return
+  type annotation, so TypeScript inferred `extractedQuantity: string` from
+  its `"10"` literal rather than the schema's real `string | null`,
+  breaking a later test that assigns `null` to it. Fixed by annotating
+  `validResult(): ExtractionResult`.
+- **Real lint error found and fixed** (not sandbox-related):
+  `app/orders/intake/page.tsx` had two `useEffect` hooks loading data on
+  mount/selection change; the first correctly used the project's
+  established `void Promise.resolve().then(() => load())` pattern (to
+  avoid calling `setState` synchronously within the effect body) but the
+  second (triggered on `selectedId` change) called `loadDetail()`
+  directly, which `react-hooks/set-state-in-effect` correctly flagged.
+  Fixed to match the first effect's pattern. `npm run lint` is clean after
+  the fix.
+- **Sandbox `tsc`/`build` delta, fully accounted for**: this round's
+  standalone `npx tsc --noEmit` went from the pre-existing 67 error lines
+  to 77 (+10), every one of those 10 in the same two pre-existing
+  sandbox-stub categories already seen throughout this project
+  (`TS2305`/`TS7006`), now additionally hit by `lib/extraction/router.ts`
+  (2), `lib/po-intake.ts` (7), and `lib/po-intake-queries.ts` (1). No new
+  error category anywhere. `npm run build`'s Turbopack bundling stage
+  reports "Compiled successfully"; its own TypeScript-check phase hits
+  the sandbox's long-standing Google Fonts network block, and — verified
+  with the same temporary diagnostic font-swap technique used in earlier
+  rounds, reverted immediately after and confirmed byte-identical to the
+  original `app/layout.tsx` — the identical 77-error sandbox-stub set as
+  standalone `tsc`, nothing new in the build phase specifically. Your
+  next real `npm run build` is what actually confirms this past the point
+  this sandbox can reach.
+
+# Milestone 2B — Matching, aliases, duplicate detection, human review
+
+Per your approved three-sub-build sequence: turn each Milestone 2A
+`ExtractionRun`'s stored header/lines into a real `CustomerOrder`, through
+a human review workspace — deterministic customer/product matching with
+alias learning, duplicate-order detection, and an explicit confirm step.
+No Excel/CSV handover document, no multi-store splitting, no repeat-order
+detection — those remain Milestone 2C, not started. Full rationale for
+every design decision below is in `docs/milestones/PROGRESS.md`'s
+Milestone 2B section; this file lists every file and the reason for it.
+
+## Database / Prisma
+
+| File | Change | Reason |
+|---|---|---|
+| `prisma/schema.prisma` | Modified | Additive only. `DocumentIntakeStatus` gains `CONFIRMED`. Two new enums: `ExtractedLineStatus`, `ExtractedLineMatchSource`. New model `ExtractedOrderLine` — one real row per extracted line, with its own computed/human product match and review decision (see PROGRESS.md for the full field list). New models `ProductAlias`/`CustomerAlias` — human-confirmed free-text-to-real-record mappings, each `Cascade`-deleting on its `Customer`/`Product` FK (never `SetNull` — see PROGRESS.md for why that would be a real bug). `User`/`Customer`/`Product`/`OrderLine`/`ExtractionRun` each gain the new inverse relations these models need. |
+| `prisma/migrations/20261109140000_add_matching_review_aliases/migration.sql` | Added | Hand-written, matching the schema change above exactly: `ALTER TYPE ... ADD VALUE`, 2× `CREATE TYPE`, 3× `CREATE TABLE`, all plain indexes, **two hand-added partial unique indexes** on `ProductAlias` (`WHERE "customerId" IS NULL` / `WHERE "customerId" IS NOT NULL` — not expressible in `schema.prisma`'s DSL; see PROGRESS.md), one plain unique index on `CustomerAlias`, and every foreign key. Purely additive — no column drops, renames, or type narrowing. |
+
+## New: matching engine (`lib/matching/`)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/matching/normalize.ts` | Added | `normalizeMatchText()`, `tokenize()`, `diceCoefficient()`, `selectConfidentMatch()` — the one shared text-normalization/scoring module used identically by alias storage, alias lookup, and both fuzzy matchers. Deliberately keeps digits and pack-size/unit words (never strips them) — see PROGRESS.md for why that's what prevents different pack sizes from being merged. `selectConfidentMatch` is the one "confident and unambiguous" decision, factored out so `product-matcher.ts`/`customer-matcher.ts` can't drift apart on it. |
+| `lib/matching/aliases.ts` | Added | `lookupProductAlias()`/`lookupCustomerAlias()` (customer-specific alias always checked before a global one), `recordProductAlias()`/`recordCustomerAlias()` (find-or-create-or-repoint: re-pointing an alias to a new target resets `timesConfirmed` to 1 rather than incrementing a now-superseded count). |
+| `lib/matching/product-matcher.ts` | Added | `matchProductDescription()` — alias lookup first, then Dice-coefficient fuzzy scoring against up to 50 DB-narrowed active `Product` candidates, with an exact-SAP-item-code-token floor of 0.95. `FUZZY_CONFIDENT_THRESHOLD`/`FUZZY_AMBIGUITY_GAP` are an honest, documented, unverified assumption (no real calibration data yet). |
+| `lib/matching/customer-matcher.ts` | Added | `matchCustomerHeader()`/`buildCustomerSearchText()` — the same two-stage approach mirrored for `Customer` (`name`/`storeCode`/`sapCustomerCode`). |
+
+## New: review workspace (`lib/review/`, API, UI)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/review/duplicate-check.ts` | Added | `checkForDuplicates()` — same document checksum already an order, or same customer + PO reference on a non-cancelled/non-rejected order. Computed fresh on every read, never cached. |
+| `lib/review/confirm-review-validation.ts` | Added | `confirmReviewSchema`/`lineDecisionSchema` (zod) for `POST .../review/confirm`'s request body. Reuses `decimalString`/`dateOnlyString` from `lib/order-validation.ts` rather than a second, drift-prone copy. |
+| `lib/review/build-review-session.ts` | Added | `getOrBuildReviewSession()` — idempotently materializes one `ExtractedOrderLine` per extracted line the first time a document's review workspace is opened (a concurrent duplicate materialization attempt is caught via the table's own unique constraint and treated as a benign race, never an error), computes the customer match once and reuses it for every line's product match, and assembles the full session including fresh duplicate warnings. |
+| `lib/review/confirm-review.ts` | Added | `confirmReviewSession()` — the one action that creates the order. Requires an explicit decision for every materialized line, at least one acceptance, a resolved quantity/unit on every accepted line, and `acknowledgeDuplicate: true` on a fresh duplicate hit. In one transaction: creates the order via `lib/orders.ts`'s new `createOrderCore()`, links each accepted line's `resultingOrderLineId`, marks excluded lines, confirms the `OrderDocument`, learns a `ProductAlias` per accepted line and a `CustomerAlias` for the resolved customer, and writes a `PO_REVIEW_CONFIRMED` audit event. |
+| `app/api/po-intake/[id]/review/route.ts` | Added | `GET` — opens/builds the review session. |
+| `app/api/po-intake/[id]/review/confirm/route.ts` | Added | `POST` — CSRF check, zod validation, calls `confirmReviewSession()`, surfaces field errors and duplicate warnings on 400/409. |
+| `app/orders/intake/[id]/review/page.tsx` | Added | The review workspace UI: customer search/override with alias-text capture, editable order header fields, duplicate-warning display with an explicit acknowledge checkbox, per-line product search/override with quick-pick candidates, accept/exclude toggles with an optional exclusion reason, and the confirm action. Reuses the existing `GET /api/customers?search=`/`GET /api/products?search=` list endpoints rather than adding new search routes. |
+| `app/orders/intake/page.tsx` | Modified | Added a `CONFIRMED` status badge and a "Review & confirm" / "View review" button linking to the new review workspace once a document is `EXTRACTED`/`CONFIRMED`; updated the page's intro copy (matching/review is no longer "Milestone 2B, not yet built" — it's this page's own neighbor now). |
+
+## Modified: order creation (shared with the public API)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/orders.ts` | Modified | Extracted `createOrder()`'s `CustomerOrder`/`OrderLine`/`OrderStatusHistory`/`AuditEvent` creation logic into a standalone exported `createOrderCore(tx, reference, input, createdById, isDemo)` that takes an already-open transaction client, so `confirmReviewSession()` can reuse it inside its own transaction (Prisma's interactive transactions can't nest). `createOrder()` now just opens a transaction and calls it. Also exported `TRANSACTION_OPTIONS`, `isUniqueViolation()`, `generateOrderReference()` (previously module-private) for the same reuse. No behavior change to `createOrder()`'s own public contract. |
+| `lib/order-validation.ts` | Modified | Narrowed the public `/api/orders` create schema's `source` field from all 7 `OrderSource` values (`z.nativeEnum(OrderSource)`) to exactly `["EMAIL", "WHATSAPP", "MANUAL"] as const` — a genuine least-privilege fix on its own merits (the manual-entry endpoint should never accept a client's unearned claim of `source: "EXCEL"`/`"PDF"`/etc.), found while defining `confirmReviewSession`'s wider internal-only `OrderCreationInput` type. Exported `decimalString`/`optionalDecimalString`/`dateOnlyString` (previously module-private) for reuse by `lib/review/confirm-review-validation.ts`. |
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/matching-normalize.test.ts` | Added | 21 unconditional unit tests (no `@prisma/client` dependency anywhere in its import graph) — `normalizeMatchText`/`tokenize`/`diceCoefficient` (including the never-merge-pack-sizes property) and `selectConfidentMatch`'s exact confidence-threshold/ambiguity-gap boundaries. |
+| `tests/matching-review-db.integration.test.ts` | Added | This milestone's acceptance test — 7 tests, gated behind `RUN_DB_INTEGRATION_TESTS=1` like `tests/orders-db.integration.test.ts` (same one reason: no real `@prisma/client` in this sandbox). Alias record/lookup and re-pointing; alias priority over fuzzy scoring; duplicate detection on both signals; the full build-review → idempotent-reopen → confirm (with a manual override) → real `CustomerOrder`/alias/audit-event chain; the already-confirmed guard; the acknowledge-duplicate gate; the all-lines-excluded rejection. **Run this on your own machine** after `npm run db:seed` to get real coverage of this milestone's core deliverable. |
+| `tests/order-validation.test.ts` | Modified | Comment-only update: the file's top-of-file note describing a permanently-accepted sandbox-only failure no longer applies, now that `lib/order-validation.ts`'s `OrderSource` narrowing (above) removed the file's only runtime dependency on the broken stub. No assertions changed. |
+
+## Issues found and fixed during this milestone
+
+- **A genuine security/correctness fix with a sandbox side-benefit, not a
+  workaround applied for sandbox reasons**: `lib/order-validation.ts`'s
+  `source: z.nativeEnum(OrderSource)` on the public, manual-entry
+  `/api/orders` endpoint accepted all 7 `OrderSource` values, including
+  the four upload-channel values (`PDF`/`IMAGE`/`EXCEL`/`CSV`) that make
+  no sense for a human typing an order in directly — a client could claim
+  `source: "EXCEL"` with no document behind it at all. Narrowed to
+  `["EMAIL", "WHATSAPP", "MANUAL"]`. Found while working out what
+  `confirmReviewSession`'s wider, internal-only `OrderCreationInput` type
+  needed to allow that the public-facing type correctly should not. As a
+  side effect (not the reason for the fix), this also removed
+  `tests/order-validation.test.ts`'s only runtime dependency on this
+  sandbox's broken `@prisma/client` stub — a test that has been this
+  project's one permanently-accepted sandbox-only failure since round 1
+  now passes cleanly here too, confirmed by re-running it in isolation
+  before touching anything else.
+- **The `ProductAlias` partial-unique-index requirement, caught by
+  reasoning about the constraint before writing the migration, not
+  after**: "one global alias per text" and "one per-customer alias per
+  (customer, text)" need to coexist as two independent unique
+  constraints — neither Prisma's `@@unique` nor a single composite index
+  can express "unique on (customerId, normalizedText) OR unique on just
+  normalizedText-when-customerId-is-null" as one declaration, and
+  Prisma's schema DSL has no `WHERE` clause for a partial index at all.
+  Solved with two hand-written partial unique indexes directly in the
+  migration SQL (documented in both the migration and the model's own
+  schema comment, so a future auto-generated migration touching this
+  table doesn't silently drop them).
+- **Sandbox `tsc` delta, fully accounted for**: standalone `npx tsc
+  --noEmit` went from the pre-2B baseline of 93 error lines to 100 (+7,
+  all `TS7006` "implicitly has an `any` type" on `tx`/array-map
+  parameters inside the new `tests/matching-review-db.integration.test.ts`,
+  whose types collapse through the same broken `Prisma.TransactionClient`
+  stub every other integration test in this project already hits) on top
+  of +16 in the library/route/page files themselves (same two
+  pre-existing `TS2305`/`TS7006` sandbox-stub categories, confirmed by
+  diffing the error-code histogram before and after). No new error
+  category anywhere. `npm run lint` is clean. `npx vitest run`: 200
+  passed, 8 skipped (up from 163 passed/1 skipped at the end of Milestone
+  2A), zero failures. `npm run build` reaches the same pre-existing
+  Google Fonts network block as every previous milestone's build attempt
+  — unrelated to any 2B code.
+- A first draft of `tests/matching-review-db.integration.test.ts` used
+  BigInt literal syntax (`10n`) for `OrderDocument.fileSize` — this
+  project's `tsconfig.json` targets `ES2017`, which doesn't support
+  BigInt literals (`TS2737`). Fixed to `BigInt(10)`, matching the pattern
+  already used in `lib/po-intake.ts`.
+- Two `react/no-unescaped-entities` lint errors in the new review
+  workspace page (`app/orders/intake/[id]/review/page.tsx`, two literal
+  apostrophes in copy text) — fixed with `&apos;`. `npm run lint` is
+  clean after the fix.
+
+# Milestone 2C — SAP handover, multi-store splitting, repeat orders
+
+The final sub-build of the approved 2A/2B/2C sequence: manual, per-order
+handover generation (Excel/CSV/clipboard, official SAP descriptions),
+splitting one submitted document into several confirmed orders when it
+names several different store-customers, and one-click re-ordering from
+an existing order. Full rationale for every design decision below is in
+`docs/milestones/PROGRESS.md`'s Milestone 2C section; this file lists
+every file and the reason for it.
+
+## Database / Prisma
+
+| File | Change | Reason |
+|---|---|---|
+| `prisma/schema.prisma` | Modified | Additive only. New `HandoverFormat` enum (`EXCEL`/`CSV`/`CLIPBOARD`). New model `OrderHandover` — one append-only row per generation attempt, never overwritten/deduplicated; `storageKey`/`originalFileName`/`mimeType`/`fileSize` all nullable (a `CLIPBOARD` handover has no stored file). `CustomerOrder` gains the `handovers` inverse relation; `User` gains `generatedHandovers`. |
+| `prisma/migrations/20261109150000_add_order_handover/migration.sql` | Added | Hand-written, matching the schema change exactly: `CREATE TYPE "HandoverFormat"`, `CREATE TABLE "OrderHandover"`, two plain indexes (`orderId`, `isDemo`), two foreign keys (`ON DELETE RESTRICT ON UPDATE CASCADE`). Purely additive. |
+
+## New: handover generation (`lib/handover/`, API, UI)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/handover/build-handover-rows.ts` | Added | `buildHandoverRows(orderId)` — the single source of truth every format renders from. Three-way fallback per line (live `Product` join → `sapItemCodeSnapshot` → no match), never silently drops a line (an unmatched/snapshot-only line gets a non-null `note`). Always rebuilt fresh from current data, never cached. |
+| `lib/handover/format-rows.ts` | Added | `rowsToCsvText()`/`rowsToClipboardText()` — pure text formatting, zero `@prisma/client` dependency (the row type comes in via `import type` only), so unconditionally unit-testable. CSV: comma-separated, header row, CRLF endings, proper quoting. Clipboard: tab-separated, no header, no quoting, excludes the original customer wording. |
+| `lib/handover/generate-handover.ts` | Added | `generateHandover(orderId, actorId, format)` — manual, per-order. Builds an `.xlsx` via `exceljs` for `EXCEL`, plain text for `CSV`/`CLIPBOARD` (both from the exact same `buildHandoverRows` output). One transaction: creates the `OrderHandover` row, sets `CustomerOrder.handedToSapAt` once only (`updateMany` guarded on `handedToSapAt: null`), writes an `ORDER_HANDOVER_GENERATED` audit event. Orphaned storage bytes are deleted on any post-write failure. Refuses (409) only for a `CANCELLED`/`REJECTED` order — deliberately **not** gated on `OrderStatus.APPROVED` (see PROGRESS.md: no approval workflow exists anywhere in this project yet). |
+| `lib/handover/queries.ts` | Added | `listOrderHandovers(orderId)` — the past-handovers list, with a computed `downloadUrl` (`null` for `CLIPBOARD`) and `fileSize` coerced from `BigInt` to `Number` for JSON. |
+| `app/api/orders/[id]/handover/route.ts` | Added | `GET` — lists handovers. `POST` — CSRF check, zod-validated `{ format }`, calls `generateHandover()`, 201 on success. |
+| `app/api/orders/[id]/handover/[handoverId]/download/route.ts` | Added | `GET` — mirrors `GET /api/files/[id]`'s exact pattern; `handoverId` is the `OrderHandover` row id, never a storage key. Never reachable for a `CLIPBOARD` handover (no stored file). |
+| `app/orders/[id]/handover-panel.tsx` | Added | The one client-rendered "island" on the otherwise-Server-Component order detail page: Generate Excel/CSV/Copy-to-clipboard buttons, a past-handovers list with download links, clipboard copy via `navigator.clipboard.writeText`. |
+| `app/orders/[id]/page.tsx` | Modified | Embedded `HandoverPanel`; added a "Repeat this order" link (`/orders/new?repeatFrom=<id>`) to the title row. |
+
+## Modified: multi-store splitting (`lib/review/`)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/review/confirm-review-validation.ts` | Modified | `lineDecisionSchema` gains one new, additive, optional field: `customerId` — omitted means "this line belongs to the document-level default customer" (today's exact behavior, unchanged); set only when a line belongs to a *different* store. Comment-only clarification added to the top-level `customerId` field explaining it's now the *default*. |
+| `lib/review/confirm-review.ts` | Modified | Groups accepted lines by their effective customer (`decision.customerId ?? input.customerId`); creates one `CustomerOrder` per group, atomically, in the same single transaction (all or none); the primary group (`input.customerId`'s, or the first group if every line was reassigned away from it) keeps the top-level `orderId`/`orderReference` fields exactly as before — a new `orders: [{ orderId, orderReference, customerId }, ...]` array is added alongside, backward-compatible with every existing single-store caller. Every *other* distinct customer referenced by an override is validated to exist before the transaction opens. Duplicate detection now runs once per distinct group customer (`SAME_CUSTOMER_PO_REFERENCE` is customer-scoped), deduplicating the document-scoped `SAME_DOCUMENT_CHECKSUM` warning down to at most one; still all-or-nothing (409 if any group has an unacknowledged warning). `customerLocationId` only ever applies to the primary group. `ProductAlias` learning for an accepted line now uses that line's own effective customer, not the document-level default. |
+| `app/api/po-intake/[id]/review/confirm/route.ts` | Modified | Passes through the new `orders` array in the JSON response, alongside the unchanged `orderId`/`orderReference`/`acceptedLineCount`/`excludedLineCount` fields. |
+| `app/orders/intake/[id]/review/page.tsx` | Modified | Each accepted line gets an "Assign to a different store" control (a second, independent customer-search picker) that shows a "Different store: `<name>`" chip once set, with a clear button. The confirm success banner shows a list of every created order (with its own customer label) when the document was actually split, or the single order as before otherwise. |
+
+## New / modified: repeat orders
+
+| File | Change | Reason |
+|---|---|---|
+| `app/orders/new/page.tsx` | Modified | Reads `?repeatFrom=<orderId>` via `window.location.search` directly inside a `useEffect` (not `useSearchParams()`, to avoid its Suspense-boundary requirement on this `"use client"` page). Fetches the original order and its customer, then pre-fills source/customer/delivery address/lines (product search boxes show `sapItemCodeSnapshot` as a pragmatic placeholder — no single-product-lookup endpoint exists). `customerPoReference`/`internalNotes`/`orderDate`/`requestedDeliveryDate` are deliberately left blank. The existing customer-locations-loading effect gets one small additive tweak (`pendingRepeatLocationIdRef`) to prefer the original order's own location over its own default-location fallback, consumed once. |
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/handover-format-rows.test.ts` | Added | 7 unconditional unit tests (no `@prisma/client` dependency) — exact CSV header/CRLF/quoting behavior, that an unmatched line always still gets a row in both formats, and the empty-order edge case. |
+| `tests/handover-db.integration.test.ts` | Added | 5 tests, gated behind `RUN_DB_INTEGRATION_TESTS=1`: the three-way fallback never drops a line; `generateHandover(EXCEL)` produces a real, `exceljs`-readable `.xlsx`, an append-only `OrderHandover` row, and sets `handedToSapAt` exactly once (not re-set by a later, different-format generation); `generateHandover(CSV)`'s stored content matches `buildHandoverRows`/`rowsToCsvText` exactly; `generateHandover(CLIPBOARD)` stores nothing but returns the clipboard text; generation is refused for a cancelled order. |
+| `tests/matching-review-db.integration.test.ts` | Modified | One new test added (now 8 in this file): a document with two lines, one tagged with a different store customer, confirms into two separate `CustomerOrder`s in one call — verifies the backward-compatible `orderId` aliasing, that `OrderDocument.orderId` points only at the primary order, that each `ExtractedOrderLine` links to its own order's own line, and that the reassigned line's `ProductAlias` is learned against the split customer. |
+
+## Issues found and fixed during this milestone
+
+- **A pre-existing, dashboard-metric-implied gate deliberately NOT
+  added**: `lib/order-queries.ts`'s own dashboard metric filters on
+  `{ status: APPROVED, handedToSapAt: null }`, implying handover
+  generation is eventually meant to require `OrderStatus.APPROVED` — but
+  no code anywhere in this project sets that status yet (no approval
+  workflow exists). Adding that gate now would make this entire feature
+  permanently unusable. Generation is refused only for
+  `CANCELLED`/`REJECTED` orders instead; documented explicitly as an open
+  item in PROGRESS.md rather than silently worked around either way.
+- **The same `exceljs`/`@types/node` `Buffer` conflict already fixed on
+  Milestone 2A's read side recurs on this milestone's write side** —
+  `workbook.xlsx.writeBuffer()`'s declared return type is `exceljs`'s own
+  bogus ambient `Buffer`-extends-`ArrayBuffer` interface, not
+  `@types/node`'s real one. Fixed with the exact same narrowly-scoped,
+  commented `eslint-disable-next-line @typescript-eslint/no-explicit-any`
+  cast already used in `lib/extraction/deterministic/excel.ts`.
+- **Sandbox `tsc` delta, fully accounted for**: standalone `npx tsc
+  --noEmit` went from the 2B-end baseline of 100 error lines to 105 (+5,
+  all in the exact same pre-existing `TS7006` "implicitly has an `any`
+  type" sandbox-stub category already documented in every previous
+  milestone — confirmed by diffing the full error-code-and-location
+  histogram line by line before and after this round's changes). No new
+  error category anywhere. `npm run lint` is clean. `npx vitest run`: 207
+  passed, 14 skipped (up from 200 passed/8 skipped at the end of
+  Milestone 2B), zero failures. `npm run build` reaches the same
+  pre-existing Google Fonts network block as every previous milestone's
+  build attempt — unrelated to any 2C code.

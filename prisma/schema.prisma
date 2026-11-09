@@ -19,10 +19,21 @@ enum RecordStatus {
   INACTIVE
 }
 
+// Milestone 2A (PO intake + extraction). EMAIL/WHATSAPP were already here
+// (Milestone 0) and now specifically mean "pasted text from that channel"
+// -- PDF/IMAGE/EXCEL/CSV are the new upload-based channels. This is the
+// one enum for "how did this PO arrive," reused on both OrderDocument
+// (set at intake, before a customer/order exists) and CustomerOrder (set
+// once the order itself is created) rather than inventing a second,
+// parallel channel enum -- see docs/milestones/PROGRESS.md for why.
 enum OrderSource {
   EMAIL
   WHATSAPP
   MANUAL
+  PDF
+  IMAGE
+  EXCEL
+  CSV
 }
 
 enum OrderStatus {
@@ -61,6 +72,86 @@ enum DocumentType {
   OTHER
 }
 
+// Milestone 2A. What kind of document this actually turned out to be,
+// decided after upload (deterministically for EXCEL/CSV/MANUAL, by the
+// extraction provider for PDF/IMAGE -- see lib/po-classification.ts).
+// UNRELATED is the explicit "don't treat this as an order" outcome the
+// Milestone 2 brief requires; it is a real, expected value, not an error
+// state.
+enum DocumentClassification {
+  CUSTOMER_PO
+  HANDWRITTEN_LIST
+  CHAT_SCREENSHOT
+  ORDER_SHEET
+  PRICE_LIST
+  DELIVERY_NOTE
+  UNRELATED
+}
+
+// Milestone 2A. Lifecycle of one uploaded/pasted PO document, independent
+// of whatever CustomerOrder it may or may not become later (that linkage
+// is Milestone 2B's job -- see OrderDocument.orderId, already nullable).
+// CONFIRMED (Milestone 2B) is the terminal state set by
+// lib/review/confirm-review.ts in the same transaction that sets orderId
+// -- a document sitting at EXTRACTED with orderId already non-null should
+// never happen, but CONFIRMED gives the UI/queries a direct status check
+// instead of having to infer "already turned into an order" from orderId
+// being non-null.
+enum DocumentIntakeStatus {
+  RECEIVED
+  CLASSIFIED
+  EXTRACTING
+  EXTRACTED
+  EXTRACTION_FAILED
+  CONFIRMED
+}
+
+// Milestone 2A. DETERMINISTIC covers the Excel/CSV parsers (lib/extraction/deterministic) --
+// no AI call, included here (rather than left unlabelled) so every
+// ExtractionRun row, regardless of path, is auditable the same way: "what
+// produced this header/line data and how."
+enum ExtractionProvider {
+  ANTHROPIC
+  MOCK
+  DETERMINISTIC
+}
+
+enum ExtractionRunStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+// Milestone 2B (matching, aliases, duplicate detection, human review).
+// A human decision on one materialized extracted line -- distinct from
+// VerificationStatus (OrderLine's post-order-creation SAP-catalogue
+// verification) and from ExtractedLineMatchSource below (which describes
+// HOW a candidate match was found, not whether a human has acted on it).
+// PENDING is the only state a freshly-materialized line can be in; a line
+// only ever becomes a real OrderLine (see ExtractedOrderLine.resultingOrderLineId)
+// after the whole order is confirmed with this line at ACCEPTED.
+enum ExtractedLineStatus {
+  PENDING
+  ACCEPTED
+  EXCLUDED
+}
+
+// How ExtractedOrderLine.matchedProductId was arrived at. NONE: no
+// candidate was found at all. ALIAS: an exact hit against ProductAlias
+// (confidence 1.0, never re-scored). FUZZY: the matching engine's own
+// token-overlap scoring picked a confident, unambiguous top candidate.
+// MANUAL: a human picked (or overrode) the product in the review UI.
+// Only FUZZY and MANUAL matches a human has explicitly accepted feed
+// lib/matching/aliases.ts's alias-learning -- an ALIAS match that's simply
+// re-confirmed strengthens the existing alias (recordProductAlias is
+// idempotent either way) rather than creating a redundant one.
+enum ExtractedLineMatchSource {
+  NONE
+  ALIAS
+  FUZZY
+  MANUAL
+}
+
 model User {
   id           String       @id @default(cuid())
   name         String
@@ -89,6 +180,12 @@ model User {
   statusChanges     OrderStatusHistory[]  @relation("StatusChangeUser")
   auditEvents       AuditEvent[]          @relation("AuditActor")
   sessions          Session[]
+
+  // Milestone 2B.
+  reviewedExtractedLines ExtractedOrderLine[] @relation("ExtractedLineReviewer")
+  createdProductAliases  ProductAlias[]       @relation("ProductAliasCreator")
+  createdCustomerAliases CustomerAlias[]      @relation("CustomerAliasCreator")
+  generatedHandovers     OrderHandover[]      @relation("HandoverGenerator")
 
   @@index([isDemo])
 }
@@ -157,6 +254,10 @@ model Customer {
   locations CustomerLocation[]
   contacts  CustomerContact[]
   orders    CustomerOrder[]
+
+  // Milestone 2B.
+  productAliases  ProductAlias[]
+  customerAliases CustomerAlias[]
 
   @@index([name])
   @@index([status])
@@ -259,6 +360,10 @@ model Product {
   orderLines       OrderLine[]
   stockLines       StockSnapshotLine[]
   priceListEntries PriceListEntry[]
+
+  // Milestone 2B.
+  aliases                 ProductAlias[]
+  matchedByExtractedLines ExtractedOrderLine[]
 
   @@index([itemName])
   @@index([category])
@@ -398,6 +503,7 @@ model CustomerOrder {
   documents     OrderDocument[]
   approvals     OrderApproval[]
   statusHistory OrderStatusHistory[]
+  handovers     OrderHandover[]
 
   @@index([customerId])
   @@index([status])
@@ -438,6 +544,14 @@ model OrderLine {
   verifications  ProductVerification[]
   priceDecisions PriceDecision[]
 
+  // Milestone 2B. Set once this line is created FROM a reviewed/confirmed
+  // ExtractedOrderLine (see lib/review/confirm-review.ts) -- null for any
+  // line created the old way, through manual order entry with no PO
+  // document behind it at all. The FK itself lives on ExtractedOrderLine
+  // (resultingOrderLineId); this is purely the Prisma-required inverse
+  // side, with no column of its own on this table.
+  extractedOrderLine ExtractedOrderLine?
+
   @@unique([orderId, lineNumber])
   @@index([productId])
   @@index([verificationStatus])
@@ -458,12 +572,242 @@ model OrderDocument {
 
   extractedText String?
 
+  // Milestone 2A additions. orderId stays nullable exactly as it already
+  // was (Milestone 0) -- a PO document now routinely exists for a while
+  // with no CustomerOrder at all, from upload through extraction, until
+  // Milestone 2B's matching step creates or identifies one. Nothing here
+  // changes the meaning of any pre-existing row: all four columns below
+  // are nullable/defaulted, so every Milestone 0/2 document (orderId
+  // already set, no sourceChannel) reads back exactly as before.
+  sourceChannel  OrderSource?
+  classification DocumentClassification?
+  status         DocumentIntakeStatus    @default(RECEIVED)
+
+  // Groups multiple photos/pages that belong to one PO submission (e.g.
+  // three camera photos of a long handwritten list). Null for a
+  // single-file upload or a pasted-text submission. pageNumber orders
+  // the rows within a group; both are plain fields rather than a separate
+  // join table because a group is only ever "these N OrderDocument rows,
+  // in this order" -- nothing else hangs off the group itself at this
+  // milestone.
+  documentGroupId String?
+  pageNumber      Int?
+
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
-  order      CustomerOrder? @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  uploadedBy User           @relation("DocumentUploader", fields: [uploadedById], references: [id], onDelete: Restrict)
+  order         CustomerOrder?  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  uploadedBy    User            @relation("DocumentUploader", fields: [uploadedById], references: [id], onDelete: Restrict)
+  extractionRuns ExtractionRun[]
 
   @@index([orderId])
+  @@index([documentGroupId])
+  @@index([status])
+}
+
+// Milestone 2A. One row per extraction attempt against an OrderDocument --
+// append-only (a re-extract creates a NEW row rather than overwriting the
+// last one) so the original extraction output is always preserved per the
+// Milestone 2 brief's audit requirement, even after a later re-run.
+//
+// extractedHeader/extractedLines are Json, not their own relational
+// tables, deliberately for 2A: nothing yet edits an individual line,
+// matches it to a product, or tracks per-line review state -- that is
+// Milestone 2B's job, where each line becomes a real ExtractedOrderLine-
+// style row with its own id, matchedProductId, and reviewStatus. Modelling
+// that structure now, before 2B's matching engine exists to populate it,
+// would be guessing at shape rather than building against a real need.
+// Both are validated on the way in against the versioned schema in
+// lib/extraction/schema.ts (promptVersion identifies which version a given
+// row was produced against).
+model ExtractionRun {
+  id         String @id @default(cuid())
+  documentId String
+
+  provider      ExtractionProvider
+  model         String?
+  promptVersion String
+
+  startedAt   DateTime  @default(now()) @db.Timestamptz(6)
+  completedAt DateTime? @db.Timestamptz(6)
+  status      ExtractionRunStatus @default(RUNNING)
+
+  extractedHeader Json?
+  extractedLines  Json?
+  rawResponse     Json?
+  errorMessage    String?
+  processingTimeMs Int?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  document OrderDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+
+  // Milestone 2B.
+  extractedOrderLines ExtractedOrderLine[]
+
+  @@index([documentId])
+  @@index([status])
+  @@index([isDemo])
+}
+
+// Milestone 2B. One row per line of the latest SUCCEEDED ExtractionRun,
+// materialized by lib/review/build-review-session.ts the first time a
+// human opens that document's review workspace -- idempotent, so opening
+// the workspace twice never creates duplicate rows (enforced by the
+// unique constraint below, not just by application logic). This is the
+// "real ExtractedOrderLine-style row with its own id, matchedProductId,
+// and reviewStatus" that Milestone 2A's own ExtractionRun comment already
+// signposted as 2B's job, rather than retrofitting that structure onto
+// ExtractionRun.extractedLines' Json after the fact.
+//
+// Nothing here is a real OrderLine yet, and nothing here is visible to
+// SAP or the eventual Excel handover (Milestone 2C) -- this table is
+// purely the working area a human reviews and confirms, or rejects,
+// before (if ever) a line becomes real. See resultingOrderLineId.
+model ExtractedOrderLine {
+  id              String @id @default(cuid())
+  extractionRunId String
+  lineNumber      Int
+
+  // Copied from ExtractionRun.extractedLines at materialization time
+  // (not re-read from Json on every access) so this table is a complete,
+  // query-able, independently-indexable snapshot of each line -- same
+  // decimal-as-string-at-the-edge/Decimal-at-rest pattern as everywhere
+  // else in this schema; quantities/prices are never a float.
+  originalDescription       String
+  extractedQuantity         Decimal? @db.Decimal(18, 4)
+  extractedUnit             String?
+  // Traceability only -- same rule as OrderLine.customerUnitPrice and
+  // ExtractionRun's own line shape: never read for a pricing decision.
+  customerProvidedUnitPrice Decimal? @db.Decimal(18, 4)
+  extractionConfidence      Float?
+  // Array of short warning strings from the extraction step itself (e.g.
+  // "no quantity stated") -- carried over so the review UI can show them
+  // without re-reading the parent ExtractionRun's Json.
+  extractionWarnings        Json?
+
+  // The matching engine's suggestion (lib/matching/product-matcher.ts),
+  // or a human's explicit choice/override in the review UI -- either way
+  // this is a SUGGESTION until status is ACCEPTED; nothing reads this as
+  // a confirmed fact before then.
+  matchedProductId String?
+  matchConfidence   Float?
+  matchSource       ExtractedLineMatchSource @default(NONE)
+  // Up to a handful of {productId, sapItemCode, itemName, score} runner-up
+  // candidates, for the review UI's "did you mean" list when the top
+  // match isn't confident/unambiguous enough to pre-select on its own.
+  matchCandidates   Json?
+
+  status       ExtractedLineStatus @default(PENDING)
+  reviewedById String?
+  reviewedAt   DateTime? @db.Timestamptz(6)
+  reviewNotes  String?
+
+  // Set by lib/review/confirm-review.ts once (and only once) this line is
+  // actually turned into a real OrderLine as part of confirming the whole
+  // order -- never set for an EXCLUDED line. Unique because one extracted
+  // line can only ever become one order line.
+  resultingOrderLineId String? @unique
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  extractionRun      ExtractionRun       @relation(fields: [extractionRunId], references: [id], onDelete: Restrict)
+  matchedProduct     Product?            @relation(fields: [matchedProductId], references: [id], onDelete: SetNull)
+  reviewedBy         User?               @relation("ExtractedLineReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
+  resultingOrderLine OrderLine?          @relation(fields: [resultingOrderLineId], references: [id], onDelete: SetNull)
+
+  @@unique([extractionRunId, lineNumber])
+  @@index([extractionRunId])
+  @@index([matchedProductId])
+  @@index([status])
+  @@index([isDemo])
+}
+
+// Milestone 2B. A persistent mapping from a customer's own free-text
+// product wording (as normalized -- see lib/matching/normalize.ts) to a
+// resolved SAP Product, learned from human-confirmed matches during order
+// review (lib/review/confirm-review.ts calls lib/matching/aliases.ts's
+// recordProductAlias for every FUZZY/MANUAL match a human accepts).
+// customerId null = a global alias (any customer); set = scoped to that
+// one customer, since the same phrase can mean a different product to a
+// different customer. A customer-specific alias always takes precedence
+// over a global one with the same normalizedText when matching
+// (lib/matching/aliases.ts's lookup order).
+//
+// Uniqueness: the @@index below is for query planning/documentation only.
+// The actual uniqueness -- one global alias per normalizedText, and one
+// per-customer alias per (customerId, normalizedText) -- is enforced by
+// two PARTIAL unique indexes added directly in this table's migration's
+// raw SQL (`CREATE UNIQUE INDEX ... WHERE "customerId" IS [NOT] NULL`),
+// because Prisma's schema DSL cannot express a partial/conditional unique
+// constraint. If this table is ever touched by a hand-written migration
+// again, both partial indexes must be explicitly preserved -- a plain
+// `prisma migrate dev` diff against this schema file alone would not know
+// to recreate them.
+model ProductAlias {
+  id             String  @id @default(cuid())
+  customerId     String?
+  rawText        String
+  normalizedText String
+
+  productId String
+
+  timesConfirmed  Int      @default(1)
+  lastConfirmedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  createdById String
+  isDemo      Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  // Cascade (not SetNull) on both FKs deliberately: an alias with no
+  // product is meaningless, and -- more importantly -- an alias whose
+  // customerId was merely nulled out by SetNull would silently turn a
+  // customer-specific mapping into a global one, which is a real
+  // correctness bug, not a harmless orphan. Deleting the alias row
+  // entirely is the only safe behavior either way.
+  customer  Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdBy User      @relation("ProductAliasCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([customerId, normalizedText])
+  @@index([normalizedText])
+  @@index([productId])
+  @@index([isDemo])
+}
+
+// Milestone 2B. Same learning mechanism as ProductAlias, for the order
+// header's customer/store identification instead of a line's product.
+// Always global -- there is no further scope below "customer" to narrow
+// a customer-name alias by -- so a single plain unique index on
+// normalizedText is sufficient here, unlike ProductAlias's two partial
+// indexes.
+model CustomerAlias {
+  id             String @id @default(cuid())
+  rawText        String
+  normalizedText String @unique
+
+  customerId String
+
+  timesConfirmed  Int      @default(1)
+  lastConfirmedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  createdById String
+  isDemo      Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  customer  Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  createdBy User     @relation("CustomerAliasCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([customerId])
+  @@index([isDemo])
 }
 
 model ProductVerification {
@@ -587,4 +931,61 @@ model AuditEvent {
   @@index([entityType, entityId])
   @@index([actorId])
   @@index([createdAt])
+}
+
+// Milestone 2C (handover, multi-store split, repeat orders). How a
+// generated handover's content was delivered -- EXCEL and CSV are stored
+// files (StorageDriver), CLIPBOARD is never stored as a file at all (see
+// OrderHandover.storageKey below) since its whole point is "copy this
+// text and paste it straight into SAP," not a document to keep.
+enum HandoverFormat {
+  EXCEL
+  CSV
+  CLIPBOARD
+}
+
+// Milestone 2C. One append-only row per handover generated for an order --
+// never overwritten or deduplicated, the same "every attempt is its own
+// row" convention ExtractionRun (Milestone 2A) already established, and
+// for the same reason: if the invoice team regenerates a handover after a
+// correction, the fact that an earlier one existed (and exactly what it
+// said) stays on the record rather than being silently replaced.
+//
+// Deliberately does NOT duplicate the row content itself (SAP item
+// code/description/quantity per line) into this table -- that's always
+// rebuilt fresh from the order's current OrderLine/Product data by
+// lib/handover/build-handover-rows.ts at generation time, so a handover
+// always reflects the order as it actually is right now. This table only
+// records that a handover happened, in what format, by whom, and (for a
+// stored file) where to download it again.
+model OrderHandover {
+  id            String         @id @default(cuid())
+  orderId       String
+  format        HandoverFormat
+  generatedById String
+
+  // Rebuilt and recorded at generation time, not inferred later, so this
+  // row stays an honest record of what was actually generated even if
+  // the order's lines are edited afterward.
+  lineCount          Int
+  matchedLineCount   Int // lines with a resolved SAP item code at generation time
+  unmatchedLineCount Int // lines with NO resolved SAP item code -- never silently dropped, always flagged in the handover content itself too (see lib/handover/build-handover-rows.ts)
+
+  // All four null for CLIPBOARD (nothing is ever stored as a file for
+  // that format -- see the enum comment above); all four set for
+  // EXCEL/CSV, same fields OrderDocument already uses for a stored file.
+  storageKey       String?
+  originalFileName String?
+  mimeType         String?
+  fileSize         BigInt?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  order       CustomerOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  generatedBy User          @relation("HandoverGenerator", fields: [generatedById], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([isDemo])
 }

@@ -23,6 +23,7 @@ import {
   Tags,
   Building2,
   Activity,
+  Inbox,
 } from "lucide-react";
 
 const navigation = [
@@ -43,6 +44,11 @@ const navigation = [
         name: "New Order",
         href: "/orders/new",
         icon: Plus,
+      },
+      {
+        name: "PO Intake",
+        href: "/orders/intake",
+        icon: Inbox,
       },
     ],
   },

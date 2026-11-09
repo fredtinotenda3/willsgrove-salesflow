@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DocumentType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { isValidId } from "@/lib/http";
+import { isValidId, sanitizeFileName } from "@/lib/http";
 import { verifyCsrfOrigin } from "@/lib/auth/csrf";
 import { requireUserOrResponse } from "@/lib/auth/current-user";
 import { getStorageDriver } from "@/lib/storage";
@@ -16,13 +16,6 @@ type RouteContext = { params: Promise<{ id: string }> };
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 const VALID_DOCUMENT_TYPES = new Set<string>(Object.values(DocumentType));
-
-function sanitizeFileName(name: string): string {
-  // Only used for display/download purposes -- it is never used to build a
-  // filesystem path (see lib/storage/local-disk-driver.ts for why).
-  const base = name.split(/[/\\]/).pop() ?? "upload";
-  return base.slice(0, 200).replace(/[\x00-\x1f]/g, "") || "upload";
-}
 
 /**
  * POST /api/orders/[id]/documents

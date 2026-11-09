@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { Prisma, OrderStatus } from "@prisma/client";
+import type { OrderSource } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { CreateOrderInput } from "@/lib/order-validation";
 import { getOrderById } from "@/lib/order-queries";
@@ -16,16 +17,137 @@ export type CreateOrderResult =
   | { ok: true; id: string; idempotentReplay: boolean }
   | MutationFailure;
 
-const TRANSACTION_OPTIONS = { maxWait: 15000, timeout: 15000 };
+// Milestone 2B. The same shape as CreateOrderInput, except `source` is the
+// FULL OrderSource enum rather than lib/order-validation.ts's deliberately
+// narrowed EMAIL/WHATSAPP/MANUAL tuple. createOrderCore (below) is called
+// from two places: this file's own createOrder() (HTTP-facing, always a
+// CreateOrderInput -- a narrower type than this one, so it's always
+// assignable here with no cast) and lib/review/confirm-review.ts (which
+// creates an order from a reviewed intake document and legitimately needs
+// source values like "EXCEL"/"PDF" that manual entry must never accept --
+// see lib/order-validation.ts's comment on why that restriction exists).
+export type OrderCreationInput = Omit<CreateOrderInput, "source"> & { source: OrderSource };
 
-function isUniqueViolation(error: unknown): boolean {
+export type OrderCreationCoreResult = {
+  id: string;
+  lines: { id: string; lineNumber: number }[];
+};
+
+// Exported (not just module-local) so lib/review/confirm-review.ts's own
+// transaction/retry loop uses the exact same timeout budget and collision
+// handling as this file's, rather than silently drifting from it.
+export const TRANSACTION_OPTIONS = { maxWait: 15000, timeout: 15000 };
+
+export function isUniqueViolation(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
-function generateOrderReference(): string {
+export function generateOrderReference(): string {
   const datePart = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   const randomPart = randomBytes(4).toString("hex").toUpperCase();
   return `ORD-${datePart}-${randomPart}`;
+}
+
+/**
+ * Milestone 2B. The actual CustomerOrder+OrderLine+OrderStatusHistory+
+ * AuditEvent creation, extracted out of createOrder()'s transaction
+ * callback so lib/review/confirm-review.ts can run the exact same logic
+ * inside ITS OWN transaction (which also, atomically, links the
+ * originating OrderDocument and records which ExtractedOrderLine became
+ * which OrderLine -- see that file) without duplicating this ~30 lines a
+ * second time, and without the two separate prisma.$transaction calls
+ * that would otherwise be needed not actually nesting (Prisma's
+ * interactive transactions don't support that).
+ *
+ * Takes an already-generated `reference` (the caller owns the
+ * reference-collision retry loop -- see createOrder below) and the
+ * caller's own `tx`, so this function itself never opens a transaction
+ * and is safe to call from inside any already-open one.
+ *
+ * Deliberately does NOT re-validate `input` with a zod schema: exactly
+ * like createOrder() today, that is the caller's responsibility (the
+ * HTTP route validates with createOrderSchema; lib/review/confirm-review.ts
+ * validates its own request shape with its own schema and constructs this
+ * value directly from already-validated/known-good data -- see that
+ * file's module comment for why re-running createOrderSchema itself would
+ * be the wrong fit there, not an oversight).
+ */
+export async function createOrderCore(
+  tx: Prisma.TransactionClient,
+  reference: string,
+  input: OrderCreationInput,
+  createdById: string,
+  isDemo: boolean
+): Promise<OrderCreationCoreResult> {
+  const now = new Date();
+
+  const created = await tx.customerOrder.create({
+    data: {
+      reference,
+      customerId: input.customerId,
+      customerLocationId: input.customerLocationId ?? null,
+      createdById,
+      customerPoReference: input.customerPoReference ?? null,
+      source: input.source,
+      status: OrderStatus.RECEIVED,
+      // Milestone 0 fix (round 5): see lib/dates.ts -- Prisma's @db.Date
+      // columns need a Date object or a full ISO-8601 datetime string,
+      // never a bare "YYYY-MM-DD" string.
+      orderDate: dateOnlyStringToUtcDate(input.orderDate),
+      requestedDeliveryDate: dateOnlyStringToUtcDate(input.requestedDeliveryDate),
+      deliveryAddress: input.deliveryAddress ?? null,
+      currency: input.currency ?? "USD",
+      originalSourceText: input.originalSourceText ?? null,
+      internalNotes: input.internalNotes ?? null,
+      idempotencyKey: input.idempotencyKey ?? null,
+      receivedAt: now,
+      isDemo,
+      lines: {
+        create: input.lines.map((line, index) => ({
+          lineNumber: index + 1,
+          originalProductDescription: line.originalProductDescription,
+          productId: line.productId ?? null,
+          sapItemCodeSnapshot: line.sapItemCodeSnapshot ?? null,
+          requestedQuantity: new Prisma.Decimal(line.requestedQuantity),
+          requestedUnitCode: line.requestedUnitCode,
+          customerUnitPrice:
+            line.customerUnitPrice != null ? new Prisma.Decimal(line.customerUnitPrice) : null,
+          salesNotes: line.salesNotes ?? null,
+          isDemo,
+        })),
+      },
+    },
+    select: { id: true, lines: { select: { id: true, lineNumber: true } } },
+  });
+
+  await tx.orderStatusHistory.create({
+    data: {
+      orderId: created.id,
+      changedById: createdById,
+      fromStatus: null,
+      toStatus: OrderStatus.RECEIVED,
+      notes: "Order received.",
+    },
+  });
+
+  await tx.auditEvent.create({
+    data: {
+      actorId: createdById,
+      action: "ORDER_CREATE",
+      entityType: "CustomerOrder",
+      entityId: created.id,
+      afterData: {
+        reference,
+        customerId: input.customerId,
+        source: input.source,
+        lineCount: input.lines.length,
+        hasOriginalSourceText: Boolean(input.originalSourceText),
+        idempotencyKey: input.idempotencyKey ?? null,
+      },
+    },
+  });
+
+  return created;
 }
 
 /**
@@ -105,88 +227,16 @@ export async function createOrder(
     }
   }
 
-  const now = new Date();
   const MAX_REFERENCE_ATTEMPTS = 5;
 
   for (let attempt = 0; attempt < MAX_REFERENCE_ATTEMPTS; attempt++) {
     const reference = generateOrderReference();
 
     try {
-      const order = await prisma.$transaction(async (tx) => {
-        const created = await tx.customerOrder.create({
-          data: {
-            reference,
-            customerId: input.customerId,
-            customerLocationId: input.customerLocationId ?? null,
-            createdById,
-            customerPoReference: input.customerPoReference ?? null,
-            source: input.source,
-            status: OrderStatus.RECEIVED,
-            // Milestone 0 fix (round 5): orderDate/requestedDeliveryDate
-            // arrive as "YYYY-MM-DD" strings (lib/order-validation.ts's
-            // dateOnlyString) -- passing that string straight to a Prisma
-            // `@db.Date` field fails ("premature end of input. Expected
-            // ISO-8601 DateTime"), since Prisma accepts a Date object or a
-            // full ISO-8601 *datetime* string, never a bare date. See
-            // lib/dates.ts for the full explanation and CHANGES.md's round
-            // 5 section for why nothing upstream (Zod, tsc) could catch
-            // this on its own.
-            orderDate: dateOnlyStringToUtcDate(input.orderDate),
-            requestedDeliveryDate: dateOnlyStringToUtcDate(input.requestedDeliveryDate),
-            deliveryAddress: input.deliveryAddress ?? null,
-            currency: input.currency ?? "USD",
-            originalSourceText: input.originalSourceText ?? null,
-            internalNotes: input.internalNotes ?? null,
-            idempotencyKey: input.idempotencyKey ?? null,
-            receivedAt: now,
-            isDemo,
-            lines: {
-              create: input.lines.map((line, index) => ({
-                lineNumber: index + 1,
-                originalProductDescription: line.originalProductDescription,
-                productId: line.productId ?? null,
-                sapItemCodeSnapshot: line.sapItemCodeSnapshot ?? null,
-                requestedQuantity: new Prisma.Decimal(line.requestedQuantity),
-                requestedUnitCode: line.requestedUnitCode,
-                customerUnitPrice:
-                  line.customerUnitPrice != null ? new Prisma.Decimal(line.customerUnitPrice) : null,
-                salesNotes: line.salesNotes ?? null,
-                isDemo,
-              })),
-            },
-          },
-          select: { id: true },
-        });
-
-        await tx.orderStatusHistory.create({
-          data: {
-            orderId: created.id,
-            changedById: createdById,
-            fromStatus: null,
-            toStatus: OrderStatus.RECEIVED,
-            notes: "Order received.",
-          },
-        });
-
-        await tx.auditEvent.create({
-          data: {
-            actorId: createdById,
-            action: "ORDER_CREATE",
-            entityType: "CustomerOrder",
-            entityId: created.id,
-            afterData: {
-              reference,
-              customerId: input.customerId,
-              source: input.source,
-              lineCount: input.lines.length,
-              hasOriginalSourceText: Boolean(input.originalSourceText),
-              idempotencyKey: input.idempotencyKey ?? null,
-            },
-          },
-        });
-
-        return created;
-      }, TRANSACTION_OPTIONS);
+      const order = await prisma.$transaction(
+        (tx) => createOrderCore(tx, reference, input, createdById, isDemo),
+        TRANSACTION_OPTIONS
+      );
 
       return { ok: true, id: order.id, idempotentReplay: false };
     } catch (error) {
