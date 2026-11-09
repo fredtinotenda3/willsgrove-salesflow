@@ -145,6 +145,7 @@ export async function getOrderById(id: string) {
       subtotal: true,
       taxTotal: true,
       total: true,
+      originalSourceText: true,
       internalNotes: true,
       isDemo: true,
       receivedAt: true,
@@ -219,6 +220,7 @@ export async function getOrderById(id: string) {
     subtotal: order.subtotal?.toString() ?? null,
     taxTotal: order.taxTotal?.toString() ?? null,
     total: order.total?.toString() ?? null,
+    originalSourceText: order.originalSourceText,
     internalNotes: order.internalNotes,
     isDemo: order.isDemo,
     timing: {

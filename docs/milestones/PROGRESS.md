@@ -1,18 +1,32 @@
 # Milestone 0 — Progress
 
-Status: **built, and now verified against two real-machine runs** (your
-`git status`/`npm test`/`tsc`/`lint`/`build` output, Node confirmed
+Status: **built, and verified against four real-machine runs so far**
+(your `git status`/`npm test`/`tsc`/`lint`/`build` output, Node confirmed
 **v20.20.2**). The first run found real issues — all fixed, see "Milestone 0
 fix" below. The second run, against that fix, came back **fully clean on
 `tsc`/`lint`/`npm test` (69/69)** and found exactly one more real,
 previously-unknown bug — a `crypto.randomUUID()` prerender error in
 `app/orders/new/page.tsx` — now also fixed. See "Milestone 0 fix round 2"
 below, including an important correction to this document's own earlier
-"Compiled successfully" claim. One sandbox-only blocker remains for
-everything in this repo that depends on a real generated Prisma client
-(detailed below), and it turns out to be harder than first described —
-see that section for why the sandbox can never reach the build's
-static-generation phase at all, by any workaround tried.
+"Compiled successfully" claim. Round 3 built your six-item "real SAP
+catalogue / combinable order intake" instruction against that confirmed-clean
+round-2 baseline. The third real run, against round 3, found two real
+bugs — a `P2028` transaction-timeout crash in `npm run db:remove-demo`,
+and the one remaining pre-existing lint error — both fixed in round 4,
+along with an explanation (not a code fix) for that run's 16 `tsc`/`build`
+errors and the vitest version question. **The fourth real run, against
+round 4 — your manual test script this time, not just the automated
+checks — found one more real, previously-unknown bug**: manual-entry order
+creation failed with HTTP 500 because `orderDate`/`requestedDeliveryDate`
+were passed to Prisma as bare "YYYY-MM-DD" strings, which Prisma's
+`DateTime` parser rejects outright. Now fixed in round 5, below, with a
+shared conversion helper, 21 new unit tests, a UTC-explicit display fix,
+a full codebase audit for the same bug class, and an honest explanation
+of why no test before this round could have caught it. One sandbox-only
+blocker remains for everything in this repo that depends on a real
+generated Prisma client (detailed below), and the sandbox can never reach
+the build's static-generation phase at all, by any workaround tried — this
+remains true in round 5, unchanged.
 
 ## Scope delivered (per your "Approved with changes" instruction)
 
@@ -51,14 +65,184 @@ static-generation phase at all, by any workaround tried.
   storage layer with content-type sniffing, a 20MB size limit, a checksum,
   and an audit event; download via the authorized `GET /api/files/[id]`.
 - `SETUP-WINDOWS.md` — PowerShell execution-policy notes, exact migration
-  and seed commands, how to undo the migration.
+  and seed commands, how to undo the migration. Round 3 adds a 12-step
+  manual, non-developer test script covering the real catalogue import and
+  all three order-intake modes below.
+- **Round 3**: `prisma/seed.ts` no longer creates any placeholder products —
+  demo orders now look up real, already-imported SAP products
+  (`isDemo: false`) and skip gracefully if the catalogue hasn't been
+  imported yet. New Order (`/orders/new`) now supports three **combinable**
+  intake modes on one order — manual lines via a catalogue search (by SAP
+  code, name, or barcode), pasted PO text/message (new
+  `CustomerOrder.originalSourceText` column, additive migration), and
+  multiple uploaded PO files — with zero manual lines now a valid,
+  intentional state for the latter two. See CHANGES.md's "round 3" section
+  for full per-file detail.
 
 ## Build / lint / typecheck / test results — reported honestly
 
-This section now covers three runs: what your first real-machine run
-confirmed or contradicted, the sandbox results after that fix round, and
-what your second real-machine run (against that fix) confirmed, contradicted,
-and found newly.
+This section now covers four real runs plus round 5's sandbox results:
+what your first real-machine run confirmed or contradicted, the sandbox
+results after that fix round, what your second real-machine run (against
+that fix) confirmed, contradicted, and found newly, round 3's own sandbox
+results, your third real run against round 3 (two real bugs, fixed in
+round 4, plus two things explained rather than fixed), round 4's own
+sandbox results, your fourth real run against round 4 — this time
+including the manual test script, not just the automated checks — which
+found one more real bug (below), and round 5's own sandbox results
+(not yet real-machine-confirmed).
+
+### Milestone 0 fix round 5 — your fourth real run (manual test script), and this round's response
+
+- **Real bug, fixed**: manual-entry order creation (manual test script
+  step 5) failed with HTTP 500 —
+  `Invalid value for argument 'orderDate': premature end of input.
+  Expected ISO-8601 DateTime.` `orderDate`/`requestedDeliveryDate` were
+  passed to Prisma as bare "YYYY-MM-DD" strings; Prisma's `DateTime`
+  parser requires a full ISO-8601 datetime (with a time component) or a
+  `Date` object, never a bare date. New `lib/dates.ts` converts
+  "YYYY-MM-DD" to UTC midnight before either field reaches
+  `tx.customerOrder.create()` (`lib/orders.ts`), and the inverse for
+  reading one back out. `lib/order-validation.ts`'s own date-shape check
+  now shares the same, stricter validity check (see below) instead of its
+  own weaker one.
+- **A second, latent bug caught while building this fix, not reported by
+  you**: the pre-existing Zod validation for `orderDate`/
+  `requestedDeliveryDate` would have accepted "2026-02-30" as valid —
+  JS's `Date` constructor silently rolls invalid calendar days forward
+  (to 2 March) instead of rejecting them, and the old check only tested
+  for `NaN`, which that rollover never produces. `lib/dates.ts`'s
+  `isValidDateOnlyString` catches this by round-tripping the parsed date
+  back to a string and requiring an exact match; `lib/order-validation.ts`
+  now uses it.
+- **UI fix (your item 3)**: `lib/order-display.ts`'s `formatOrderDate` —
+  used by both `/orders` and `/orders/[id]` — now passes
+  `timeZone: "UTC"` explicitly. Without it, a date stored as UTC midnight
+  displays as the *previous* calendar day for any viewer west of UTC.
+  `formatOrderDateTime` (real timestamps — receivedAt, document uploads,
+  status-history entries) is deliberately untouched: local-time display
+  is correct there, not a bug.
+- **Codebase audit (your item 2)**: confirmed `orderDate`/
+  `requestedDeliveryDate` are the *only* `@db.Date` fields in the entire
+  schema, and the only date-only string accepted by any validator in the
+  project. Every other `DateTime` field is a real timestamp set via
+  `new Date()`/`now()` in code, never from a user string. Customers,
+  locations, product import, and stock have no date-only input fields at
+  all. `prisma/seed.ts` sets both fields to a literal `null` (unaffected).
+  There is no order-editing endpoint yet (`app/api/orders/[id]/route.ts`
+  is `GET`-only), so `createOrder()` was and remains the only write path.
+  One similar-looking pattern was found and deliberately left alone:
+  `app/reports/page.tsx` has the same "no explicit UTC" shape, but
+  Reports is explicitly out-of-scope demo/prototype data — fixing it
+  would have been unauthorized scope creep. See CHANGES.md's round-5
+  section for the full file-by-file list of what was checked.
+- **Tests (your item 4)**: `tests/dates.test.ts` — 21 new, unconditional
+  unit tests against the new helper directly (including the exact date
+  from your bug report, a leap year, the same date in a non-leap year,
+  and the Feb-30-style rollover bug above). **A real-database integration
+  test was also added** — `tests/orders-db.integration.test.ts`, which
+  genuinely calls `createOrder()` against a real database with your exact
+  payload shape — but it's off by default everywhere, including on your
+  machine, because this sandbox's `@prisma/client` stub throws when
+  merely constructed (same limitation as always), so every Prisma import
+  in that file is a dynamic, in-test-body import specifically so the
+  suite can be skipped here without crashing `npm test`. Run it on your
+  machine with `RUN_DB_INTEGRATION_TESTS=1 npm test` (after `npm run
+  db:seed` has run at least once). A short manual check is also given in
+  CHANGES.md as a no-env-var alternative.
+- **Why this wasn't caught before (your item 5)**: explained in full in
+  CHANGES.md's round-5 section. Short version: the existing tests
+  validate the Zod *schema* shape, never actually call `createOrder()`,
+  so none of them ever reach the Prisma call where this fails; and
+  Prisma's generated type for a `DateTime` field is `Date | string`,
+  which cannot distinguish "a full datetime string" from "a bare date
+  string" at the type level, so `tsc` had structurally nothing to flag —
+  this is a runtime value-format bug, not a type bug.
+- **Verification this round**: full-project `npx tsc --noEmit` error
+  count unchanged at 56 (same pre-existing Prisma-stub root cause; zero
+  new errors in any file this round touched or added). `npm run lint`
+  fully clean. `npm test`: **78 passed, 1 skipped** (was 73 passed last
+  round; +21 from `tests/dates.test.ts`; the new integration test
+  registers as skipped, not run, here, exactly as designed).
+
+### Milestone 0 fix round 4 — your third real run, and this round's response
+
+- **Real bug, fixed**: `npm run db:remove-demo` crashed with `P2028`
+  ("Transaction already closed... timeout 5000ms, however 5315ms passed")
+  on the 8th of 12 sequential deletes in its interactive transaction,
+  against your pooled Neon endpoint. `scripts/remove-demo-data.ts` now
+  passes `{ timeout: 60_000, maxWait: 10_000 }` to `prisma.$transaction()`.
+  Deletes stay sequential (not parallelized) — Prisma's own docs warn
+  against concurrent queries sharing one interactive-transaction
+  connection, and a timeout is a safer failure mode than a connection race.
+  Scope re-confirmed unchanged: every delete is still `isDemo: true` or
+  relation-scoped to a demo row.
+- **Real bug, fixed**: the one pre-existing `@typescript-eslint/no-explicit-any`
+  error in `app/products/import/page.tsx` (`readJson(): Promise<any>`),
+  flagged every round since round 1 but never asked for until now. Replaced
+  with a named `ApiResponseBody` envelope type; the two success-path casts
+  became `as unknown as Preview` / `as unknown as ImportResult`. `npm run
+  lint` is now **fully clean** for the first time across all four rounds.
+- **Explained, not a code bug**: the 16 `tsc`/`build` errors in your paste
+  all trace to one cause — the generated `@prisma/client` TypeScript types
+  on your machine don't yet include `originalSourceText` (confirmed: your
+  own `migrate deploy` output shows the round-3 migration is already
+  applied to the database — it's specifically the *generated client* that's
+  stale, not the schema or the database). This is expected, not a defect:
+  [Prisma's docs](https://docs.prisma.io/docs/orm/prisma-migrate/workflows/development-and-production)
+  state `migrate deploy` "does not reset the database or generate artifacts
+  (such as Prisma Client)" — `prisma generate` is a separate, required step
+  whenever `schema.prisma` changes, and nothing in your paste shows it being
+  run after the round-3 schema update. **Fix: run `npx prisma generate`,
+  then re-run `tsc`/`build`.** Nothing in this zip addresses this because
+  there's nothing in the repository to fix.
+- **Explained, not a code bug**: you asked which vitest version
+  `package.json` specifies and whether `npm install` is needed. Checked
+  directly: `package.json` and `package-lock.json` both already specify
+  `4.1.12`, correctly, in this delivery. Your run printing "RUN v5.1.0"
+  means the vitest actually sitting in your `node_modules` right now is
+  still 5.1.0 — `npm install` is the step that syncs `node_modules` to what
+  the manifest/lockfile say, and nothing in your paste shows it having run
+  since the earlier downgrade. See CHANGES.md's round-4 section for the
+  full reasoning, including an honest note on an earlier round's
+  "5.1.0 was never going to run on Node 20.20.2" claim versus your run's
+  73/73 clean pass under v5.1.0 — the registry-confirmed `engines` mismatch
+  is real, but `engines` is advisory, not an execution block, so this
+  round's clean run doesn't contradict that engines data, it just means
+  this particular run didn't hit whatever crashed before.
+- **Verification this round**: `npx eslint app/products/import/page.tsx`
+  clean; `npx tsc --noEmit` grepped for that file's path, zero matches (and
+  the full-project error count is unchanged at 56, confirming nothing new
+  was introduced); `npm run lint` fully clean project-wide; `npm test`
+  57/57 (plus the one known sandbox-only import failure, unchanged).
+
+### Milestone 0 fix round 3 — sandbox results
+
+- **`tsc --noEmit`: 56 errors** (up from 55) — the one new error is
+  `RecordStatus` joining the already-documented "`@prisma/client` has no
+  exported member" line in `prisma/seed.ts`, same root cause as every other
+  error in this count. Zero errors in any file this round's logic actually
+  touched.
+- **`npm run lint`: clean**, except the same one pre-existing,
+  untouched-this-round error in `app/products/import/page.tsx`.
+- **`npm test` (Vitest): 57/57 non-`order-validation` tests pass**;
+  `order-validation.test.ts` still fails to *import* here for the same
+  sandbox-only reason. **Important, reported plainly rather than glossed
+  over**: this round's schema change (order lines no longer require a
+  minimum of 1) made one of that file's *existing* tests assert the
+  now-wrong behaviour — `"rejects a payload with zero order lines"`
+  expected `success: false`. Caught during my own review before delivery,
+  not from your feedback (you haven't run this round yet). Fixed: that
+  test now expects `success: true` and is renamed to explain why; five new
+  tests were added alongside it. `order-validation.test.ts` is now 16
+  tests (was 12), bringing the real total to **73** once this runs on your
+  machine, not 69 — see CHANGES.md's round-3 section for the arithmetic.
+- **`npm run build`**: same result as round 2's "Compiled successfully" at
+  the Turbopack stage, then the same TypeScript-phase stop on the 56-error
+  set above — the sandbox still cannot reach "Generating static pages" by
+  any workaround (see "Sandbox-only blocker" below, unchanged). Your next
+  real `npm run build` is what actually confirms this round's pages build
+  end to end, same caveat as round 2's `crypto.randomUUID()` fix.
 
 ### What your second real run confirmed vs. contradicted
 
@@ -246,3 +430,41 @@ or sandbox-only, without issue from fonts specifically).
   self-resolved on your immediate retry (`migrate status` succeeded).
   Flagged, not acted on — nothing here suggests it's a recurring problem,
   but worth a second look if it happens again without clearing up.
+- **The "lines OR text OR file" guard for a non-empty order submission
+  lives client-side only, by design, not oversight.** `createOrderSchema`
+  (server) accepts zero lines unconditionally; `validateClientSide()`
+  (client) is what actually requires at least one of a started line,
+  pasted text, or a selected file. This is because a file-only order must
+  be created (with zero lines, zero text) *before* the file can be
+  uploaded to it — the documents endpoint needs an order id to attach to.
+  If a stronger server-side guarantee is ever wanted (e.g. a background
+  job that flags/cancels an order left with nothing attached after some
+  time), that's a new, separate piece of work, not something this round
+  does implicitly.
+- **Test count is 94 once round 5 runs on your machine** (73 confirmed
+  last round + 21 new, unconditional tests in `tests/dates.test.ts`), plus
+  1 more — `tests/orders-db.integration.test.ts` — only if you opt in with
+  `RUN_DB_INTEGRATION_TESTS=1`. See CHANGES.md's round-5 section for the
+  reconciliation and why that one test is opt-in.
+- **Resolved, confirmed by your round-4 real run**: the Prisma Client
+  regeneration and vitest-sync items flagged after round 3 are both
+  confirmed fixed on your machine — your round-5 report states `prisma
+  generate`, `tsc`, `lint`, 73/73 tests, and `build` all passed cleanly
+  against round 4. Left here, struck through in spirit rather than
+  deleted, so the history of what broke and what fixed it stays visible:
+  ~~Prisma Client needs regenerating (`npx prisma generate`)~~ and
+  ~~`node_modules/vitest` needs syncing via `npm install`~~ — both done.
+- **The new real-database integration test is opt-in, not run by
+  default, even on your machine.** `tests/orders-db.integration.test.ts`
+  needs `RUN_DB_INTEGRATION_TESTS=1 npm test` to actually run (and
+  `npm run db:seed` to have been run at least once first) — a plain
+  `npm test` reports it as skipped, not run, which is expected, not a
+  regression. See CHANGES.md's round-5 section for why it's opt-in and
+  the short manual check as a no-env-var alternative.
+- **`app/reports/page.tsx` has the same "no explicit UTC" date-parsing
+  shape** as the bug fixed this round (`new Date(\`${date}T00:00:00\`)`,
+  then formatted without pinning to UTC), on a locally-constructed mock
+  date. Deliberately not fixed — Reports remains explicitly out-of-scope
+  demo/prototype data, not a real `orderDate` value — but flagged here in
+  case Reports becomes real in a future milestone, so this isn't
+  rediscovered from scratch then.

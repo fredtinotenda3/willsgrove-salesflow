@@ -141,89 +141,100 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                   </p>
                 </div>
 
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left">
-                    <thead>
-                      <tr className="border-y border-gray-100 bg-gray-50/70">
-                        <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                          #
-                        </th>
-                        <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                          Product
-                        </th>
-                        <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                          Quantity
-                        </th>
-                        <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                          Customer Price
-                        </th>
-                        <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                          Approved Price
-                        </th>
-                        <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                          Line Total
-                        </th>
-                        <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                          Verification
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {order.lines.map((line) => {
-                        const verificationLabel =
-                          VERIFICATION_STATUS_LABELS[line.verificationStatus as VerificationStatusValue] ??
-                          line.verificationStatus;
-                        const verificationStyle =
-                          VERIFICATION_STATUS_STYLES[line.verificationStatus as VerificationStatusValue] ??
-                          "bg-gray-100 text-gray-500";
+                {order.lines.length === 0 ? (
+                  <div className="px-6 py-10 text-center">
+                    <p className="text-xs font-semibold text-gray-600">No line items yet</p>
+                    <p className="mt-1 text-xs text-gray-400">
+                      {order.originalSourceText || order.documents.length > 0
+                        ? "This order was submitted as a pasted message and/or an attached document. There's no automatic line extraction yet (that's a later milestone) -- review what's below and add lines manually."
+                        : "Add lines to this order once the details are confirmed."}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="border-y border-gray-100 bg-gray-50/70">
+                          <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                            #
+                          </th>
+                          <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                            Product
+                          </th>
+                          <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                            Quantity
+                          </th>
+                          <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                            Customer Price
+                          </th>
+                          <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                            Approved Price
+                          </th>
+                          <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                            Line Total
+                          </th>
+                          <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                            Verification
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {order.lines.map((line) => {
+                          const verificationLabel =
+                            VERIFICATION_STATUS_LABELS[line.verificationStatus as VerificationStatusValue] ??
+                            line.verificationStatus;
+                          const verificationStyle =
+                            VERIFICATION_STATUS_STYLES[line.verificationStatus as VerificationStatusValue] ??
+                            "bg-gray-100 text-gray-500";
 
-                        return (
-                          <tr key={line.id} className="border-b border-gray-50">
-                            <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-400">
-                              {line.lineNumber}
-                            </td>
-                            <td className="px-6 py-4">
-                              <p className="text-xs font-medium text-gray-700">
-                                {line.originalProductDescription}
-                              </p>
-                              {line.sapItemCodeSnapshot && (
-                                <p className="mt-1 text-[10px] text-gray-400">
-                                  SAP item: {line.sapItemCodeSnapshot}
+                          return (
+                            <tr key={line.id} className="border-b border-gray-50">
+                              <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-400">
+                                {line.lineNumber}
+                              </td>
+                              <td className="px-6 py-4">
+                                <p className="text-xs font-medium text-gray-700">
+                                  {line.originalProductDescription}
                                 </p>
-                              )}
-                              {line.salesNotes && (
-                                <p className="mt-1 text-[10px] italic text-gray-400">{line.salesNotes}</p>
-                              )}
-                            </td>
-                            <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">
-                              {line.requestedQuantity} {line.requestedUnitCode}
-                            </td>
-                            <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">
-                              {line.customerUnitPrice !== null
-                                ? `${order.currency} ${line.customerUnitPrice}`
-                                : "Not provided"}
-                            </td>
-                            <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">
-                              {line.approvedUnitPrice !== null
-                                ? `${order.currency} ${line.approvedUnitPrice}`
-                                : "Pending"}
-                            </td>
-                            <td className="whitespace-nowrap px-6 py-4 text-xs font-semibold text-gray-700">
-                              {line.lineTotal !== null ? `${order.currency} ${line.lineTotal}` : "Pending"}
-                            </td>
-                            <td className="whitespace-nowrap px-6 py-4">
-                              <span
-                                className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${verificationStyle}`}
-                              >
-                                {verificationLabel}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                                {line.sapItemCodeSnapshot && (
+                                  <p className="mt-1 text-[10px] text-gray-400">
+                                    SAP item: {line.sapItemCodeSnapshot}
+                                  </p>
+                                )}
+                                {line.salesNotes && (
+                                  <p className="mt-1 text-[10px] italic text-gray-400">{line.salesNotes}</p>
+                                )}
+                              </td>
+                              <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">
+                                {line.requestedQuantity} {line.requestedUnitCode}
+                              </td>
+                              <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">
+                                {line.customerUnitPrice !== null
+                                  ? `${order.currency} ${line.customerUnitPrice}`
+                                  : "Not provided"}
+                              </td>
+                              <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">
+                                {line.approvedUnitPrice !== null
+                                  ? `${order.currency} ${line.approvedUnitPrice}`
+                                  : "Pending"}
+                              </td>
+                              <td className="whitespace-nowrap px-6 py-4 text-xs font-semibold text-gray-700">
+                                {line.lineTotal !== null ? `${order.currency} ${line.lineTotal}` : "Pending"}
+                              </td>
+                              <td className="whitespace-nowrap px-6 py-4">
+                                <span
+                                  className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${verificationStyle}`}
+                                >
+                                  {verificationLabel}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
 
                 {/* Totals */}
                 <div className="flex justify-end border-t border-gray-100 px-6 py-4">
@@ -288,6 +299,19 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                   </div>
                 )}
               </section>
+
+              {/* Original message/PO text, as pasted in at intake */}
+              {order.originalSourceText && (
+                <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
+                  <h2 className="text-[15px] font-bold text-[#17251E]">Original Message</h2>
+                  <p className="mt-1 text-xs text-gray-400">
+                    The customer&apos;s message or PO text exactly as pasted in at intake.
+                  </p>
+                  <p className="mt-3 whitespace-pre-wrap rounded-lg bg-gray-50 px-4 py-3 text-xs text-gray-600">
+                    {order.originalSourceText}
+                  </p>
+                </section>
+              )}
 
               {/* Status history */}
               <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">

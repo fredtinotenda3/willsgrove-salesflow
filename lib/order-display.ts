@@ -86,11 +86,31 @@ export const DOCUMENT_TYPE_LABELS: Record<DocumentTypeValue, string> = {
   OTHER: "Other",
 };
 
+/**
+ * For orderDate/requestedDeliveryDate ONLY -- both are stored as UTC
+ * midnight (see lib/dates.ts) and arrive here as that instant's full ISO
+ * string (lib/order-queries.ts's `.toISOString()`). Milestone 0 fix
+ * (round 5): formatting without an explicit `timeZone` uses the VIEWER'S
+ * LOCAL timezone, which can roll UTC midnight back onto the previous
+ * calendar day for anyone west of UTC (e.g. 2026-11-09T00:00:00.000Z
+ * displays as "8 Nov" in a UTC-5 browser) -- the exact "a date never
+ * shifts by timezone" bug asked to be fixed. `timeZone: "UTC"` pins the
+ * display to the same calendar day that was actually stored, for every
+ * viewer, regardless of where they are. Deliberately NOT applied to
+ * formatOrderDateTime below: that one formats real timestamps
+ * (receivedAt, createdAt, a document's upload time, ...), where showing
+ * the viewer's own local time is correct, expected behaviour, not a bug.
+ */
 export function formatOrderDate(iso: string | null): string {
   if (!iso) return "—";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  return date.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 export function formatOrderDateTime(iso: string | null): string {

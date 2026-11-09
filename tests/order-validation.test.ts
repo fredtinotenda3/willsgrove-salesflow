@@ -60,11 +60,61 @@ describe("createOrderSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects a payload with zero order lines", () => {
+  it("accepts a payload with zero order lines (Milestone 0 fix round 2: an order submitted via pasted text or an uploaded document alone -- modes (b)/(c) -- has no manual lines yet and waits for review; see lib/order-validation.ts's comment on this)", () => {
     const result = createOrderSchema.safeParse({
       customerId: "cust_123",
       source: "MANUAL",
+      originalSourceText: "Please send 10 boxes of apples, usual terms.",
       lines: [],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a payload with zero order lines and no originalSourceText either (the file-only intake mode -- the document itself is uploaded in a separate request after the order exists, so this schema has no way to require it)", () => {
+    const result = createOrderSchema.safeParse({
+      customerId: "cust_123",
+      source: "EMAIL",
+      lines: [],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a payload with originalSourceText set", () => {
+    const result = createOrderSchema.safeParse({
+      customerId: "cust_123",
+      source: "WHATSAPP",
+      originalSourceText: "Hi, please send the usual order for this week.",
+      lines: [
+        {
+          originalProductDescription: "Apples G/D Econ 1.5kg",
+          requestedQuantity: "10",
+          requestedUnitCode: "EA",
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an originalSourceText longer than 5000 characters", () => {
+    const result = createOrderSchema.safeParse({
+      customerId: "cust_123",
+      source: "EMAIL",
+      originalSourceText: "x".repeat(5001),
+      lines: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects more than 200 order lines", () => {
+    const line = {
+      originalProductDescription: "x",
+      requestedQuantity: "1",
+      requestedUnitCode: "EA",
+    };
+    const result = createOrderSchema.safeParse({
+      customerId: "cust_123",
+      source: "MANUAL",
+      lines: Array.from({ length: 201 }, () => line),
     });
     expect(result.success).toBe(false);
   });

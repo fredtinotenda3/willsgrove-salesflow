@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { OrderSource } from "@prisma/client";
+import { isValidDateOnlyString } from "@/lib/dates";
 
 /**
  * Decimal-as-string pattern for every money/quantity field: the project
@@ -21,11 +22,22 @@ const optionalDecimalString = z
   .nullable()
   .optional();
 
+/**
+ * Milestone 0 fix (round 5): was `.refine(... !Number.isNaN(...))`, which
+ * matches "2026-02-30" (JS's Date constructor silently rolls invalid
+ * calendar days forward instead of producing NaN) -- now delegates to
+ * lib/dates.ts's isValidDateOnlyString, the one shared, round-trip-based
+ * check that actually catches that. Still just a shape/value check: this
+ * schema's inferred TYPE stays `string | null | undefined` (no
+ * `.transform()`), by design -- see lib/dates.ts's module comment for why
+ * converting to a real Date happens in lib/orders.ts, at the one place
+ * that value actually reaches Prisma, not here.
+ */
 const dateOnlyString = z
   .string()
   .trim()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be a date in YYYY-MM-DD format.")
-  .refine((value) => !Number.isNaN(new Date(`${value}T00:00:00.000Z`).getTime()), "Not a valid date.")
+  .refine(isValidDateOnlyString, "Not a valid date.")
   .nullable()
   .optional();
 
@@ -63,6 +75,12 @@ export const createOrderSchema = z.object({
   orderDate: dateOnlyString,
   requestedDeliveryDate: dateOnlyString,
   deliveryAddress: z.string().trim().max(500).nullable().optional(),
+
+  // The customer's own message/PO text, preserved verbatim -- see
+  // prisma/schema.prisma's comment on CustomerOrder.originalSourceText.
+  // Separate from internalNotes (staff-only commentary), never merged
+  // into it.
+  originalSourceText: z.string().trim().max(5000).nullable().optional(),
   currency: z
     .string()
     .trim()
@@ -75,7 +93,20 @@ export const createOrderSchema = z.object({
   // response) without creating a duplicate order -- see lib/orders.ts.
   idempotencyKey: z.string().trim().min(1).max(100).optional(),
 
-  lines: z.array(orderLineInputSchema).min(1, "At least one order line is required.").max(200),
+  // Milestone 0 fix (2nd round): an order may now be created with zero
+  // lines when it was submitted via pasted text and/or an uploaded
+  // document (modes (b)/(c) in the brief) with no AI line extraction yet
+  // -- that's Milestone 2. Such an order waits for a human to add lines
+  // after reading what was pasted/attached, rather than being blocked at
+  // intake. This schema deliberately does not re-add a cross-field "must
+  // have lines OR text" rule: a document is uploaded in a separate
+  // request after the order id exists (see POST /api/orders/[id]/documents),
+  // so at the time this schema runs there is no reliable way to know "a
+  // file is on its way." The real guard against a truly empty submission
+  // (no lines, no text, no file) lives in the client's own validation
+  // (app/orders/new/page.tsx's validateClientSide), which is where it
+  // belongs since only the client knows whether a file is queued.
+  lines: z.array(orderLineInputSchema).max(200),
 });
 
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;

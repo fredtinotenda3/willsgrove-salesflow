@@ -215,6 +215,15 @@ model CustomerOrder {
   taxTotal Decimal? @db.Decimal(18, 4)
   total    Decimal? @db.Decimal(18, 4)
 
+  // The customer's own message/PO text, preserved verbatim, when the order
+  // was submitted by pasting it in rather than (or alongside) an uploaded
+  // document or manually-keyed lines -- the same "preserve the customer's
+  // own words" principle OrderLine.originalProductDescription already
+  // follows. Distinct from internalNotes, which is staff-only commentary,
+  // never the customer's own text. Null when the order was created purely
+  // from manual entry and/or an uploaded file with nothing pasted in.
+  originalSourceText String?
+
   internalNotes String?
 
   // Lets a client safely retry a create-order submission (e.g. after a

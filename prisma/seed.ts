@@ -11,11 +11,23 @@
  *    script refuses to run without them, and never falls back to a
  *    hardcoded default password). mustChangePassword is set true, so the
  *    temporary password from .env.local must be changed at first login.
- *  - Everything else (customers, locations, products, orders, order
- *    lines) is fictional, isDemo: true, and built by calling the SAME
- *    lib/customers.ts / lib/orders.ts functions the real API routes use
- *    (not raw prisma.create() calls) -- so seeding also exercises the
- *    real validation, audit-logging and idempotency paths.
+ *  - Demo customers (isDemo: true) and demo orders (isDemo: true)
+ *    referencing them, built by calling the SAME lib/customers.ts /
+ *    lib/orders.ts functions the real API routes use (not raw
+ *    prisma.create() calls) -- so seeding also exercises the real
+ *    validation, audit-logging and idempotency paths.
+ *  - No demo Product rows, as of this fix round. Willsgrove's real SAP
+ *    item catalogue is imported through Products -> Import (see
+ *    lib/product-import.ts); this script never creates placeholder
+ *    products, and demo orders reference REAL, already-imported products
+ *    (isDemo: false) by looking a handful of them up -- see
+ *    pickRealProductsForDemoOrders() below. If the catalogue hasn't been
+ *    imported yet, demo orders are skipped (with a clear console message
+ *    explaining why) rather than inventing fake SAP codes or failing the
+ *    whole seed run -- the admin account and demo customers still seed
+ *    successfully either way. Re-run `npm run db:seed` after importing
+ *    the catalogue to add the demo orders retroactively; it's idempotent
+ *    either way.
  *  - No demo User rows. CustomerOrder.createdById is a required,
  *    Restrict-on-delete foreign key to User, and Settings > Users & Roles
  *    is explicitly real at this milestone -- seeding a second "demo"
@@ -26,12 +38,12 @@
  *    is who actually produced them.
  *
  * Idempotent: safe to re-run. The admin is upserted by email. Demo rows
- * are looked up by a stable natural key (sapCustomerCode / sapItemCode /
- * idempotencyKey) and skipped if they already exist, so re-running this
- * script never creates duplicates.
+ * are looked up by a stable natural key (sapCustomerCode / idempotencyKey)
+ * and skipped if they already exist, so re-running this script never
+ * creates duplicates.
  */
 import "dotenv/config";
-import { OrderSource, OrderStatus } from "@prisma/client";
+import { OrderSource, OrderStatus, RecordStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { hashPassword, checkPasswordStrength } from "@/lib/auth/password";
 import { createCustomer } from "@/lib/customers";
@@ -77,44 +89,30 @@ async function seedAdmin(): Promise<{ id: string }> {
   return admin;
 }
 
-type DemoProductSeed = {
+type RealProductRef = {
+  id: string;
   sapItemCode: string;
   itemName: string;
-  category: string;
-  barcode?: string;
 };
 
-const DEMO_PRODUCTS: DemoProductSeed[] = [
-  { sapItemCode: "DEMO-0001", itemName: "APPLES G/D ECON 1.5KG", category: "Fruit", barcode: "6001234500011" },
-  { sapItemCode: "DEMO-0002", itemName: "TOMATOES ROUND LOOSE 1KG", category: "Vegetables", barcode: "6001234500028" },
-  { sapItemCode: "DEMO-0003", itemName: "BUTTERNUT WHOLE 1KG", category: "Vegetables", barcode: "6001234500035" },
-  { sapItemCode: "DEMO-0004", itemName: "BANANAS LOOSE 1KG", category: "Fruit", barcode: "6001234500042" },
-  { sapItemCode: "DEMO-0005", itemName: "ONIONS RED 1KG", category: "Vegetables", barcode: "6001234500059" },
-  { sapItemCode: "DEMO-0006", itemName: "ORANGES VALENCIA 1.5KG", category: "Fruit", barcode: "6001234500066" },
-];
+// Demo orders need SOMETHING to reference, but per the explicit
+// instruction they must use real, already-imported SAP products rather
+// than invented ones -- this looks a handful up rather than creating
+// anything. Picked deterministically (ordered by sapItemCode) rather than
+// randomly, so re-running the seed against an unchanged catalogue keeps
+// referencing the same products and stays idempotent in spirit even
+// though the demo orders themselves are keyed by idempotencyKey, not by
+// which products they happen to reference.
+const MIN_REAL_PRODUCTS_FOR_DEMO_ORDERS = 3;
+const REAL_PRODUCTS_TO_FETCH = 6;
 
-async function seedProducts(): Promise<Record<string, string>> {
-  const idByCode: Record<string, string> = {};
-
-  for (const product of DEMO_PRODUCTS) {
-    const row = await prisma.product.upsert({
-      where: { sapItemCode: product.sapItemCode },
-      create: {
-        sapItemCode: product.sapItemCode,
-        itemName: product.itemName,
-        category: product.category,
-        barcode: product.barcode,
-        status: "ACTIVE",
-        isDemo: true,
-      },
-      update: {},
-      select: { id: true, sapItemCode: true },
-    });
-    idByCode[row.sapItemCode] = row.id;
-  }
-
-  console.log(`Demo products ready: ${DEMO_PRODUCTS.length}`);
-  return idByCode;
+async function pickRealProductsForDemoOrders(): Promise<RealProductRef[]> {
+  return prisma.product.findMany({
+    where: { isDemo: false, status: RecordStatus.ACTIVE },
+    orderBy: [{ sapItemCode: "asc" }],
+    take: REAL_PRODUCTS_TO_FETCH,
+    select: { id: true, sapItemCode: true, itemName: true },
+  });
 }
 
 type DemoCustomerSeed = {
@@ -214,8 +212,12 @@ async function advanceDemoOrder(
   });
 }
 
-async function seedOrders(adminId: string, customerIds: string[], productIdByCode: Record<string, string>): Promise<void> {
-  const codes = Object.keys(productIdByCode);
+async function seedOrders(adminId: string, customerIds: string[], realProducts: RealProductRef[]): Promise<void> {
+  // Cycle through whatever real products were found (modulo), rather than
+  // indexing directly -- keeps this working even on a catalogue with
+  // fewer than REAL_PRODUCTS_TO_FETCH active products, as long as the
+  // MIN_REAL_PRODUCTS_FOR_DEMO_ORDERS threshold in main() was met.
+  const product = (index: number): RealProductRef => realProducts[index % realProducts.length];
 
   const demoOrders = [
     {
@@ -224,8 +226,8 @@ async function seedOrders(adminId: string, customerIds: string[], productIdByCod
       source: OrderSource.EMAIL,
       customerPoReference: "PO-DEMO-1001",
       lines: [
-        { code: codes[0], qty: "40", unit: "EA", price: "2.70" },
-        { code: codes[1], qty: "25", unit: "KG", price: "1.10" },
+        { product: product(0), qty: "40", unit: "EA", price: "2.70" },
+        { product: product(1), qty: "25", unit: "KG", price: "1.10" },
       ],
       advanceTo: null,
     },
@@ -235,9 +237,9 @@ async function seedOrders(adminId: string, customerIds: string[], productIdByCod
       source: OrderSource.WHATSAPP,
       customerPoReference: "PO-DEMO-1002",
       lines: [
-        { code: codes[2], qty: "30", unit: "EA", price: "1.85" },
-        { code: codes[3], qty: "60", unit: "KG", price: "0.95" },
-        { code: codes[4], qty: "20", unit: "KG", price: "0.80" },
+        { product: product(2), qty: "30", unit: "EA", price: "1.85" },
+        { product: product(3), qty: "60", unit: "KG", price: "0.95" },
+        { product: product(4), qty: "20", unit: "KG", price: "0.80" },
       ],
       advanceTo: { status: OrderStatus.PENDING_VERIFICATION, field: "reviewedAt" as const },
     },
@@ -247,8 +249,8 @@ async function seedOrders(adminId: string, customerIds: string[], productIdByCod
       source: OrderSource.MANUAL,
       customerPoReference: "PO-DEMO-1003",
       lines: [
-        { code: codes[5], qty: "15", unit: "EA", price: "3.10" },
-        { code: codes[0], qty: "18", unit: "EA", price: "2.65" },
+        { product: product(5), qty: "15", unit: "EA", price: "3.10" },
+        { product: product(0), qty: "18", unit: "EA", price: "2.65" },
       ],
       advanceTo: { status: OrderStatus.PENDING_VERIFICATION, field: "reviewedAt" as const },
     },
@@ -258,8 +260,8 @@ async function seedOrders(adminId: string, customerIds: string[], productIdByCod
       source: OrderSource.EMAIL,
       customerPoReference: "PO-DEMO-1004",
       lines: [
-        { code: codes[1], qty: "50", unit: "KG", price: "1.05" },
-        { code: codes[2], qty: "22", unit: "EA", price: "1.80" },
+        { product: product(1), qty: "50", unit: "KG", price: "1.05" },
+        { product: product(2), qty: "22", unit: "EA", price: "1.80" },
       ],
       advanceTo: { status: OrderStatus.APPROVED, field: "approvedAt" as const },
     },
@@ -268,9 +270,7 @@ async function seedOrders(adminId: string, customerIds: string[], productIdByCod
       customerId: customerIds[0],
       source: OrderSource.WHATSAPP,
       customerPoReference: "PO-DEMO-1005",
-      lines: [
-        { code: codes[3], qty: "35", unit: "KG", price: "0.90" },
-      ],
+      lines: [{ product: product(3), qty: "35", unit: "KG", price: "0.90" }],
       advanceTo: null,
     },
     {
@@ -279,8 +279,8 @@ async function seedOrders(adminId: string, customerIds: string[], productIdByCod
       source: OrderSource.MANUAL,
       customerPoReference: "PO-DEMO-1006",
       lines: [
-        { code: codes[4], qty: "28", unit: "KG", price: "0.82" },
-        { code: codes[5], qty: "12", unit: "EA", price: "3.00" },
+        { product: product(4), qty: "28", unit: "KG", price: "0.82" },
+        { product: product(5), qty: "12", unit: "EA", price: "3.00" },
       ],
       advanceTo: null,
     },
@@ -309,9 +309,12 @@ async function seedOrders(adminId: string, customerIds: string[], productIdByCod
         internalNotes: "Demonstration record created by prisma/seed.ts. Not a real order.",
         idempotencyKey: order.idempotencyKey,
         lines: order.lines.map((line) => ({
-          originalProductDescription: DEMO_PRODUCTS.find((p) => p.sapItemCode === line.code)!.itemName,
-          productId: productIdByCode[line.code],
-          sapItemCodeSnapshot: line.code,
+          // The product's own real name, not a placeholder -- these lines
+          // reference an actually-imported SAP item, see
+          // pickRealProductsForDemoOrders() above.
+          originalProductDescription: line.product.itemName,
+          productId: line.product.id,
+          sapItemCodeSnapshot: line.product.sapItemCode,
           requestedQuantity: line.qty,
           requestedUnitCode: line.unit,
           customerUnitPrice: line.price,
@@ -340,9 +343,19 @@ async function main() {
   console.log("Seeding Willsgrove SalesFlow (Milestone 0)...");
 
   const admin = await seedAdmin();
-  const productIdByCode = await seedProducts();
   const customerIds = await seedCustomers();
-  await seedOrders(admin.id, customerIds, productIdByCode);
+
+  const realProducts = await pickRealProductsForDemoOrders();
+  if (realProducts.length < MIN_REAL_PRODUCTS_FOR_DEMO_ORDERS) {
+    console.log(
+      `Demo orders skipped: only found ${realProducts.length} real, active SAP product(s) ` +
+        `(need at least ${MIN_REAL_PRODUCTS_FOR_DEMO_ORDERS}). Import the SAP catalogue via ` +
+        "Products -> Import in the browser, then re-run `npm run db:seed` to add demo orders " +
+        "referencing it. The admin account and demo customers above were still seeded normally."
+    );
+  } else {
+    await seedOrders(admin.id, customerIds, realProducts);
+  }
 
   console.log("Seed complete.");
 }

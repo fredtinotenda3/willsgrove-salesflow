@@ -3,6 +3,7 @@ import { Prisma, OrderStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { CreateOrderInput } from "@/lib/order-validation";
 import { getOrderById } from "@/lib/order-queries";
+import { dateOnlyStringToUtcDate } from "@/lib/dates";
 
 export type MutationFailure = {
   ok: false;
@@ -121,10 +122,20 @@ export async function createOrder(
             customerPoReference: input.customerPoReference ?? null,
             source: input.source,
             status: OrderStatus.RECEIVED,
-            orderDate: input.orderDate ?? null,
-            requestedDeliveryDate: input.requestedDeliveryDate ?? null,
+            // Milestone 0 fix (round 5): orderDate/requestedDeliveryDate
+            // arrive as "YYYY-MM-DD" strings (lib/order-validation.ts's
+            // dateOnlyString) -- passing that string straight to a Prisma
+            // `@db.Date` field fails ("premature end of input. Expected
+            // ISO-8601 DateTime"), since Prisma accepts a Date object or a
+            // full ISO-8601 *datetime* string, never a bare date. See
+            // lib/dates.ts for the full explanation and CHANGES.md's round
+            // 5 section for why nothing upstream (Zod, tsc) could catch
+            // this on its own.
+            orderDate: dateOnlyStringToUtcDate(input.orderDate),
+            requestedDeliveryDate: dateOnlyStringToUtcDate(input.requestedDeliveryDate),
             deliveryAddress: input.deliveryAddress ?? null,
             currency: input.currency ?? "USD",
+            originalSourceText: input.originalSourceText ?? null,
             internalNotes: input.internalNotes ?? null,
             idempotencyKey: input.idempotencyKey ?? null,
             receivedAt: now,
@@ -168,6 +179,7 @@ export async function createOrder(
               customerId: input.customerId,
               source: input.source,
               lineCount: input.lines.length,
+              hasOriginalSourceText: Boolean(input.originalSourceText),
               idempotencyKey: input.idempotencyKey ?? null,
             },
           },

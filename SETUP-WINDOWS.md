@@ -117,12 +117,47 @@ npm run db:seed
 This creates:
 - The one real administrator account (`SEED_ADMIN_EMAIL` /
   `SEED_ADMIN_PASSWORD`), with `mustChangePassword: true`.
-- A small set of clearly-labelled demo products, customers, and orders
-  (all `isDemo: true`), built by calling the same `createCustomer()` /
+- A small set of clearly-labelled demo customers and demo orders (all
+  `isDemo: true`), built by calling the same `createCustomer()` /
   `createOrder()` functions the real API uses.
 
-Safe to re-run — it upserts by natural key rather than inserting
-duplicates.
+**As of this fix round, this script no longer creates any demo
+products.** Willsgrove's real SAP item catalogue (`sapItemCode`,
+`itemName`, `barcode`, `category`) is imported separately, from the
+browser, once the app is running (step 8 below) — go to **Products →
+Import**, sign in as the admin, and upload your SAP items export. That
+import is what the Products page and the order-lines catalogue search
+on **Receive New Order** are reading from; this script never invents
+placeholder SAP codes.
+
+The demo orders this script creates need *something* real to reference,
+so they look up a handful of already-imported, real products
+(`isDemo: false`) rather than creating any — if you run `npm run
+db:seed` **before** importing the catalogue (e.g. on a brand-new
+database), you'll see a console message like:
+
+```
+Demo orders skipped: only found 0 real, active SAP product(s) (need at least 3).
+Import the SAP catalogue via Products -> Import in the browser, then re-run
+`npm run db:seed` to add demo orders referencing it. The admin account and
+demo customers above were still seeded normally.
+```
+
+That's expected, not an error — the admin account and demo customers are
+still created either way. Import the catalogue (step 8), then simply
+**re-run `npm run db:seed`** to add the demo orders retroactively, now
+referencing your real products.
+
+Safe to re-run either way — it upserts/looks up by natural key rather
+than inserting duplicates.
+
+**If you already ran an older version of this script** (before this fix
+round) and have the old `DEMO-0001`..`DEMO-0006` placeholder products in
+your database: run `npm run db:remove-demo` (step 7 below) to clear out
+the old demo products, customers and orders in one safe, transactional
+sweep, then re-run `npm run db:seed` to recreate the demo customers and
+orders fresh — this time referencing your real imported catalogue
+instead of the old placeholders.
 
 **Why this needs `tsx --conditions=react-server`** (already set up for
 you in `package.json`'s `db:seed` script and in `prisma.config.ts`'s
@@ -143,7 +178,15 @@ npm run db:remove-demo
 Deletes every `isDemo: true` row, in one transaction, in
 foreign-key-safe order. Records an audit event with the counts removed.
 Does **not** touch the seeded administrator account (it's a real account,
-`isDemo: false`) or any real data you've created since.
+`isDemo: false`) or any real data you've created since — **including
+every product imported via Products → Import**, which is always
+`isDemo: false` regardless of how few (or how many) of those real
+products happen to be referenced by a demo order's lines. This script
+already scoped product deletion to `isDemo: true` before this fix round,
+so it's unchanged here — it's documented explicitly now because this is
+the command to use if you have the old `DEMO-0001`..`DEMO-0006`
+placeholder products from before this fix round and want them gone
+without touching your real catalogue.
 
 ## 8. Run it
 
@@ -193,58 +236,104 @@ more useful for tracking down a problem than "it didn't work."
    - ✅ Try to deactivate your own account from this screen — it should
      be blocked (you can't lock yourself out).
 
-4. **Create a real order.** Go to Orders → "Receive New Order".
-   - Pick "Upload Document" and choose any PDF or image file on your
-     computer (or pick "Paste Message" and type a couple of lines
-     instead — either is fine for this test).
+4. **Import the real SAP catalogue (if you haven't already).** Go to
+   Products → Import.
+   - Upload your SAP items export (the same CSV behind your Products
+     page).
+   - ✅ The preview shows real counts, then the import completes and the
+     Products page lists your real items, each with a real SAP item
+     code.
+   - This only needs doing once — later steps rely on these real
+     products existing.
+
+5. **Create an order using manual entry with the catalogue search.** Go
+   to Orders → "Receive New Order".
    - Search for and select a customer (the demo data seeded a handful —
      type a few letters of a name to find one).
-   - Fill in at least one order line: a product description, a quantity
-     (e.g. `10`), and a unit (e.g. `KG` or `EA`). Leave everything else
-     blank.
-   - Click "Submit Order".
+   - In an order line, use the "Catalogue search" box and type a few
+     letters of a real product's **name**, then clear it and try a real
+     **SAP item code**, then (if one of your real products has a
+     barcode) the **barcode** — each should find and let you select the
+     same real product.
+   - Fill in a quantity (e.g. `10`) and unit (e.g. `KG` or `EA`) for that
+     line, then click "Submit Order".
    - ✅ You land on an "Order Received" screen showing a real order
-     reference like `ORD-20261107-A1B2C3D4`.
-   - ✅ If you attached a file, it says "Document uploaded successfully"
-     (give it a few seconds first — it shows "Uploading document..."
-     while that's in progress).
+     reference like `ORD-20261109-A1B2C3D4`.
 
-5. **Find the order in the list.** Go back to Orders.
-   - ✅ The order you just created is in the list, with the right
-     customer name and reference.
-   - ✅ Its status reads "Received" and its amount reads **"Pending
-     pricing"** — that's correct, not a bug. Pricing and approval are a
-     later milestone, not built yet.
+6. **Create an order from a pasted message only — no lines, no file.**
+   Go to Orders → "Receive New Order" again.
+   - Select a customer.
+   - Paste a couple of lines of text into "Customer's message or PO
+     text". Leave every order line blank and attach no file.
+   - Click "Submit Order".
+   - ✅ This succeeds — a zero-line order from pasted text alone is
+     expected to work, not an error.
+
+7. **Create an order from uploaded file(s) only — no lines, no pasted
+   text, multiple files.** Go to Orders → "Receive New Order" again.
+   - Select a customer.
+   - Click "Attach file(s)" and choose one file, then click it again and
+     choose a second file (any PDFs or images on your computer). Leave
+     the message box and every order line blank.
+   - Click "Submit Order".
+   - ✅ This succeeds. On the "Order Received" screen, both files show
+     "Uploaded" one after another (not stuck on "Uploading...").
+
+8. **Find your orders in the list.** Go back to Orders.
+   - ✅ All three orders you just created are in the list, with the
+     right customer names and references.
+   - ✅ The manual-entry order's amount reads **"Pending pricing"** —
+     that's correct, not a bug. Pricing and approval are a later
+     milestone, not built yet.
    - ✅ The four summary cards at the top of this page now include your
-     new order in their counts.
+     new orders in their counts.
 
-6. **Open the order.** Click its reference (or the eye icon) to open the
-   detail page.
-   - ✅ You see an amber notice explaining that verification/pricing/
-     approval isn't built yet — this is an honest "not built" notice,
-     not an error.
-   - ✅ Your line item is listed with the quantity and unit you entered.
-   - ✅ If you attached a document in step 4, it's listed with a
-     "Download" button — click it and confirm the file you originally
-     uploaded downloads correctly (same file, opens fine).
-   - ✅ "Status History" shows one entry: "Order Received", with your
-     name and the current date/time.
+9. **Open each order and check what's shown.**
+   - ✅ Every order shows an amber notice explaining that
+     verification/pricing/approval isn't built yet — an honest "not
+     built" notice, not an error.
+   - ✅ The manual-entry order (step 5) lists its line item with the
+     quantity, unit, and linked SAP item code you selected.
+   - ✅ The pasted-message order (step 6) shows **"No line items yet"**
+     in Order Lines, and an "Original Message" card further down with
+     your pasted text shown exactly as you typed it.
+   - ✅ The file-only order (step 7) also shows "No line items yet", and
+     both files are listed under Documents with working "Download"
+     buttons — click one and confirm it opens correctly.
+   - ✅ Each order's "Status History" shows one entry: "Order Received",
+     with your name and the current date/time.
 
-7. **Confirm Stock and Reports are still clearly demo.** Open each from
-   the sidebar.
-   - ✅ Both are still visibly labelled as demo/prototype data — they are
-     **not** wired to the real database in this milestone, by design.
+10. **Confirm Stock and Reports are still clearly demo.** Open each from
+    the sidebar.
+    - ✅ Both are still visibly labelled as demo/prototype data — they
+      are **not** wired to the real database in this milestone, by
+      design.
 
-8. **Log out and back in.** Use the sidebar's user menu to log out, then
-   log back in with the **new** password you set in step 1 (not the
-   original seeded one).
-   - ✅ This confirms the password change really was saved, and that
-     logging in and out works correctly.
+11. **Remove demo data and confirm your real catalogue survives.** In a
+    terminal, run `npm run db:remove-demo` (see step 7 above).
+    - ✅ The console reports counts for orders, customers, locations and
+      **0 products removed** if you never had the old `DEMO-0001`..
+      `DEMO-0006` placeholders, or the exact count of those old demo
+      products if you did.
+    - Go back to the Products page in the browser (refresh it).
+    - ✅ All of your real, imported SAP products are still there,
+      untouched — only demo rows were removed.
+    - Go back to Orders.
+    - ✅ The demo orders (`PO-DEMO-1001` etc., if your database had any)
+      are gone; the three real orders you created in steps 5-7 are still
+      there.
+
+12. **Log out and back in.** Use the sidebar's user menu to log out, then
+    log back in with the **new** password you set in step 1 (not the
+    original seeded one).
+    - ✅ This confirms the password change really was saved, and that
+      logging in and out works correctly.
 
 If every step above matched its ✅, the real, non-demo parts of this
-milestone (login, forced password change, user management, order intake
-with a real file upload, and the order list/detail views) are working
-end to end against your real database.
+milestone (login, forced password change, user management, catalogue
+import, order intake in all three combinable modes with real products
+and real file uploads, the order list/detail views, and safe demo-data
+removal) are working end to end against your real database.
 
 ## 10. Undoing the migration
 

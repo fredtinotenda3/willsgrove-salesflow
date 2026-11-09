@@ -11,7 +11,6 @@ import {
   ArrowLeft,
   Upload,
   MessageSquare,
-  FileText,
   Plus,
   Trash2,
   Loader2,
@@ -88,6 +87,29 @@ function newLine(key?: string): LineDraft {
   };
 }
 
+// A line counts as "started" only once the staff member has typed or
+// picked something into it. The form always shows one blank row by
+// default so manual entry is one click away, but that blank row must not
+// force a line onto an order that was actually submitted via a pasted
+// message and/or an uploaded file (modes (b)/(c) -- see the paste/upload
+// section below) with no manual lines at all. Only started lines are
+// validated for completeness and sent to the server.
+function isLineBlank(line: LineDraft): boolean {
+  return (
+    line.originalProductDescription.trim() === "" &&
+    line.productQuery.trim() === "" &&
+    line.productId === null &&
+    line.requestedQuantity.trim() === "" &&
+    line.requestedUnitCode.trim() === "" &&
+    line.customerUnitPrice.trim() === "" &&
+    line.salesNotes.trim() === ""
+  );
+}
+
+function getStartedLines(lines: LineDraft[]): LineDraft[] {
+  return lines.filter((line) => !isLineBlank(line));
+}
+
 function blankToUndefined(value: string): string | undefined {
   const trimmed = value.trim();
   return trimmed === "" ? undefined : trimmed;
@@ -99,6 +121,12 @@ type CreateOrderResponse = {
   fieldErrors?: Record<string, string>;
   order?: { id: string; reference: string };
   idempotentReplay?: boolean;
+};
+
+type DocumentUploadState = {
+  file: File;
+  status: "idle" | "uploading" | "success" | "error";
+  message: string | null;
 };
 
 export default function NewOrderPage() {
@@ -114,14 +142,15 @@ export default function NewOrderPage() {
     }
   }, []);
 
-  // Submission method only decides which upload affordance is shown --
-  // there is no backend that auto-extracts order lines from a pasted
-  // message in this milestone, so a pasted message is carried through
-  // honestly as a note on the order rather than pretended to populate the
-  // line items below.
-  const [submissionMethod, setSubmissionMethod] = useState<"document" | "message">("document");
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [pastedMessage, setPastedMessage] = useState("");
+  // Pasted message/PO text and attached file(s) are independent, optional,
+  // and combinable with each other and with manual order lines below --
+  // per the brief, an order can be created from any one of these, or any
+  // combination. Neither auto-extracts into order lines (that's
+  // Milestone 2); an order submitted with no manual lines waits for a
+  // human to add them after reading what's pasted/attached (see the
+  // empty-state copy below and on the order detail page).
+  const [pastedText, setPastedText] = useState("");
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   const [source, setSource] = useState<"EMAIL" | "WHATSAPP" | "MANUAL">("EMAIL");
   const [customerQuery, setCustomerQuery] = useState("");
@@ -146,10 +175,7 @@ export default function NewOrderPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [createdOrder, setCreatedOrder] = useState<{ id: string; reference: string } | null>(null);
-  const [documentUpload, setDocumentUpload] = useState<{
-    status: "idle" | "uploading" | "success" | "error";
-    message: string | null;
-  }>({ status: "idle", message: null });
+  const [documentUploads, setDocumentUploads] = useState<DocumentUploadState[]>([]);
 
   // Debounced customer search. Nothing is reset synchronously when the
   // query is empty -- the results dropdown's own JSX guard
@@ -224,7 +250,9 @@ export default function NewOrderPage() {
     setLines((prev) => (prev.length > 1 ? prev.filter((line) => line.key !== key) : prev));
   }
 
-  // Debounced per-line product search.
+  // Debounced per-line catalogue search -- matches by SAP code, item name
+  // or barcode (the same /api/products search the Products page itself
+  // uses; see lib/product-queries.ts's listProducts for the OR'd match).
   const productSearchTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   function handleProductQueryChange(key: string, value: string) {
     updateLine(key, { productQuery: value, showSuggestions: true });
@@ -272,25 +300,56 @@ export default function NewOrderPage() {
     );
   }
 
-  function validateClientSide(): string | null {
-    if (!selectedCustomer) return "Select a customer before submitting.";
-    if (lines.length === 0) return "At least one order line is required.";
-    for (const line of lines) {
-      if (!line.originalProductDescription.trim()) return "Every line needs a product description.";
-      if (!line.requestedQuantity.trim()) return "Every line needs a quantity.";
-      if (!/^\d{1,14}(\.\d{1,4})?$/.test(line.requestedQuantity.trim()) || Number(line.requestedQuantity) <= 0) {
-        return "Quantity must be a positive number with up to 4 decimal places.";
-      }
-      if (!line.requestedUnitCode.trim()) return "Every line needs a unit (e.g. KG, EA, BOX).";
-    }
-    if (submissionMethod === "document" && !selectedFile) {
-      return "Attach the customer's PO document, or switch to \"Paste Message\".";
-    }
-    return null;
+  function handleFilesPicked(picked: File[]) {
+    if (picked.length === 0) return;
+    setSelectedFiles((prev) => [...prev, ...picked]);
   }
 
-  async function uploadDocument(orderId: string, file: File) {
-    setDocumentUpload({ status: "uploading", message: null });
+  function removeSelectedFile(index: number) {
+    setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function validateClientSide(): { error: string | null; startedLines: LineDraft[] } {
+    const startedLines = getStartedLines(lines);
+
+    if (!selectedCustomer) {
+      return { error: "Select a customer before submitting.", startedLines };
+    }
+
+    for (const line of startedLines) {
+      if (!line.originalProductDescription.trim()) {
+        return { error: "Every order line you've started needs a product description.", startedLines };
+      }
+      if (!line.requestedQuantity.trim()) {
+        return { error: "Every order line you've started needs a quantity.", startedLines };
+      }
+      if (!/^\d{1,14}(\.\d{1,4})?$/.test(line.requestedQuantity.trim()) || Number(line.requestedQuantity) <= 0) {
+        return {
+          error: "Quantity must be a positive number with up to 4 decimal places.",
+          startedLines,
+        };
+      }
+      if (!line.requestedUnitCode.trim()) {
+        return { error: "Every order line you've started needs a unit (e.g. KG, EA, BOX).", startedLines };
+      }
+    }
+
+    const hasPastedText = pastedText.trim() !== "";
+    const hasFiles = selectedFiles.length > 0;
+    if (startedLines.length === 0 && !hasPastedText && !hasFiles) {
+      return {
+        error: "Add at least one order line, paste the customer's message, or attach a file before submitting.",
+        startedLines,
+      };
+    }
+
+    return { error: null, startedLines };
+  }
+
+  async function uploadOneDocument(orderId: string, index: number, file: File) {
+    setDocumentUploads((prev) =>
+      prev.map((upload, i) => (i === index ? { ...upload, status: "uploading", message: null } : upload))
+    );
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -301,18 +360,30 @@ export default function NewOrderPage() {
       });
       const data = await response.json();
       if (!response.ok || !data.success) {
-        setDocumentUpload({
-          status: "error",
-          message: data.message ?? "The order was created, but the document upload failed.",
-        });
+        setDocumentUploads((prev) =>
+          prev.map((upload, i) =>
+            i === index
+              ? { ...upload, status: "error", message: data.message ?? "The order was created, but this file failed to upload." }
+              : upload
+          )
+        );
         return;
       }
-      setDocumentUpload({ status: "success", message: null });
+      setDocumentUploads((prev) =>
+        prev.map((upload, i) => (i === index ? { ...upload, status: "success", message: null } : upload))
+      );
     } catch {
-      setDocumentUpload({
-        status: "error",
-        message: "The order was created, but the document upload failed. Check your connection and retry below.",
-      });
+      setDocumentUploads((prev) =>
+        prev.map((upload, i) =>
+          i === index
+            ? {
+                ...upload,
+                status: "error",
+                message: "The order was created, but this file failed to upload. Check your connection and retry.",
+              }
+            : upload
+        )
+      );
     }
   }
 
@@ -321,7 +392,7 @@ export default function NewOrderPage() {
     setFormError(null);
     setFieldErrors({});
 
-    const clientError = validateClientSide();
+    const { error: clientError, startedLines } = validateClientSide();
     if (clientError) {
       setFormError(clientError);
       return;
@@ -334,7 +405,7 @@ export default function NewOrderPage() {
       customerId: selectedCustomer.id,
       source,
       idempotencyKey: idempotencyKey.current,
-      lines: lines.map((line) => ({
+      lines: startedLines.map((line) => ({
         originalProductDescription: line.originalProductDescription.trim(),
         productId: line.productId ?? undefined,
         sapItemCodeSnapshot: line.sapItemCodeSnapshot ?? undefined,
@@ -352,14 +423,10 @@ export default function NewOrderPage() {
     if (requestedDeliveryDate) body.requestedDeliveryDate = requestedDeliveryDate;
     const deliveryAddr = blankToUndefined(deliveryAddress);
     if (deliveryAddr) body.deliveryAddress = deliveryAddr;
-
-    const notesParts: string[] = [];
+    const sourceText = blankToUndefined(pastedText);
+    if (sourceText) body.originalSourceText = sourceText;
     const notes = blankToUndefined(internalNotes);
-    if (notes) notesParts.push(notes);
-    if (submissionMethod === "message" && pastedMessage.trim()) {
-      notesParts.push(`Customer message (as submitted):\n${pastedMessage.trim()}`);
-    }
-    if (notesParts.length > 0) body.internalNotes = notesParts.join("\n\n");
+    if (notes) body.internalNotes = notes;
 
     try {
       const response = await fetch("/api/orders", {
@@ -374,13 +441,18 @@ export default function NewOrderPage() {
         if (data.fieldErrors) {
           setFieldErrors(data.fieldErrors);
           // Best-effort: surface per-line validation errors (keys of the
-          // form "lines.<index>.<field>") on the matching row too.
+          // form "lines.<index>.<field>", indexed within the submitted
+          // startedLines array -- not the full lines array, since blank
+          // placeholder rows are dropped before sending) on the matching row.
           const lineErrorPattern = /^lines\.(\d+)\./;
+          const startedKeys = startedLines.map((line) => line.key);
           setLines((prev) =>
-            prev.map((line, index) => {
+            prev.map((line) => {
+              const startedIndex = startedKeys.indexOf(line.key);
+              if (startedIndex === -1) return { ...line, error: null };
               const match = Object.entries(data.fieldErrors ?? {}).find(([key]) => {
                 const m = key.match(lineErrorPattern);
-                return m && Number(m[1]) === index;
+                return m && Number(m[1]) === startedIndex;
               });
               return match ? { ...line, error: match[1] } : { ...line, error: null };
             })
@@ -392,8 +464,20 @@ export default function NewOrderPage() {
 
       setCreatedOrder(data.order);
 
-      if (submissionMethod === "document" && selectedFile) {
-        await uploadDocument(data.order.id, selectedFile);
+      if (selectedFiles.length > 0) {
+        const initial: DocumentUploadState[] = selectedFiles.map((file) => ({
+          file,
+          status: "idle",
+          message: null,
+        }));
+        setDocumentUploads(initial);
+        for (let i = 0; i < initial.length; i++) {
+          // Sequential, not parallel: keeps upload order predictable and
+          // the per-file progress list easy to follow, and avoids piling
+          // concurrent writes onto the local-disk storage driver for what
+          // is, in practice, a handful of files per order.
+          await uploadOneDocument(data.order.id, i, initial[i].file);
+        }
       }
     } catch {
       setFormError("Could not reach the server. Check your connection and try again.");
@@ -416,26 +500,36 @@ export default function NewOrderPage() {
               <span className="font-semibold text-gray-700">{createdOrder.reference}</span> has been recorded.
             </p>
 
-            {documentUpload.status === "uploading" && (
-              <p className="mt-4 flex items-center justify-center gap-2 text-xs text-gray-400">
-                <Loader2 size={14} className="animate-spin" />
-                Uploading document...
-              </p>
-            )}
-            {documentUpload.status === "success" && (
-              <p className="mt-4 text-xs text-green-600">Document uploaded successfully.</p>
-            )}
-            {documentUpload.status === "error" && (
-              <div className="mt-4 rounded-lg bg-red-50 p-3 text-xs text-red-700">
-                <p>{documentUpload.message}</p>
-                {selectedFile && (
-                  <button
-                    onClick={() => uploadDocument(createdOrder.id, selectedFile)}
-                    className="mt-2 rounded-lg border border-red-200 px-3 py-1.5 font-semibold hover:bg-red-100"
-                  >
-                    Retry Upload
-                  </button>
-                )}
+            {documentUploads.length > 0 && (
+              <div className="mt-4 space-y-2 text-left">
+                {documentUploads.map((upload, index) => (
+                  <div key={`${upload.file.name}-${index}`} className="rounded-lg bg-gray-50 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-[11px] text-gray-600">{upload.file.name}</span>
+                      {upload.status === "uploading" && (
+                        <Loader2 size={13} className="shrink-0 animate-spin text-gray-400" />
+                      )}
+                      {upload.status === "success" && (
+                        <span className="shrink-0 text-[11px] font-semibold text-green-600">Uploaded</span>
+                      )}
+                      {upload.status === "error" && (
+                        <span className="shrink-0 text-[11px] font-semibold text-red-600">Failed</span>
+                      )}
+                    </div>
+                    {upload.status === "error" && (
+                      <div className="mt-1">
+                        <p className="text-[11px] text-red-600">{upload.message}</p>
+                        <button
+                          type="button"
+                          onClick={() => uploadOneDocument(createdOrder.id, index, upload.file)}
+                          className="mt-1 rounded border border-red-200 px-2 py-1 text-[11px] font-semibold text-red-700 hover:bg-red-100"
+                        >
+                          Retry Upload
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
 
@@ -495,79 +589,77 @@ export default function NewOrderPage() {
             </div>
           )}
 
-          {/* Submission method */}
+          {/* Original message / documents -- optional, combinable with each other and with the manual lines below */}
           <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
-            <h2 className="text-[15px] font-bold text-[#17251E]">How was this order submitted?</h2>
+            <h2 className="text-[15px] font-bold text-[#17251E]">Original Message &amp; Documents</h2>
             <p className="mt-1 text-xs text-gray-400">
-              Attaching the original document keeps a verifiable record of exactly what the customer sent.
+              Both optional, and not mutually exclusive with each other or with the order lines below --
+              paste the customer&apos;s message, attach their PO file(s), key in lines manually, or any
+              combination. Keeping the original wording and files is what lets someone verify the order
+              later. Nothing here is auto-extracted into lines yet (that&apos;s a later milestone), so an
+              order submitted with only a message or only a file still waits for a human to add lines.
             </p>
 
-            <div className="mt-4 grid grid-cols-2 gap-4">
-              <button
-                type="button"
-                onClick={() => setSubmissionMethod("document")}
-                className={`flex items-start gap-3 rounded-xl border p-4 text-left transition ${
-                  submissionMethod === "document" ? "border-[#28583F] bg-green-50/40" : "border-gray-200"
-                }`}
-              >
-                <Upload size={18} className="mt-0.5 text-[#28583F]" />
-                <div>
-                  <p className="text-xs font-semibold text-gray-700">Upload Document</p>
-                  <p className="mt-1 text-[11px] text-gray-400">PDF, image or scanned PO</p>
-                </div>
-              </button>
+            <div className="mt-4 grid grid-cols-2 gap-6">
+              <div>
+                <label className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500">
+                  <MessageSquare size={13} />
+                  Customer&apos;s message or PO text
+                </label>
+                <textarea
+                  value={pastedText}
+                  onChange={(event) => setPastedText(event.target.value)}
+                  placeholder="Paste the customer's email or WhatsApp message here..."
+                  rows={6}
+                  maxLength={5000}
+                  className="mt-1 w-full rounded-lg border border-gray-200 px-4 py-3 text-xs outline-none focus:border-[#7C9D87] focus:ring-2 focus:ring-green-50"
+                />
+              </div>
 
-              <button
-                type="button"
-                onClick={() => setSubmissionMethod("message")}
-                className={`flex items-start gap-3 rounded-xl border p-4 text-left transition ${
-                  submissionMethod === "message" ? "border-[#28583F] bg-green-50/40" : "border-gray-200"
-                }`}
-              >
-                <MessageSquare size={18} className="mt-0.5 text-[#28583F]" />
-                <div>
-                  <p className="text-xs font-semibold text-gray-700">Paste Message</p>
-                  <p className="mt-1 text-[11px] text-gray-400">
-                    No document to attach -- the pasted text is saved as an internal note for reference.
-                  </p>
-                </div>
-              </button>
-            </div>
-
-            {submissionMethod === "document" ? (
-              <div className="mt-4">
-                <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-gray-200 py-8 text-center hover:border-[#7C9D87]">
-                  <FileText size={22} className="text-gray-400" />
+              <div>
+                <label className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500">
+                  <Upload size={13} />
+                  Attach file(s)
+                </label>
+                <label className="mt-1 flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-gray-200 py-7 text-center hover:border-[#7C9D87]">
+                  <Upload size={20} className="text-gray-400" />
                   <span className="mt-2 text-xs font-medium text-gray-600">
-                    {selectedFile ? selectedFile.name : "Click to select the customer's PO file"}
+                    {selectedFiles.length > 0
+                      ? `${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} selected -- click to add more`
+                      : "Click to select the customer's PO file(s)"}
                   </span>
-                  <span className="mt-1 text-[10px] text-gray-400">Up to 20 MB</span>
+                  <span className="mt-1 text-[10px] text-gray-400">Up to 20 MB each</span>
                   <input
                     type="file"
+                    multiple
                     className="hidden"
-                    onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
+                    onChange={(event) => {
+                      handleFilesPicked(Array.from(event.target.files ?? []));
+                      event.target.value = "";
+                    }}
                   />
                 </label>
-                {selectedFile && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedFile(null)}
-                    className="mt-2 flex items-center gap-1 text-[11px] text-gray-400 hover:text-red-600"
-                  >
-                    <X size={12} />
-                    Remove file
-                  </button>
+                {selectedFiles.length > 0 && (
+                  <ul className="mt-2 space-y-1">
+                    {selectedFiles.map((file, index) => (
+                      <li
+                        key={`${file.name}-${index}`}
+                        className="flex items-center justify-between gap-2 text-[11px] text-gray-500"
+                      >
+                        <span className="truncate">{file.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => removeSelectedFile(index)}
+                          className="shrink-0 text-gray-300 hover:text-red-600"
+                        >
+                          <X size={12} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
-            ) : (
-              <textarea
-                value={pastedMessage}
-                onChange={(event) => setPastedMessage(event.target.value)}
-                placeholder="Paste the customer's email or WhatsApp message here for reference..."
-                rows={4}
-                className="mt-4 w-full rounded-lg border border-gray-200 px-4 py-3 text-xs outline-none focus:border-[#7C9D87] focus:ring-2 focus:ring-green-50"
-              />
-            )}
+            </div>
           </section>
 
           {/* Customer */}
@@ -749,8 +841,10 @@ export default function NewOrderPage() {
               <div>
                 <h2 className="text-[15px] font-bold text-[#17251E]">Order Lines</h2>
                 <p className="mt-1 text-xs text-gray-400">
-                  Enter each item exactly as written on the customer&apos;s PO. Linking to a known SAP product is
-                  optional.
+                  Optional if you&apos;ve pasted the customer&apos;s message or attached their PO above --
+                  those wait for manual review since there&apos;s no automatic extraction yet. Search by SAP
+                  code, name or barcode to link a known catalogue item, or enter a line exactly as written
+                  on the PO.
                 </p>
               </div>
               <button
@@ -784,14 +878,14 @@ export default function NewOrderPage() {
                   <div className="mt-2 grid grid-cols-4 gap-3">
                     <div className="relative col-span-2">
                       <label className="text-[10px] font-semibold text-gray-400">
-                        Product (match a known SAP item, optional)
+                        Catalogue search (SAP code, name or barcode -- optional)
                       </label>
                       <input
                         type="text"
                         value={line.productQuery}
                         onChange={(event) => handleProductQueryChange(line.key, event.target.value)}
                         onFocus={() => updateLine(line.key, { showSuggestions: true })}
-                        placeholder="Search SAP products..."
+                        placeholder="Search by SAP code, name or barcode..."
                         className="mt-1 h-9 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
                       />
                       {line.showSuggestions && line.suggestions.length > 0 && (

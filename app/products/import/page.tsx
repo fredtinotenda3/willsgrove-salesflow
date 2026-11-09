@@ -74,9 +74,29 @@ function formatNumber(value: number): string {
   return value.toLocaleString("en-US");
 }
 
-async function readJson(response: Response): Promise<any> {
+// Milestone 0 fix (round 4): was `Promise<any>`, the one pre-existing lint
+// error this round was asked to clear. The two endpoints this calls
+// (`/api/products/import/preview`, `/api/products/import`) return
+// different success shapes (`Preview`, `ImportResult`) but share this same
+// error envelope (`success`/`message`/`errors`/...) on failure, so this
+// stays a loosely-typed envelope rather than a generic -- every property
+// read below is already defensive (`?.`, `Array.isArray`, `??`), exactly
+// as it would need to be against an untyped response body.
+type ApiResponseBody = {
+  success?: boolean;
+  message?: string;
+  errors?: CsvError[];
+  errorCount?: number;
+  errorsTruncated?: boolean;
+  duplicateCodes?: string[];
+} & Record<string, unknown>;
+
+async function readJson(response: Response): Promise<ApiResponseBody | null> {
   try {
-    return await response.json();
+    const data: unknown = await response.json();
+    return data !== null && typeof data === "object"
+      ? (data as ApiResponseBody)
+      : null;
   } catch {
     return null;
   }
@@ -146,7 +166,7 @@ export default function ProductImportPage() {
       const body = await readJson(response);
 
       if (response.ok && body?.success) {
-        setPreview(body as Preview);
+        setPreview(body as unknown as Preview);
         setStage("previewed");
         return;
       }
@@ -199,7 +219,7 @@ export default function ProductImportPage() {
       const body = await readJson(response);
 
       if (response.ok && body?.success) {
-        setResult(body as ImportResult);
+        setResult(body as unknown as ImportResult);
         setStage("done");
         return;
       }
