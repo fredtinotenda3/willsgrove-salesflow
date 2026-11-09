@@ -16,6 +16,24 @@
  * All in one transaction, so a partial run can never leave the database
  * in a half-cleaned state.
  *
+ * Milestone 1 (Master data from SAP) added four models, each with its own
+ * isDemo flag, so each is cleaned up independently rather than cascading
+ * from an existing row:
+ *   - CustomerContact -> Customer is onDelete: Restrict, so contacts must
+ *     be deleted before the customers they belong to (same hard
+ *     constraint as CustomerLocation -> Customer below).
+ *   - PriceListEntry -> PriceList is onDelete: Restrict, so entries must
+ *     be deleted before their price list. PriceListEntry -> Product is
+ *     onDelete: SetNull, so it imposes no ordering against products.
+ *   - PriceList is referenced by Customer.priceListId as onDelete:
+ *     SetNull, so deleting a demo price list never blocks on customers
+ *     (Postgres nulls the column instead of rejecting the delete) -- no
+ *     ordering needed there.
+ *   - TaxCode has no incoming foreign keys at all (Product.vatCode is a
+ *     plain string, matching the existing sapItemCode/sapCustomerCode
+ *     pattern, not an FK), so it can be deleted independently at any
+ *     point.
+ *
  * Milestone 0 fix (round 4): this is 12 sequential round trips over one
  * connection to a pooled Neon endpoint, and Prisma's *default* interactive
  * transaction timeout is 5000ms -- comfortably exceeded under real network
@@ -79,7 +97,27 @@ async function main() {
         where: { product: { isDemo: true } },
       });
 
+      // Milestone 1 master-data models. Entries before their list
+      // (Restrict); the tax code table has no dependents at all.
+      const priceListEntries = await tx.priceListEntry.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const priceLists = await tx.priceList.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const taxCodes = await tx.taxCode.deleteMany({
+        where: { isDemo: true },
+      });
+
       const locations = await tx.customerLocation.deleteMany({
+        where: { isDemo: true },
+      });
+
+      // Contacts before customers (Restrict), same reasoning as locations
+      // above.
+      const customerContacts = await tx.customerContact.deleteMany({
         where: { isDemo: true },
       });
 
@@ -107,6 +145,7 @@ async function main() {
             orders: orders.count,
             orderLines: orderLines.count,
             customers: customers.count,
+            customerContacts: customerContacts.count,
             locations: locations.count,
             products: products.count,
             verifications: verifications.count,
@@ -115,6 +154,9 @@ async function main() {
             statusHistory: statusHistory.count,
             documents: documents.count,
             stockLines: stockLines.count,
+            priceListEntries: priceListEntries.count,
+            priceLists: priceLists.count,
+            taxCodes: taxCodes.count,
             users: users.count,
           },
         },
@@ -124,8 +166,12 @@ async function main() {
         orders: orders.count,
         orderLines: orderLines.count,
         customers: customers.count,
+        customerContacts: customerContacts.count,
         locations: locations.count,
         products: products.count,
+        priceListEntries: priceListEntries.count,
+        priceLists: priceLists.count,
+        taxCodes: taxCodes.count,
         users: users.count,
       };
     },
@@ -139,8 +185,12 @@ async function main() {
   console.log(`  Orders:           ${result.orders}`);
   console.log(`  Order lines:      ${result.orderLines}`);
   console.log(`  Customers:        ${result.customers}`);
+  console.log(`  Customer contacts: ${result.customerContacts}`);
   console.log(`  Customer locations: ${result.locations}`);
   console.log(`  Products:         ${result.products}`);
+  console.log(`  Price list entries: ${result.priceListEntries}`);
+  console.log(`  Price lists:      ${result.priceLists}`);
+  console.log(`  Tax codes:        ${result.taxCodes}`);
   console.log(`  Users:            ${result.users}`);
 }
 

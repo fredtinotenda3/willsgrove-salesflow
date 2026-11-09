@@ -405,3 +405,137 @@ prisma migrate resolve --rolled-back
 20261107070000_milestone_0_foundations`) — otherwise Prisma will think
 this migration is still pending and you'll get a confusing failure the
 next time you try to apply it.
+
+## 11. Milestone 1: SAP master data (tax codes, item master, price lists, customer master)
+
+This migration is purely additive (no column dropped, no table dropped),
+but it cannot be validated or generated in the build sandbox — run these
+for real on your machine.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_sap_master_data
+
+# 2. Regenerate the Prisma client so it knows about TaxCode, PriceList,
+#    PriceListEntry, CustomerContact, and the new Product/Customer columns
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+```
+
+If `prisma migrate dev` reports schema drift because you've been running
+against the hand-written SQL already, use `migrate deploy` instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Importing the sample files
+
+Four new pages, each the same upload → preview → confirm flow as the
+existing product importer:
+
+- `/tax-codes/import` — upload `test-data/sample-tax-codes.csv`
+- `/item-master/import` — upload `test-data/sample-item-master-extension.csv`
+  (run this *after* products already exist — e.g. after your Milestone 0
+  product import — since this one only extends existing rows)
+- `/price-lists/import` — upload `test-data/sample-price-lists.csv`
+- `/customers/master-import` — upload `test-data/sample-customer-master.csv`
+
+The item `0228` / customer `HREC0D677` rows in all four sample files are
+real, taken from your invoice `HRE580108`; everything else in those
+files is an illustrative placeholder for your SAP administrator to
+replace with real exports (see `docs/sap-exports/*.csv.md` for the exact
+column layouts).
+
+### Manual test script (no coding required)
+
+1. Import the four sample files above, in the order listed, each via
+   preview → confirm.
+2. Open `/catalogue/health` and confirm it loads without error against
+   your real product catalogue (not the sample files — it reads whatever
+   is actually in your `Product` table).
+3. Open your database client (or `npx prisma studio`) and confirm:
+   - `Product` row for `0228` now has `unitOfMeasure = "PNT"`,
+     `packSize = "250G"`, `vatCode = "VAT00"`.
+   - `TaxCode` row `VAT00` has `ratePercent = 0.00`.
+   - `PriceList` row `PL-TM-CHINHOYI` has one `PriceListEntry` for item
+     `0228` at `unitPrice = 0.45`.
+   - `Customer` row `HREC0D677` has `tin = "2000003164"`, `vatNumber =
+     "220003216"`, and `priceListId` pointing at `PL-TM-CHINHOYI`.
+4. Confirm the arithmetic matches invoice `HRE580108`: 10 × 0.45 = 4.50,
+   VAT at 0% = 0.00. (This exact check also runs unconditionally as
+   `tests/acceptance-item-0228.test.ts`, with no database needed — `npm
+   test` already confirms it in the sandbox.)
+
+### Removing demo data (updated)
+
+`npm run db:remove-demo` now also cleans up any demo rows (`isDemo:
+true`) in the four new tables — nothing changes in how you run it.
+
+### 11a. Undoing this migration
+
+**This is destructive** — it drops the three new price-list/tax-code/
+contact tables and every new column, along with any data already stored
+in them. Back up first:
+
+```powershell
+pg_dump -Fc -d <your-database-name> -f backup-before-undo-milestone-1.dump
+```
+
+```sql
+ALTER TABLE "PriceListEntry" DROP CONSTRAINT "PriceListEntry_priceListId_fkey";
+ALTER TABLE "PriceListEntry" DROP CONSTRAINT "PriceListEntry_productId_fkey";
+ALTER TABLE "CustomerContact" DROP CONSTRAINT "CustomerContact_customerId_fkey";
+ALTER TABLE "Customer" DROP CONSTRAINT "Customer_priceListId_fkey";
+
+DROP INDEX "Customer_storeCode_idx";
+DROP INDEX "Customer_priceListId_idx";
+DROP INDEX "Product_vatCode_idx";
+DROP INDEX "CustomerContact_isDemo_idx";
+DROP INDEX "CustomerContact_customerId_idx";
+DROP INDEX "PriceListEntry_isDemo_idx";
+DROP INDEX "PriceListEntry_validFrom_validTo_idx";
+DROP INDEX "PriceListEntry_priceListId_sapItemCodeSnapshot_idx";
+DROP INDEX "PriceList_isDemo_idx";
+DROP INDEX "PriceList_code_key";
+DROP INDEX "TaxCode_isDemo_idx";
+DROP INDEX "TaxCode_code_key";
+
+ALTER TABLE "Customer"
+  DROP COLUMN "priceListId",
+  DROP COLUMN "creditHold",
+  DROP COLUMN "creditLimit",
+  DROP COLUMN "storeCode",
+  DROP COLUMN "branchCode",
+  DROP COLUMN "paymentTermsCode",
+  DROP COLUMN "currencyCode",
+  DROP COLUMN "vatNumber",
+  DROP COLUMN "tin";
+
+ALTER TABLE "Product"
+  DROP COLUMN "vatCode",
+  DROP COLUMN "isVariableWeight",
+  DROP COLUMN "packSize",
+  DROP COLUMN "unitOfMeasure";
+
+DROP TABLE "CustomerContact";
+DROP TABLE "PriceListEntry";
+DROP TABLE "PriceList";
+DROP TABLE "TaxCode";
+```
+
+Apply it the same way as section 10's rollback (`psql`, a GUI client, or
+`npx prisma db execute --file .\rollback-milestone-1.sql --schema
+prisma/schema.prisma`), then revert `prisma/schema.prisma` to remove the
+same changes and run `npx prisma generate` again. Also tell Prisma's
+migration history about the rollback so a future `migrate deploy`
+doesn't think this migration is still pending:
+
+```powershell
+npx prisma migrate resolve --rolled-back 20261109090000_add_sap_master_data
+```

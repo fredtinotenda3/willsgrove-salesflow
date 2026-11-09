@@ -127,16 +127,66 @@ model Customer {
   status          RecordStatus @default(ACTIVE)
   notes           String?
 
+  // Milestone 1 (Master data from SAP). Confirmed real, from invoice
+  // HRE580108: TIN and VAT REG are two separate numbers on a Willsgrove
+  // SAP invoice, not one field. storeCode is kept distinct from
+  // sapCustomerCode even though the one confirmed example (HREC0D677 = TM
+  // Chinhoyi North) has them read the same on paper -- "is one SAP
+  // customer code always exactly one store, or can one customer code have
+  // several store/branch codes under it" is still an open assumption (see
+  // docs/sap-exports/customer-master.csv.md), and collapsing the two
+  // fields now would make that impossible to represent if the answer
+  // turns out to be the latter for some chain.
+  tin               String?
+  vatNumber         String?
+  currencyCode      String? // "USD" | "ZWG"
+  paymentTermsCode  String?
+  branchCode        String?
+  storeCode         String?
+  creditLimit       Decimal? @db.Decimal(18, 2)
+  creditHold        Boolean  @default(false)
+
+  priceListId String?
+  priceList   PriceList? @relation(fields: [priceListId], references: [id], onDelete: SetNull)
+
   isDemo Boolean @default(false)
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
   locations CustomerLocation[]
+  contacts  CustomerContact[]
   orders    CustomerOrder[]
 
   @@index([name])
   @@index([status])
+  @@index([isDemo])
+  @@index([priceListId])
+  @@index([storeCode])
+}
+
+// Milestone 1 (Master data from SAP). A real business partner in SAP B1
+// can have several named contacts; this is one-to-many for that reason,
+// even though the customer-master CSV layout (one row per customer) can
+// only seed a single primary contact per import -- see
+// docs/sap-exports/customer-master.csv.md. Further contacts would be
+// added by hand later; no UI for that is built in this milestone.
+model CustomerContact {
+  id         String  @id @default(cuid())
+  customerId String
+  name       String
+  role       String?
+  email      String?
+  phone      String?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@index([customerId])
   @@index([isDemo])
 }
 
@@ -171,6 +221,28 @@ model Product {
   category    String?
   status      RecordStatus @default(ACTIVE)
 
+  // Milestone 1 (Master data from SAP): the real SAP item export
+  // (CODE/ITEM DESCRIPTION/BARCODE/ITEM GROUP -- confirmed against the
+  // business's actual 7,540-row export) has none of these as columns, so
+  // they are never derived from itemName -- that would mean guessing at
+  // 7,540 inconsistently-formatted descriptions. They are populated only
+  // by the separate item-master-extension import
+  // (lib/item-master-import.ts), one SAP field each, left null until that
+  // file is imported for a given item.
+  unitOfMeasure    String? // SAP unit-of-measure code, e.g. "PNT", "KG"
+  packSize         String? // e.g. "250G" -- free text, as SAP itself holds it
+  isVariableWeight Boolean @default(false)
+
+  // SAP tax code (e.g. "VAT00", "VAT15"), not a relation to TaxCode.code:
+  // the item-master-extension import and the tax-code import are separate
+  // SAP exports that can land in either order, and a plain string (same
+  // pattern as sapItemCode/sapCustomerCode elsewhere in this schema) means
+  // neither import blocks on the other. The item-master importer still
+  // validates this against known TaxCode rows at import time and warns
+  // (never hard-fails) when a code isn't recognized yet -- see
+  // lib/item-master-import.ts.
+  vatCode String?
+
   // Preserve the original SAP row for traceability.
   sourceData Json?
   importedAt DateTime?
@@ -184,13 +256,83 @@ model Product {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  orderLines OrderLine[]
-  stockLines StockSnapshotLine[]
+  orderLines       OrderLine[]
+  stockLines       StockSnapshotLine[]
+  priceListEntries PriceListEntry[]
 
   @@index([itemName])
   @@index([category])
   @@index([status])
   @@index([barcode])
+  @@index([isDemo])
+  @@index([vatCode])
+}
+
+// Milestone 1 (Master data from SAP). VAT varies per item -- confirmed
+// explicitly, never a flat rate -- so the rate lives in a real lookup
+// table, not a constant. ratePercent is current-only (not effective-dated)
+// because it's unconfirmed whether the SAP export exposes VAT-rate
+// history; see docs/sap-exports/tax-codes.csv.md "Assumptions to confirm."
+model TaxCode {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  description String?
+  ratePercent Decimal @db.Decimal(5, 2)
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([isDemo])
+}
+
+// Milestone 1 (Master data from SAP). "Price lists per customer or group
+// (validity dates, currency)" -- a named list, not a bare
+// per-customer price column, because SAP B1 price lists are themselves
+// named/coded objects that one or many customers can be assigned to. See
+// docs/sap-exports/price-lists.csv.md.
+model PriceList {
+  id           String @id @default(cuid())
+  code         String @unique
+  name         String
+  currencyCode String // "USD" | "ZWG"
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  entries   PriceListEntry[]
+  customers Customer[]
+
+  @@index([isDemo])
+}
+
+// One row per item per list, with validity dates: prices change over
+// time, and an order needs "the price in effect on this order's date,"
+// not just "the current price" -- so this is a history, not a snapshot.
+// sapItemCodeSnapshot (same pattern as OrderLine.sapItemCodeSnapshot)
+// keeps the SAP code even if productId is later nulled by a Product
+// deletion.
+model PriceListEntry {
+  id                  String    @id @default(cuid())
+  priceListId         String
+  productId           String?
+  sapItemCodeSnapshot String
+  unitPrice           Decimal   @db.Decimal(18, 4)
+  validFrom           DateTime  @db.Timestamptz(6)
+  validTo             DateTime? @db.Timestamptz(6)
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  priceList PriceList @relation(fields: [priceListId], references: [id], onDelete: Restrict)
+  product   Product?  @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([priceListId, sapItemCodeSnapshot])
+  @@index([validFrom, validTo])
   @@index([isDemo])
 }
 

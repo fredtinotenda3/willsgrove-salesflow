@@ -976,3 +976,306 @@ surfaced before your manual click-through is a test that does what
 `createOrder()` against a real database. That test exists now, for next
 time, even though -- for the same sandbox reason -- it can only verify
 itself on your machine, not here.
+
+# Milestone 1 — Master data from SAP
+
+Built from your two real attachments (`sap-items-list.csv` — your actual
+461.8KB SAP item export, 7,540 rows, 4 columns: `CODE, ITEM DESCRIPTION,
+BARCODE, ITEM GROUP` — and invoice `HRE580108`, 6 Nov 2026, customer
+`HREC0D677` / TM Supermarkets Chinhoyi North, line item `0228` / Baby
+Marrow 250G Punnet / 10 PNT @ 0.45 USD / VAT 0.00 / total 4.50 USD), per
+your instruction: *"these are exactly products i export from sap... here
+is the invoice from sap, so return only a zip of fixed files before i
+move to: PO → SAP lines. Kill the retyping."* This is the corrected
+Milestone 1 (your Master Build Prompt's real Milestone 1 — "Master data
+from SAP" — not the pricing/approval workflow I incorrectly proposed
+first and you rejected).
+
+**Confirmed from your real item export**: it has no unit, pack-size, VAT,
+or price columns at all — only `CODE`/`ITEM DESCRIPTION`/`BARCODE`/`ITEM
+GROUP`. That settles an open question from the Milestone 1 report: unit
+and pack size cannot be parsed out of 7,540 inconsistently-formatted
+description strings reliably enough to trust, so they come from a new,
+separate SAP export instead (documented below), not from text-parsing.
+
+## Database / Prisma
+
+- `prisma/schema.prisma` — additive only, no column dropped, no type or
+  nullability change on anything existing:
+  - `Product` gains `unitOfMeasure`, `packSize`,
+    `isVariableWeight` (default `false`), `vatCode` (plain string, same
+    pattern as `sapItemCode` — not an FK, so the tax-code importer and
+    the item-master importer never block on each other's import order),
+    plus the `priceListEntries` relation and a `vatCode` index.
+  - `Customer` gains `tin`, `vatNumber`, `currencyCode`,
+    `paymentTermsCode`, `branchCode`, `storeCode`, `creditLimit`,
+    `creditHold` (default `false`), `priceListId` (nullable FK, `SetNull`
+    on delete), plus the `contacts` relation and `priceListId`/`storeCode`
+    indexes.
+  - New model `TaxCode` (`code` unique, `description`, `ratePercent
+    Decimal(5,2)`, `isDemo`) — no incoming foreign keys.
+  - New model `PriceList` (`code` unique, `name`, `currencyCode`,
+    `isDemo`) with `entries`/`customers` relations.
+  - New model `PriceListEntry` — one row per item per list, with
+    `validFrom`/`validTo`: a price change is a new row, never an edit of
+    history, because an order needs "the price in effect on the order's
+    date," not just "the current price." `productId` is nullable with
+    `onDelete: SetNull` and `sapItemCodeSnapshot` preserves the SAP code
+    even once a product is deleted (same pattern as `OrderLine`'s
+    snapshot columns). FK to `PriceList` is `onDelete: Restrict`.
+  - New model `CustomerContact` — `onDelete: Restrict` from `Customer`,
+    same as `CustomerLocation`.
+- `prisma/migrations/20261109090000_add_sap_master_data/migration.sql` —
+  hand-written (this sandbox cannot reach `binaries.prisma.sh` to run
+  `prisma generate`/`validate`/`migrate dev` — see
+  `docs/milestones/PROGRESS.md`'s "Sandbox-only blocker," unchanged since
+  round 1). Written by hand to match your existing migrations' exact
+  naming conventions (verified against all four prior migration files):
+  `{Table}_{col}_key` for unique indexes, `{Table}_{col}_idx` for
+  indexes, `{Table}_{col}_fkey` for foreign keys, `ON DELETE
+  RESTRICT/SET NULL ON UPDATE CASCADE`. **You must run `npx prisma
+  generate` for real on your machine before any of this code executes
+  against a database** — see SETUP-WINDOWS.md's new section 11.
+
+## New: SAP master-data importers (four, all preview-then-confirm)
+
+Each follows the exact pattern already shipped and tested in Milestone 0
+(`lib/product-import.ts` / `app/api/products/import/{route,preview/route}.ts`
+/ `app/products/import/page.tsx`): upload → server-side preview with
+new/changed/unchanged counts and validation errors → explicit confirm →
+`AuditEvent` written → done. A shared tokenizer (`lib/csv-parser.ts`,
+copied out of the existing, already-shipped `lib/sap-product-csv.ts`)
+backs all four; `lib/sap-product-csv.ts` itself is untouched, so nothing
+about the already-tested product importer changes.
+
+- **Tax codes** — `lib/sap-tax-code-csv.ts`, `lib/tax-code-import.ts`,
+  `app/api/tax-codes/import/{route,preview/route}.ts`,
+  `app/tax-codes/import/page.tsx`. Columns: `TAX_CODE, DESCRIPTION,
+  RATE_PERCENT`. Rate is kept as a decimal-shaped **string**, never
+  parsed to a JS number, because Prisma's `Decimal` input accepts a
+  string directly and this is the one value in this whole milestone
+  where float rounding would actually matter.
+- **Item master extension** — `lib/sap-item-master-csv.ts`,
+  `lib/item-master-import.ts`,
+  `app/api/item-master/import/{route,preview/route}.ts`,
+  `app/item-master/import/page.tsx`. Columns: `CODE, UNIT_OF_MEASURE,
+  PACK_SIZE, VARIABLE_WEIGHT, TAX_CODE`. **Only extends existing
+  products — never creates one.** A `CODE` not already in your product
+  table is reported as unmatched (not silently dropped, not a hard
+  block), since this import's job is to fill in fields on rows that
+  already exist from the Milestone 0 product import.
+- **Price lists** — `lib/sap-price-list-csv.ts`, `lib/price-list-import.ts`,
+  `app/api/price-lists/import/{route,preview/route}.ts`,
+  `app/price-lists/import/page.tsx`. Columns: `PRICE_LIST_CODE,
+  PRICE_LIST_NAME, CURRENCY, ITEM_CODE, UNIT_PRICE, VALID_FROM,
+  VALID_TO` — one row per item per list (denormalized). Rejects a
+  `PRICE_LIST_CODE` redefined with a different name/currency partway
+  through the same file. An `ITEM_CODE` not in your products is reported
+  as unmatched and the entry is still saved with `productId: null`
+  (`sapItemCodeSnapshot` preserved) rather than dropped, since the SAP
+  export is the source of truth, not your current product table.
+  Executes as two sequential transactions (lists, then entries) rather
+  than one `$transaction([...])` array, because an array of operations
+  can't reference an id a prior operation in the same array produced.
+- **Customer master** — `lib/sap-customer-master-csv.ts`,
+  `lib/customer-master-import.ts`,
+  `app/api/customers/master-import/{route,preview/route}.ts`,
+  `app/customers/master-import/page.tsx`. 18 columns: `CUSTOMER_CODE,
+  CUSTOMER_NAME, TIN, VAT_REG, CURRENCY, PRICE_LIST_CODE, PAYMENT_TERMS,
+  BRANCH_CODE, STORE_CODE, CREDIT_LIMIT, CREDIT_HOLD, ADDRESS_LINE1,
+  CITY, PHONE, EMAIL, CONTACT_NAME, CONTACT_EMAIL, CONTACT_PHONE`.
+  Unlike the item-master import, this one **can create new customers**
+  (customer master data has no Milestone-0 placeholder rows to extend).
+  Updating an *existing* customer only touches Customer-level fields —
+  it never overwrites that customer's locations or contacts, so a
+  hand-edited address or contact survives a re-import. Only a brand-new
+  customer gets an inline location/contact created from the CSV row.
+  Confirmed no route collision with the existing
+  `app/api/customers/{route,[id]/route}.ts`. Runs inside one
+  `prisma.$transaction(async (tx) => {...})`, sequential (not
+  `Promise.all`), for the same reason `scripts/remove-demo-data.ts`
+  already documents: concurrent queries on one interactive-transaction
+  client are unsafe.
+
+## New: catalogue health report
+
+- `lib/catalogue-health.ts` — refactored into a pure function,
+  `analyzeCatalogueHealth(products)`, plus a thin async wrapper,
+  `computeCatalogueHealth()`, that loads Prisma dynamically
+  (`await import("@/lib/prisma")`) and calls the pure function. The split
+  is what makes this unit-testable in this sandbox despite the broken
+  stub Prisma client (see "Sandbox-only blocker").
+- `app/api/catalogue/health/route.ts` (GET, read-only, no CSRF check —
+  matches this codebase's existing convention for read-only routes) and
+  `app/catalogue/health/page.tsx`.
+- Computes, against your real catalogue: blank descriptions,
+  duplicate-description groups (with the rows each one affects),
+  non-barcode values that landed in the `BARCODE` column, codes at risk
+  of losing a leading zero, and how many products are still missing a
+  unit or VAT code (i.e. haven't been through the item-master import
+  yet). Confirmed against your real 7,540-row export: 7 blank
+  descriptions; 58 duplicate-description groups covering 117 rows (59
+  "extra" rows beyond the first occurrence); 159 non-barcode `BARCODE`
+  values (including item `8028`'s `BARCODE` of literally `"Deli"`, and
+  Excel-mangled scientific-notation values like `"4.06214E+12"`); 999
+  leading-zero codes; zero duplicate `CODE` values; 34 distinct `ITEM
+  GROUP` values.
+
+## Docs + sample files (so your SAP administrator can produce the real exports)
+
+- `docs/sap-exports/{tax-codes,item-master-extension,price-lists,customer-master}.csv.md`
+  — exact column layouts, one per importer, each one explicit about
+  which values are confirmed real (item `0228`, customer `HREC0D677`)
+  versus illustrative placeholders your SAP administrator needs to
+  replace with real exports. **No real tax-code or price-list export was
+  ever provided** — those two layouts are my own design, per your Master
+  Build Prompt's own instruction to "define and document the exact CSV
+  column layouts, with sample files, so my SAP administrator can produce
+  them." Flagging this plainly rather than presenting them as confirmed.
+- `test-data/sample-{tax-codes,item-master-extension,price-lists,customer-master}.csv`
+  — the four sample files the docs point to; item `0228` and customer
+  `HREC0D677` rows in each are real, grounded in your invoice; the rest
+  are illustrative.
+
+## Tests
+
+- `tests/{tax-code-import,item-master-import,price-list-import,customer-master-import,catalogue-health}.test.ts`
+  — unit tests for each new parser/pure function, including your real
+  `0228`/`HREC0D677` data and the real catalogue-health numbers above.
+- `tests/acceptance-item-0228.test.ts` — your own stated acceptance
+  criterion, run literally: reads all four real sample CSVs off disk and
+  chains the four parsers together (no database needed, so it runs
+  unconditionally in this sandbox) to confirm unit `PNT`, price `0.45`
+  USD, VAT `0.00`, line total `4.50` for 10 units of item `0228` against
+  customer `HREC0D677` — exactly matching invoice `HRE580108`.
+- Result: **125 passed, 1 skipped** (the pre-existing opt-in DB
+  integration test), **1 pre-existing failure** — see "Issues found and
+  fixed" below; it is not caused by this milestone's changes.
+
+## Wiring
+
+- `app/components/sidebar.tsx` — added a new "SAP MASTER DATA" nav
+  section (Tax Codes Import, Item Master Import, Price Lists Import,
+  Customer Master Import) and a "Catalogue Health" link under Insights.
+  Note: the Milestone 0 product importer (`/products/import`) still has
+  no sidebar link either, same as before this round — that's a
+  pre-existing gap from Milestone 0, out of this milestone's approved
+  scope, flagged here rather than fixed silently.
+- `scripts/remove-demo-data.ts` — extended for the four new models, each
+  cleaned up by its own `isDemo` flag: `CustomerContact` deleted before
+  `Customer` (`onDelete: Restrict`), `PriceListEntry` deleted before
+  `PriceList` (`onDelete: Restrict`), `TaxCode` deleted independently (no
+  incoming foreign keys at all).
+
+## Issues found and fixed during this milestone
+
+- **My own bug, caught by my own test**: `lib/sap-tax-code-csv.ts`'s
+  original `RATE_PATTERN = /^\d{1,3}(\.\d{1,2})?$/` allowed any value up
+  to `999.99`, not the documented 0–100 range — a regex can't express
+  "at most 3 integer digits AND the value is ≤ 100" (`"150.00"` matches
+  `\d{1,3}` exactly as validly as `"15.00"`). Caught by
+  `tests/tax-code-import.test.ts`'s "rejects a rate outside 0-100" case
+  failing on the first `vitest run`. Fixed by splitting it into a
+  shape-only `RATE_SHAPE_PATTERN` plus a real numeric range check,
+  `isRatePercentInRange()`. Re-ran the full suite after the fix — this is
+  the only genuine defect found in this round; everything else below is
+  the pre-existing sandbox blocker.
+- **Confirmed pre-existing and unrelated**: `tests/order-validation.test.ts`
+  fails with `Cannot convert undefined or null to object` inside
+  `z.nativeEnum(OrderSource, ...)`, because this sandbox's stub
+  `@prisma/client` doesn't export `OrderSource` (or any real model/enum)
+  at all — re-ran it in isolation and got the identical failure before
+  touching anything in this milestone. Same documented blocker as below,
+  not something this round introduced or could fix from inside the
+  sandbox.
+- **`npx tsc --noEmit` comparison, done properly rather than assumed**: I
+  diffed a fresh, untouched copy of the round-5 baseline against this
+  round's working copy. Baseline: 56 error lines, all in pre-existing
+  files (`lib/customers.ts`, `lib/orders.ts`, `lib/users.ts`,
+  `lib/order-queries.ts`, `lib/product-queries.ts`,
+  `lib/customer-queries.ts`, `lib/locations.ts`,
+  `lib/order-validation.ts`, `lib/customer-validation.ts`,
+  `lib/user-validation.ts`, `scripts/remove-demo-data.ts`,
+  `prisma/seed.ts`, and others), caused by the stub client typing every
+  Prisma model and query result as `any`/`{}` with zero real exports
+  (confirmed directly: `node_modules/.prisma/client/default.d.ts`
+  literally reads `export declare const PrismaClient: any`). This
+  round: 67 error lines — the 11-line delta is entirely in
+  `lib/customer-master-import.ts` and `lib/price-list-import.ts`, and
+  every one of those 11 is the exact same `TS7006` (implicit-any
+  callback parameter) / `TS2339` (property missing on `{}`) shape as the
+  56 pre-existing ones. No new error category. This is the same
+  sandbox-only blocker, not a defect in this round's code, and will
+  disappear identically to the other 56 the moment `prisma generate` runs
+  for real on your machine (which you need to do anyway now, since the
+  schema has four new models no generated client — stub or real —
+  currently knows about).
+- **Real lint error found and fixed** (not sandbox-related):
+  `app/catalogue/health/page.tsx` originally called `load()` directly in
+  a `useEffect` body, which calls `setLoading`/`setError` synchronously
+  within the effect — `react-hooks/set-state-in-effect` flagged this
+  correctly. Fixed by deferring the call through `Promise.resolve().then(...)`,
+  the same pattern `app/orders/page.tsx` already uses for its own initial
+  load. `npm run lint` is clean after the fix.
+
+## Milestone 1 fix (round 2 — your real `tsc`/`migrate dev`/`build` run)
+
+Your real machine caught 4 real `tsc` errors that this sandbox's broken stub
+Prisma client structurally cannot catch (see "Sandbox-only blocker" in
+`docs/milestones/PROGRESS.md`) — `npx prisma generate`/`migrate dev` both
+ran clean on your end, `npm run lint` was clean, but `npx tsc --noEmit` and
+`npm run build` both failed with the identical error in all 4 new
+importers: `afterData: {...}` (the Json payload for the `AuditEvent`
+audit-trail record each import writes) failed with `Type '{...}' is not
+assignable to type 'NullableJsonNullValueInput | InputJsonValue |
+undefined'` / `Index signature for type 'string' is missing in type
+'{...}[]'`.
+
+**Root cause, confirmed by direct reproduction against Prisma's real
+(non-generated, non-stub) runtime type definitions** — not guessed, not
+papered over with a cast: `ExistingTaxCodeSnapshot`, `ExistingItemMasterSnapshot`,
+`ExistingCustomerMasterSnapshot`, and `ListDefinition` were each declared as
+a named `export interface X { ... }` and then embedded, unmodified, as a
+nested value (`before: change.current`, or `incoming: ListDefinition`)
+inside the object literal passed to `AuditEvent.afterData`. This is a
+genuine, narrow TypeScript quirk, verified with isolated before/after
+repros using Prisma's actual shipped `InputJsonObject`/`InputJsonValue`
+types (`node_modules/@prisma/client/runtime/library.d.ts`), not the broken
+per-schema generated stub: a value typed via a named `interface` is **not**
+structurally assignable to `Prisma.InputJsonObject` (which carries a
+`[Key in string]?: InputJsonValue` index signature) even when every
+property it declares is already a plain JSON-safe primitive — but a `type`
+alias for the byte-for-byte identical shape **is** assignable, with zero
+cast needed. `lib/product-import.ts` (Milestone 0, already shipped and
+tested clean on your machine across 5 rounds) was never hit by this because
+its equivalent snapshot type, `ExistingProductSnapshot`, happens to already
+be declared with `export type X = {...}`, not `export interface X {...}`.
+
+**Fix**: changed exactly these four declarations from `interface` to
+`type` — nothing else:
+- `lib/tax-code-import.ts`: `ExistingTaxCodeSnapshot`
+- `lib/item-master-import.ts`: `ExistingItemMasterSnapshot`
+- `lib/customer-master-import.ts`: `ExistingCustomerMasterSnapshot`
+- `lib/price-list-import.ts`: `ListDefinition`
+
+No behavior, no field, no runtime shape changed — this is a type-level
+fix only. I verified it four separate ways before sending it back: for each
+of the four files, I built a standalone reproduction using the *exact* real
+type names and shapes from that file, imported Prisma's real (not stub,
+not generated-per-schema) `InputJsonValue` type, and confirmed `tsc`
+reports zero errors with the `type` fix and the exact same error you saw
+without it. I also tried (and discarded) an `as Prisma.InputJsonObject`
+cast as a first pass — it would have worked too, but a cast that silences
+a real structural check is worse engineering than fixing the actual
+declaration, so I reverted it once the real root cause was confirmed.
+
+This is a real defect class this sandbox's broken stub client structurally
+cannot surface — flagging for your awareness, not as an excuse: any future
+code that builds a `Json`-field payload (`afterData`/`beforeData` on
+`AuditEvent`, or any other `Json` column) embedding a named `interface` as
+a nested value, rather than a `type` alias or a plain inline literal, will
+hit this same error the moment it's checked against your real generated
+client — the sandbox will never catch it. `lib/customers.ts`/`lib/locations.ts`
+(pre-existing, already shipped) sidestep it entirely by typing their
+before/after diffs as `Record<string, string | null>`, which has an
+explicit index signature and is safe either way.

@@ -1,0 +1,3 @@
+"TAX_CODE","DESCRIPTION","RATE_PERCENT"
+"VAT00","Zero-rated (fresh produce)","0.00"
+"VAT15","Standard rate (from 1 Jan 2026)","15.50"

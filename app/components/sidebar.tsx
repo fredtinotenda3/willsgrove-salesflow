@@ -18,6 +18,11 @@ import {
   Plus,
   KeyRound,
   LogOut,
+  Percent,
+  Boxes,
+  Tags,
+  Building2,
+  Activity,
 } from "lucide-react";
 
 const navigation = [
@@ -83,6 +88,36 @@ const navigation = [
         name: "Reports",
         href: "/reports",
         icon: BarChart3,
+      },
+      {
+        name: "Catalogue Health",
+        href: "/catalogue/health",
+        icon: Activity,
+      },
+    ],
+  },
+  {
+    title: "SAP MASTER DATA",
+    items: [
+      {
+        name: "Tax Codes Import",
+        href: "/tax-codes/import",
+        icon: Percent,
+      },
+      {
+        name: "Item Master Import",
+        href: "/item-master/import",
+        icon: Boxes,
+      },
+      {
+        name: "Price Lists Import",
+        href: "/price-lists/import",
+        icon: Tags,
+      },
+      {
+        name: "Customer Master Import",
+        href: "/customers/master-import",
+        icon: Building2,
       },
     ],
   },

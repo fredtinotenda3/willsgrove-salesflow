@@ -468,3 +468,166 @@ or sandbox-only, without issue from fonts specifically).
   demo/prototype data, not a real `orderDate` value — but flagged here in
   case Reports becomes real in a future milestone, so this isn't
   rediscovered from scratch then.
+
+# Milestone 1 — Progress (Master data from SAP)
+
+## Scope delivered
+
+Exactly the scope from your Master Build Prompt's real Milestone 1
+("Master data from SAP"), per your corrected definition — not the
+pricing/approval workflow I incorrectly proposed first:
+
+- Four preview-then-confirm importers: tax codes, item-master extension
+  (unit/pack size/variable-weight/VAT code), price lists (per
+  customer/group, with validity dates and currency), customer master
+  (SAP code, TIN, VAT number, currency, price list, terms, contacts,
+  addresses, branch, store code).
+- `Product` and `Customer` schema extensions to hold the above.
+- Documented CSV layouts + sample files, grounded in your two real
+  attachments (the actual SAP item export and invoice `HRE580108`),
+  so your SAP administrator has an exact target to produce.
+- A catalogue health report against your real 7,540-row item export.
+- Your stated acceptance test, run literally end-to-end at the logic
+  level: item `0228`, 10 × 0.45 USD PNT = 4.50, VAT 0.00 — matches
+  invoice `HRE580108` exactly.
+
+See CHANGES.md's "Milestone 1" section for the full file-by-file list.
+
+## Build / lint / typecheck / test results — reported honestly
+
+- **`npm run lint`**: clean. Found and fixed one real issue along the
+  way — `app/catalogue/health/page.tsx` was calling `setState`
+  synchronously inside a `useEffect` body; fixed by deferring through
+  `Promise.resolve().then(...)`, matching the pattern already used in
+  `app/orders/page.tsx`.
+- **`npx vitest run`**: 125 passed, 1 skipped (the pre-existing opt-in DB
+  integration test, same as every prior round), 1 failed —
+  `tests/order-validation.test.ts`, confirmed pre-existing and unrelated
+  to this milestone (see below).
+- **`npx tsc --noEmit`**: did the comparison properly rather than
+  asserting it. A fresh, untouched copy of the round-5 baseline produces
+  56 error lines in this sandbox, entirely in pre-existing files, all
+  caused by the stub `@prisma/client` (see "Sandbox-only blocker" below
+  — unchanged since round 1). This round's working copy produces 67.
+  The 11-line delta is entirely in the two new files that do the
+  heaviest Prisma querying (`lib/customer-master-import.ts`,
+  `lib/price-list-import.ts`), and every one of those 11 lines is the
+  same `TS7006`/`TS2339` shape (implicit-any callback parameter; property
+  missing on `{}`) as the 56 pre-existing ones — no new error category
+  introduced. This is the same sandbox-only blocker, not new defects.
+- **`npx prisma generate` / `npx prisma validate` / `npx prisma migrate
+  dev`**: still cannot run in this sandbox (network-restricted — `403
+  Forbidden` fetching from `binaries.prisma.sh`, same as every prior
+  round). The migration for this round
+  (`prisma/migrations/20261109090000_add_sap_master_data/migration.sql`)
+  was therefore hand-written, matching your existing migrations' naming
+  conventions exactly (verified against all four prior migration files
+  before writing this one). **You must run `npx prisma generate` and
+  apply the migration for real on your machine** — see
+  SETUP-WINDOWS.md's new section 11 — before any of this milestone's
+  code can execute against a database.
+- **`npm run build`**: not attempted in this sandbox, same reason as
+  every prior round (this sandbox cannot reach that build phase at all).
+  Your next real `npm run build` is what confirms this.
+
+## Sandbox-only blocker (unchanged since round 1 — confirmed again this round)
+
+Same blocker as every prior round, confirmed directly this time rather
+than assumed: `node_modules/.prisma/client/default.d.ts` and
+`index.d.ts` type the entire generated client as `any`
+(`export declare const PrismaClient: any`, `export declare type
+PrismaClient = any`, `Prisma.TransactionClient = any`), with zero real
+model or enum exports — not `OrderStatus`, not `RecordStatus`, not the
+four models this milestone adds. This is why `tsc` flags implicit-`any`
+callback parameters and `{}`-typed query results throughout the
+codebase, old files and new alike, and why
+`tests/order-validation.test.ts` crashes on `z.nativeEnum(OrderSource,
+...)` — `OrderSource` simply isn't exported by this stub. None of this
+reflects a real code defect; it resolves identically to every other
+instance of it the moment you run `npx prisma generate` for real.
+
+## Open items — not resolved, deliberately
+
+- **No real tax-code or price-list SAP export was ever provided.** Those
+  two CSV layouts (`docs/sap-exports/tax-codes.csv.md` and
+  `price-lists.csv.md`) are my own design, written per your Master Build
+  Prompt's own instruction to document a layout "so my SAP administrator
+  can produce them" — not a layout confirmed against a real SAP export,
+  unlike the item-master and customer-master layouts, which are grounded
+  in your real item CSV and invoice respectively. Flagging this plainly:
+  these two need your SAP administrator's sign-off before they're
+  trusted as final.
+- **"One SAP customer code = one physical store" is confirmed for exactly
+  one case** (`HREC0D677` = TM Chinhoyi North, from your invoice), not
+  generalized. Whether every customer code in your real export maps this
+  same way, or whether some customers have multiple stores under one
+  code, is still open — the customer-master importer's `storeCode` field
+  supports either answer, but doesn't assume one.
+- **VAT varies per item — confirmed, not assumed.** The `TaxCode` table
+  is a real lookup, and `Product.vatCode` is a plain string (same
+  pattern as `sapItemCode`), not a flat constant, specifically so a
+  future item with a different rate from `0228`'s 0% doesn't need a code
+  change to support.
+- **Item codes and customer codes are text, always — re-confirmed this
+  round.** 999 of the real export's 7,540 codes start with a zero;
+  every parser in this milestone keeps codes as strings end-to-end, with
+  a dedicated test (`"preserves a leading-zero CODE as text, never
+  coercing to a number"`) guarding it.
+- **Pack size and unit cannot come from the existing item export —
+  confirmed, not assumed.** Your real export has exactly 4 columns
+  (`CODE, ITEM DESCRIPTION, BARCODE, ITEM GROUP`); there is no unit,
+  pack-size, VAT, or price data in it at all. I deliberately did not
+  build text-parsing of the 7,540 inconsistently-formatted description
+  strings to guess at this — that would be unreliable in a way that's
+  hard to detect after the fact. The item-master-extension CSV is a
+  wholly separate export your SAP administrator needs to produce.
+- **The catalogue-health numbers are a live read of your real catalogue,
+  not a one-time snapshot.** They'll change as the item-master import
+  fills in `unitOfMeasure`/`vatCode` on more products — "items without a
+  unit/VAT code" is expected to trend toward zero as that import is run
+  against your real item-master-extension export, not a bug if it
+  doesn't start at zero.
+- **PO → SAP lines (killing the retyping) is explicitly next, not
+  started.** This milestone only lays the master-data foundation
+  (units, VAT, prices, customer/price-list linkage) that an order-line
+  preview needs to show a real unit/price/VAT/total — it does not yet
+  build that preview itself. The acceptance test in this round
+  (`tests/acceptance-item-0228.test.ts`) proves the data is all there and
+  chains correctly; wiring it into an actual order-line entry screen is
+  the next milestone's work.
+
+## Milestone 1 fix (round 2 — real tsc/build failure, now fixed and verified)
+
+Your real `npx prisma generate` and `npx prisma migrate dev --name
+m1_master_data` both succeeded cleanly. `npm run lint` was clean. `npx tsc
+--noEmit` and `npm run build` both failed with 4 real `TS2322` errors — one
+per new importer — none of which this sandbox could have caught (see
+"Sandbox-only blocker" above): the broken stub client accepts anything for
+a Json field, so the real structural check Prisma's generated client
+performs is invisible here until compiled for real.
+
+**Root cause, confirmed by direct reproduction against Prisma's real
+runtime types** (not guessed): four named `interface` declarations
+(`ExistingTaxCodeSnapshot`, `ExistingItemMasterSnapshot`,
+`ExistingCustomerMasterSnapshot`, `ListDefinition`) were each embedded
+unmodified into an `AuditEvent.afterData` Json payload. A named `interface`
+is not structurally assignable to Prisma's `InputJsonObject` (which
+requires a string index signature) even when every field it declares is
+already JSON-safe; a `type` alias for the identical shape is assignable,
+with no cast needed. See CHANGES.md's "Milestone 1 fix (round 2)" for the
+full explanation and why `lib/product-import.ts` was never exposed to this.
+
+**Fixed**: the four declarations changed from `interface` to `type`,
+nothing else. Verified with four standalone reproductions built from each
+file's exact real type shapes, importing Prisma's actual (non-stub)
+`InputJsonValue` type directly from `node_modules/@prisma/client/runtime/library.d.ts`
+— each one now compiles clean; each one reproduced your exact error before
+the fix. This sandbox's own `tsc`/`lint`/`vitest` were re-run after the fix
+and are unchanged from before it (67 sandbox-only error lines, same 11-line
+delta as before — removing the `interface`s didn't add or remove any
+sandbox-only noise; 125 passed/1 skipped/1 pre-existing-unrelated failure).
+
+**Open**: your next real `tsc --noEmit` and `npm run build` are what
+actually confirm this fix — this sandbox cannot generate a real client to
+verify it directly, only the isolated type-level reproduction above, which
+is as far as verification can go without your machine.
