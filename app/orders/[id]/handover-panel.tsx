@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import { Clipboard, Download, FileSpreadsheet, FileText, Loader2, RefreshCw } from "lucide-react";
 
 /**
- * Milestone 2C. The one client-rendered "island" on an otherwise async
+ * Milestone 2C, reworked in Milestone 3C (SAP Invoice Handover
+ * Specification). The one client-rendered "island" on an otherwise async
  * Server Component page (app/orders/[id]/page.tsx stays a Server
  * Component for everything else -- see that file's module comment).
  * Manual, per-order handover generation only, per the approved scope:
@@ -12,12 +13,23 @@ import { Clipboard, Download, FileSpreadsheet, FileText, Loader2, RefreshCw } fr
  * real, append-only OrderHandover row (never overwritten, never
  * deduplicated), so this panel always re-fetches the list after a
  * successful generate rather than optimistically inserting a row.
+ *
+ * Milestone 3C: takes `readyToInvoice` (a derived boolean computed
+ * server-side on the page, same pattern 3B established for
+ * PickingPanel's `canAuthorize` -- never the full order object) and
+ * disables the three Generate buttons with an explanation when it's
+ * false, so a user sees *why* up front rather than clicking through to a
+ * 409 the server already enforces (lib/handover/build-handover-rows.ts's
+ * hard gate). This is UX only -- the real enforcement is server-side and
+ * stays that way regardless of what this prop says.
  */
 
 type HandoverFormat = "EXCEL" | "CSV" | "CLIPBOARD";
 
 type HandoverListEntry = {
   id: string;
+  /** Nullable only for a handover generated before Milestone 3C added this field. */
+  reference: string | null;
   format: HandoverFormat;
   lineCount: number;
   matchedLineCount: number;
@@ -64,7 +76,7 @@ function formatDateTime(iso: string): string {
   }
 }
 
-export default function HandoverPanel({ orderId }: { orderId: string }) {
+export default function HandoverPanel({ orderId, readyToInvoice }: { orderId: string; readyToInvoice: boolean }) {
   const [handovers, setHandovers] = useState<HandoverListEntry[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
@@ -140,9 +152,10 @@ export default function HandoverPanel({ orderId }: { orderId: string }) {
     <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-[15px] font-bold text-[#17251E]">SAP Handover</h2>
+          <h2 className="text-[15px] font-bold text-[#17251E]">SAP Invoice Handover</h2>
           <p className="mt-1 text-xs text-gray-400">
-            Generate the order&apos;s lines with official SAP descriptions, for the invoice team to hand to SAP.
+            Generate the order&apos;s authorized picked quantities, with official SAP descriptions, for the invoice
+            team.
           </p>
         </div>
         <button
@@ -155,11 +168,18 @@ export default function HandoverPanel({ orderId }: { orderId: string }) {
         </button>
       </div>
 
+      {!readyToInvoice && (
+        <p className="mt-3 text-[11px] text-[#9A6B10]">
+          This order isn&apos;t ready yet -- picking must be completed and authorized before a handover can be
+          generated.
+        </p>
+      )}
+
       <div className="mt-4 flex flex-wrap gap-2">
         <button
           type="button"
           onClick={() => void generate("EXCEL")}
-          disabled={generatingFormat !== null}
+          disabled={generatingFormat !== null || !readyToInvoice}
           className="flex items-center gap-1.5 rounded-lg bg-[#173D2E] px-3 py-2 text-xs font-semibold text-white transition hover:brightness-110 disabled:opacity-50"
         >
           {generatingFormat === "EXCEL" ? <Loader2 size={13} className="animate-spin" /> : <FileSpreadsheet size={13} />}
@@ -168,7 +188,7 @@ export default function HandoverPanel({ orderId }: { orderId: string }) {
         <button
           type="button"
           onClick={() => void generate("CSV")}
-          disabled={generatingFormat !== null}
+          disabled={generatingFormat !== null || !readyToInvoice}
           className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
         >
           {generatingFormat === "CSV" ? <Loader2 size={13} className="animate-spin" /> : <FileText size={13} />}
@@ -177,7 +197,7 @@ export default function HandoverPanel({ orderId }: { orderId: string }) {
         <button
           type="button"
           onClick={() => void generate("CLIPBOARD")}
-          disabled={generatingFormat !== null}
+          disabled={generatingFormat !== null || !readyToInvoice}
           className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
         >
           {generatingFormat === "CLIPBOARD" ? <Loader2 size={13} className="animate-spin" /> : <Clipboard size={13} />}
@@ -186,7 +206,9 @@ export default function HandoverPanel({ orderId }: { orderId: string }) {
       </div>
 
       {clipboardStatus === "copied" && (
-        <p className="mt-2 text-[11px] font-medium text-[#1F7A43]">Copied -- paste directly into SAP or Excel.</p>
+        <p className="mt-2 text-[11px] font-medium text-[#1F7A43]">
+          Copied to your clipboard -- paste it wherever the invoice team needs it next.
+        </p>
       )}
       {generateError && <p className="mt-2 text-[11px] text-[#9B3B3B]">{generateError}</p>}
 
@@ -208,6 +230,7 @@ export default function HandoverPanel({ orderId }: { orderId: string }) {
                     {formatLabel(handover.format)}
                     {handover.fileSize !== null && <span className="font-normal text-gray-400"> · {formatFileSize(handover.fileSize)}</span>}
                   </p>
+                  {handover.reference && <p className="mt-0.5 text-[10px] font-medium text-gray-500">{handover.reference}</p>}
                   <p className="mt-0.5 text-[10px] text-gray-400">
                     {handover.lineCount} line{handover.lineCount === 1 ? "" : "s"}
                     {handover.unmatchedLineCount > 0 && (

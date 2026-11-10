@@ -449,8 +449,8 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                 </dl>
               </section>
 
-              {/* Milestone 2C: manual, per-order SAP handover generation */}
-              <HandoverPanel orderId={order.id} />
+              {/* Milestone 2C: manual, per-order SAP handover generation. Milestone 3C: hard-gated on READY_TO_INVOICE -- see HandoverPanel's module comment. */}
+              <HandoverPanel orderId={order.id} readyToInvoice={order.status === "READY_TO_INVOICE"} />
 
               {/* Internal notes */}
               {order.internalNotes && (

@@ -1,10 +1,11 @@
 import "server-only";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 /**
- * Milestone 3A (SAP Invoice Handover Specification -- warehouse picking).
- * Read-only helpers shared by the picking API routes (GET endpoints) and,
- * from Milestone 3B onward, the /fulfilment UI.
+ * Milestone 3A/3B (SAP Invoice Handover Specification -- warehouse
+ * picking). Read-only helpers shared by the picking API routes (GET
+ * endpoints) and the /fulfilment UI.
  */
 export type PickingLineDetail = {
   id: string;
@@ -127,4 +128,94 @@ export async function getPickingSessionDetail(sessionId: string): Promise<Pickin
     select: SESSION_SELECT,
   });
   return session ? toDetail(session) : null;
+}
+
+export type PickingQueueOrderSummary = {
+  id: string;
+  reference: string;
+  customerPoReference: string | null;
+  status: string;
+  customer: { id: string; name: string } | null;
+  requestedDeliveryDate: string | null;
+  lineCount: number;
+  isDemo: boolean;
+  createdAt: string;
+};
+
+export type PickingQueueResult = {
+  orders: PickingQueueOrderSummary[];
+  pagination: { page: number; pageSize: number; totalItems: number; totalPages: number };
+};
+
+/**
+ * Milestone 3B. The /fulfilment list page's query -- every "live" order
+ * that could still need picking attention: not DRAFT (never confirmed),
+ * not CANCELLED/REJECTED (dead), and not yet handed to SAP
+ * (`handedToSapAt` is still null -- once a handover exists for an order,
+ * picking is done and it drops off this queue, whatever OrderStatus it
+ * happens to be sitting at). Deliberately NOT filtered to only
+ * OrderStatus.PICKING -- an order that hasn't had picking started yet
+ * (RECEIVED/PENDING_VERIFICATION/READY_FOR_APPROVAL/APPROVED) still
+ * belongs on this queue so staff can see what's coming, and one that's
+ * READY_TO_INVOICE still belongs here too (briefly) so staff can see a
+ * pick just finished, right up until a handover is actually generated
+ * for it in a future round (Milestone 3C).
+ *
+ * Ordered oldest-first (`createdAt asc`) rather than by delivery date --
+ * simpler, and avoids Prisma's NULLS ordering edge cases for the many
+ * orders with no `requestedDeliveryDate` set at all.
+ */
+export async function listPickingQueue(options: {
+  page: number;
+  pageSize: number;
+  includeDemo?: boolean;
+}): Promise<PickingQueueResult> {
+  const where: Prisma.CustomerOrderWhereInput = {
+    status: { notIn: ["DRAFT", "CANCELLED", "REJECTED"] },
+    handedToSapAt: null,
+  };
+  if (!options.includeDemo) {
+    where.isDemo = false;
+  }
+
+  const [totalItems, rows] = await Promise.all([
+    prisma.customerOrder.count({ where }),
+    prisma.customerOrder.findMany({
+      where,
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      skip: (options.page - 1) * options.pageSize,
+      take: options.pageSize,
+      select: {
+        id: true,
+        reference: true,
+        customerPoReference: true,
+        status: true,
+        requestedDeliveryDate: true,
+        isDemo: true,
+        createdAt: true,
+        customer: { select: { id: true, name: true } },
+        _count: { select: { lines: true } },
+      },
+    }),
+  ]);
+
+  return {
+    orders: rows.map((order) => ({
+      id: order.id,
+      reference: order.reference,
+      customerPoReference: order.customerPoReference,
+      status: order.status,
+      customer: order.customer,
+      requestedDeliveryDate: order.requestedDeliveryDate ? order.requestedDeliveryDate.toISOString() : null,
+      lineCount: order._count.lines,
+      isDemo: order.isDemo,
+      createdAt: order.createdAt.toISOString(),
+    })),
+    pagination: {
+      page: options.page,
+      pageSize: options.pageSize,
+      totalItems,
+      totalPages: Math.max(1, Math.ceil(totalItems / options.pageSize)),
+    },
+  };
 }

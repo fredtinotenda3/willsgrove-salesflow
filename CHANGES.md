@@ -1658,3 +1658,110 @@ design rationale and honest verification results, and
 | `docs/milestones/PROGRESS.md` | Modified | Added the Milestone 3A section (design rationale, what was built, honest verification results, open items). |
 | `CHANGES.md` | Modified | This section. |
 | `SETUP-WINDOWS.md` | Modified | Added §15 (apply migration, regenerate client, run the new DB-integration tests, a curl-based manual test script since there's no UI yet, and the rollback procedure). |
+
+# Milestone 3B — Changes (picking UI, SAP Invoice Handover Specification stage 2 of 4)
+
+Every file added or modified to build stage 3B. No files were deleted,
+no schema/migration change this round. See `docs/milestones/PROGRESS.md`'s
+Milestone 3B section for the full design rationale and honest
+verification results, and `docs/milestones/ROADMAP.md` for the master
+0–3D status table.
+
+## `lib/picking/`
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/picking/queries.ts` | Modified | Added `listPickingQueue(options)` — the `/fulfilment` list's query: every live `CustomerOrder` (not `DRAFT`/`CANCELLED`/`REJECTED`) not yet handed to SAP (`handedToSapAt IS NULL`), paginated, oldest first. Deliberately queries `CustomerOrder` directly rather than `PickingSession`, so an order that hasn't had picking started yet still appears. |
+
+## `/fulfilment` UI (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/fulfilment/page.tsx` | Added | The picking queue list — a plain Server Component (no client-side search/filter, by design), paginated via `listPickingQueue`. Wires up the sidebar's previously-dead "Picking & Fulfilment" nav entry. |
+| `app/fulfilment/[id]/page.tsx` | Added | The per-order picking workstation — Server Component guards (session/valid-id/order-exists), a "not eligible for picking" message for dead-status orders, otherwise renders `PickingPanel`. Computes `canAuthorize` server-side and passes only that boolean down (new pattern for this project). Links back to the full order detail page rather than duplicating its content. |
+| `app/fulfilment/[id]/picking-panel.tsx` | Added | The one Client Component — drives start/record/complete/authorize against 3A's API, mirroring `handover-panel.tsx`'s established conventions (always re-fetch after a mutation, inline error text, `readJson()` helper). Four UI states keyed off the latest `PickingSessionDetail`'s status. |
+
+## Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/ROADMAP.md` | Modified | Marked 3B done; added its change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the Milestone 3B section (design rationale, what was built, honest verification results, open items — including that session abandon/cancel is still not built). |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §16 — a browser-based manual test script walking through the actual `/fulfilment` UI now that it exists, superseding 3A's curl-only script for this purpose (the curl script in §15 still works and is left as-is for anyone who prefers it or is testing the API directly). |
+
+# Milestone 3C — Changes (Invoice Handover rework, SAP Invoice Handover Specification stage 3 of 4)
+
+Every file added or modified to build stage 3C. No files were deleted.
+**Honesty note**: this round's session did not have the spec's literal
+text in context (compacted away in an earlier session) — the exact
+column/header names below are a best-reasoned reconstruction from this
+project's own prior wording (`ROADMAP.md`'s 3C scope line), not
+re-verified against the spec directly. See `docs/milestones/PROGRESS.md`'s
+Milestone 3C section for the full design rationale, that note in full,
+and honest verification results, and `docs/milestones/ROADMAP.md` for
+the master 0–3D status table.
+
+## Database / Prisma
+
+| File | Change | Reason |
+|---|---|---|
+| `prisma/schema.prisma` | Modified | `OrderHandover.reference` gains `@unique` (safe: Postgres never treats two `NULL`s as colliding, and every pre-3C row has `reference = NULL`). Softened the `HandoverFormat` enum's SAP-grid-compatibility overclaim comment. No other schema change -- `pickingSessionId` already existed, unused, since Milestone 3A. |
+| `prisma/migrations/20261110170000_add_handover_reference_unique/migration.sql` | Added | One `CREATE UNIQUE INDEX`. No column type, nullability, or data change -- safe to run against a database that already has real `OrderHandover` rows. |
+
+## `lib/handover/` (reworked)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/handover/build-handover-rows.ts` | Modified | Hard-blocks (409) unless the order is `READY_TO_INVOICE`; sources `quantity` from the order's most recent `AUTHORIZED` `PickingSession`'s `PickingLine.foundQuantity`, never `OrderLine.requestedQuantity`; omits a 100%-unavailable line entirely (`omittedLineCount` returned, never silent); adds `pickingSessionId`/`authorizedByName`/`authorizedAt` to the returned order info for the richer header/traceability. |
+| `lib/handover/generate-handover.ts` | Modified | Adds `generateHandoverReference()` (mirrors `lib/orders.ts`'s `generateOrderReference()`, same collision-retry loop); Excel header gains the Handover Reference and picking-authorization traceability fields; Excel's product table is now the spec's 4 columns (SAP Item Code, Description, Quantity, Unit) with a separate "Lines needing attention before processing" section for anything flagged; records `pickingSessionId`+`reference` on the created `OrderHandover` row; result shape gains `reference`/`omittedLineCount`. |
+| `lib/handover/format-rows.ts` | Modified | CSV/clipboard rewritten to the same 4-column layout; CSV additionally appends the "Lines needing attention" exceptions section (clipboard does not -- nowhere for it to go once pasted). |
+| `lib/handover/queries.ts` | Modified | `listOrderHandovers` now also selects/returns each handover's `reference`, so the UI can show it. |
+
+## UI (`app/orders/[id]/`)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/orders/[id]/handover-panel.tsx` | Modified | Takes a new `readyToInvoice: boolean` prop (derived server-side, same pattern as 3B's `canAuthorize`) and disables the three Generate buttons with an inline explanation when false -- UX only, the real gate is server-side. Shows each past handover's reference. Softened the clipboard-copy success message's SAP-grid-compatibility overclaim. |
+| `app/orders/[id]/page.tsx` | Modified | Passes `readyToInvoice={order.status === "READY_TO_INVOICE"}` to `HandoverPanel`. |
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/handover-format-rows.test.ts` | Modified | Rewritten for the 4-column layout and the new CSV exceptions section; 8 unconditional unit tests (was 7). |
+| `tests/handover-db.integration.test.ts` | Modified | Fixture now drives the real `lib/picking/*` lifecycle via a new `pickAndAuthorizeFully()` helper before generating a handover; new assertions for the hard gate (before picking, mid-pick), `omittedLineCount`, the generated Handover Reference, and `pickingSessionId`; cleanup now also deletes each test order's `PickingSession` rows first (`onDelete: Restrict`). 6 gated tests (was 5). |
+
+## Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/ROADMAP.md` | Modified | Marked 3C done; added its change-log entry, including the same honesty note. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the Milestone 3C section (honesty note, design rationale, what was built, honest verification results, open items). |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §17 (apply the migration, regenerate the client, run the reworked DB-integration tests, and a manual test script walking through the now-gated Generate buttons on `/orders/[id]`). |
+
+# Milestone 3D — Changes (tests, docs, verification — final stage of the SAP Invoice Handover Specification)
+
+No new behavior this round -- a coverage and consistency pass closing
+out the 3A-3D stage breakdown. No files were deleted, no schema change.
+See `docs/milestones/PROGRESS.md`'s Milestone 3D section for the full
+detail (including the formal write-up of session abandon/cancel as a
+known, accepted limitation) and `docs/milestones/ROADMAP.md` for the
+master 0-3D status table, now fully ✅ for Milestone 3.
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/picking-queries-db.integration.test.ts` | Added | 3 gated tests closing the zero-coverage gap on `lib/picking/queries.ts`'s `listPickingQueue` (3B) and `getLatestPickingSessionForOrder`/`getPickingSessionDetail` (3A) -- none had any test coverage, direct or indirect, before this round. |
+| `tests/handover-db.integration.test.ts` | Modified | Added 1 gated test for `lib/handover/queries.ts`'s `listOrderHandovers` (touched in 3C, never directly tested): each handover's `reference`, and a download link only for a stored format, never `CLIPBOARD`. |
+
+## Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/ROADMAP.md` | Modified | Marked 3D done -- Milestone 3 (SAP Invoice Handover Specification) is now fully ✅ end to end. Added its change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the Milestone 3D section: the coverage gap found and closed, the doc-consistency re-check (no drift found), honest verification results, and the formal write-up of session abandon/cancel as a known limitation rather than a silently-dropped item. |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §18 -- how to run the two new/changed test files, and a short note consolidating "what Milestone 3 actually ships with" (and what it deliberately doesn't -- session abandon/cancel). |

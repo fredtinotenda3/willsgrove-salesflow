@@ -1,0 +1,16 @@
+-- Milestone 3C (SAP Invoice Handover Specification, stage 3 of 4).
+--
+-- Adds a uniqueness guarantee to OrderHandover.reference -- the spec's
+-- "Handover Reference" header field, generated per handover starting
+-- this milestone (lib/handover/generate-handover.ts's
+-- generateHandoverReference(), same HND-YYYYMMDD-XXXXXXXX shape and
+-- collision-retry convention as CustomerOrder.reference's own
+-- generateOrderReference()).
+--
+-- Safe against existing data: every OrderHandover row created before
+-- this migration has reference = NULL (the column has existed since
+-- Milestone 3A but nothing populated it until now), and Postgres unique
+-- indexes never treat two NULLs as colliding with each other -- so this
+-- adds no constraint violation no matter how many pre-existing NULL rows
+-- there are. No column type, nullability, or data change.
+CREATE UNIQUE INDEX "OrderHandover_reference_key" ON "OrderHandover"("reference");

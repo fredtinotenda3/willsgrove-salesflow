@@ -1757,3 +1757,477 @@ job, not this round's.
   "abandon this session" action; not raised by the spec, so not built
   speculatively, but worth a decision before 3B's UI ships if you want
   one.
+
+## Milestone 3B — Picking UI (`/fulfilment`)
+
+Builds out the previously-dead `/fulfilment` sidebar entry into the real
+picking workstation, entirely on top of 3A's schema and API — no schema
+or `lib/picking/` workflow-function changes this round.
+
+You said "build 3B" without answering 3A's one open, non-blocking
+question (can an in-progress session be abandoned?). Per this project's
+working agreement for an unattended/terse instruction: took the most
+reasonable reading and proceeded rather than stalling on it — **session
+abandon/cancel is still not built**, since it wasn't in the original spec
+and wasn't explicitly asked for. Still open, still non-blocking, carried
+forward below.
+
+### What was built
+
+- **`lib/picking/queries.ts`** gains `listPickingQueue(options)` — the
+  one new read query this round needed. Queries `CustomerOrder` directly
+  (not `PickingSession`) with `status NOT IN (DRAFT, CANCELLED,
+  REJECTED)` and `handedToSapAt IS NULL`: every "live" order that could
+  still need picking attention, regardless of whether a `PickingSession`
+  has even been started for it yet. `handedToSapAt` is reused exactly as
+  it already works elsewhere in this project — the one marker for "this
+  order's picking/handover relevance is over" — so an order drops off
+  this queue the moment a handover exists for it, whatever `OrderStatus`
+  it happens to be sitting at.
+- **`app/fulfilment/page.tsx`** (new) — the queue list. Server Component,
+  plain query-string pagination (`?page=`), no client-side search/filter.
+  Table columns: Order (link), Customer, Order Status badge, Picking
+  progress badge (Not started / Picking in progress / Ready to invoice,
+  derived from `OrderStatus` alone — no extra query), Requested Delivery,
+  Lines, Open.
+- **`app/fulfilment/[id]/page.tsx`** (new) — the per-order "workstation."
+  Server Component: guards (`getCurrentUser`/`redirect`,
+  `isValidId`/`notFound`, order exists/`notFound`), a header with a link
+  back to the full order detail page (deliberately does **not** duplicate
+  pricing/documents/status-history/the handover panel — those stay on
+  `/orders/[id]`), a "not eligible for picking" message for
+  `DRAFT`/`CANCELLED`/`REJECTED` orders, and otherwise renders
+  `PickingPanel`. Computes `canAuthorize = role is SALES_MANAGER or
+  ADMINISTRATOR` server-side and passes only that boolean down — **new
+  pattern**, established here for the first time in this project: a
+  Client Component never receives the full user/session object, only
+  the one derived boolean it actually needs.
+- **`app/fulfilment/[id]/picking-panel.tsx`** (new) — the one Client
+  Component, mirroring `handover-panel.tsx`'s established conventions
+  exactly (`"use client"`, mount-effect via
+  `void Promise.resolve().then(() => load())`, a `readJson()` helper,
+  always re-fetch from the server after a mutation rather than an
+  optimistic update, inline error text rather than thrown errors).
+  Four states, driven entirely by the latest `PickingSessionDetail`'s
+  shape:
+  - **No session yet, or latest session `AUTHORIZED`** → "Start picking"
+    / "Start a new picking session" button (`POST .../picking`). A fresh
+    session after an authorized one is an explicit **re-pick/correction**
+    path — the prior, authorized session's full history is preserved,
+    never overwritten, per 3A's audit-trail design.
+  - **`IN_PROGRESS`** → editable found/unavailable/notes inputs per
+    line, client-side decimal-pattern pre-check before each per-row
+    `PATCH .../lines/{orderLineId}` save (the server's own exact
+    `BigInt`-based check in `lib/picking/validation.ts` is what actually
+    enforces this; the client check only avoids an obviously-doomed round
+    trip), a "Complete picking" button (`POST .../complete`) that
+    surfaces the server's refusal message verbatim when lines are still
+    incomplete (it already names the specific line numbers).
+  - **`COMPLETED`** → read-only lines; "Authorize" button
+    (`POST .../authorize`) shown only when `canAuthorize` is true;
+    otherwise an explanatory note naming who can authorize instead of a
+    disabled/missing button with no explanation.
+  - **`AUTHORIZED`** → read-only summary + the re-pick entry point above.
+
+### Deliberate scope decisions
+
+1. **`/fulfilment`'s list stays a plain Server Component** — no
+   client-side search/status-filter box, unlike `app/orders/page.tsx`'s
+   heavier client machinery. This queue is already narrowly pre-scoped by
+   `listPickingQueue()` to "orders that could still need picking," so the
+   extra interactivity isn't needed yet. Not an oversight — a deliberate
+   v1 simplification, easy to extend later if you want search/filtering
+   on top of it.
+2. **`listPickingQueue()` lives in `lib/picking/queries.ts`, not bolted
+   onto `lib/order-queries.ts`/`app/api/orders/route.ts`/
+   `app/orders/page.tsx`.** Those support only a single-status filter;
+   stretching them to also express "not yet handed to SAP, any of several
+   non-dead statuses" risked regressing the already-shipped, more general
+   order list. A dedicated, narrowly-scoped query was the lower-risk
+   choice.
+3. **Role-to-Client-Component pattern (`canAuthorize: boolean`)** — see
+   above. Worth following for any future Client Component that needs to
+   know "can the current user do X," rather than passing the user object
+   down.
+
+### Build / lint / typecheck / test results — reported honestly
+
+- `npm run lint` — **clean**, zero errors/warnings, including all three
+  new 3B files.
+- `npx tsc --noEmit` — **119 errors** (up from the 3A-end baseline of
+  116; **+3**). Confirmed, line by line, that all 3 new errors are the
+  exact same pre-existing sandbox-stub category documented in every
+  previous milestone, not real bugs:
+  - `lib/picking/queries.ts(173,23)`:
+    `Prisma.CustomerOrderWhereInput` — the stub's `Prisma` namespace is
+    missing this member. Identical, pre-existing pattern already present
+    at `lib/order-queries.ts(78,...)` (`const where:
+    Prisma.CustomerOrderWhereInput = {}`), which already contributed to
+    the 3A-end baseline.
+  - `lib/picking/queries.ts(203,23)`: `TS7006` implicit `any` on `order`
+    in a `.map()` over a Prisma query result — same bucket as every
+    other `tx`/collection-callback implicit-any already in the baseline
+    (e.g. `lib/order-queries.ts`'s own equivalent callbacks).
+  - `app/fulfilment/[id]/page.tsx(124,39)`: `TS7006` implicit `any` on
+    `line` in `order.lines.map(...)` — same bucket again.
+  **No new error category anywhere.** No code change was made to
+  "silence" these, consistent with every prior round: annotating them
+  piecemeal would be inconsistent with how the rest of the codebase
+  already handles this identical stub limitation.
+- `npx vitest run` — **221 passed, 20 skipped** — unchanged from the
+  3A-end baseline. No new tests added this round: 3B is UI-only
+  (`app/fulfilment/*`, `picking-panel.tsx`), and per this project's
+  existing precedent (`handover-panel.tsx` got no dedicated component
+  tests either), a Client Component that only orchestrates already-
+  tested API calls doesn't get its own test file. `listPickingQueue()`
+  is exercised by this round's manual test script (`SETUP-WINDOWS.md`
+  §16) rather than an automated DB-integration test — it's a pure read
+  query with no business-rule branching to assert beyond "filters
+  correctly," which the manual walkthrough covers end to end.
+- `npm run build` — same result as every prior round: Turbopack's
+  bundling stage runs, then the build hits this sandbox's pre-existing
+  Google Fonts network block (unrelated to any 3B code, unchanged since
+  Milestone 1's fix round 2). **Your next real `npm run build` is what
+  confirms `/fulfilment` and `/fulfilment/[id]` actually build and
+  statically/dynamically render correctly** — this sandbox cannot reach
+  that phase at all.
+- `npx prisma validate`/`prisma generate` — not attempted this round;
+  no schema change in 3B, so nothing new to validate (3A's schema is
+  unchanged by this round).
+
+### Open / explicitly not done in this sub-build
+
+- **Session abandon/cancel is still not built.** Carried forward
+  unanswered from 3A — see the note at the top of this section. A pick
+  that's `IN_PROGRESS` or `COMPLETED` can still only be progressed
+  forward; the only "undo" path today is to let it sit unauthorized
+  (it's simply ignored by any future `READY_TO_INVOICE`-gated handover)
+  or to authorize it and then start a fresh correction session. If you
+  want an explicit abandon action, it's a small, isolated addition to
+  `lib/picking/` (a new status or a cancelled-session flag) plus one more
+  button in `PickingPanel` — say so and it can go into 3C or a follow-up,
+  rather than being guessed at here.
+- **`lib/handover/` is still untouched** — 3C's job, unchanged from 3A's
+  note.
+- **The two SAP-grid-compatibility overclaims** (`handover-panel.tsx`'s
+  clipboard-copy success message, and `schema.prisma`'s `HandoverFormat`
+  enum comment) are still unsoftened — also 3C's job, flagged again here
+  so it isn't lost.
+
+## Milestone 3C — Invoice Handover rework (SAP Invoice Handover Specification, stage 3 of 4)
+
+Reworks `lib/handover/` to source from authorized picking instead of the
+raw order, per the spec. **One honesty note up front**: this round's
+session doesn't have the spec's literal original text in context (it
+was written in an earlier session and summarized/compacted away before
+this round started) — only my own prior rounds' paraphrases of it
+(this file's 3A section, `ROADMAP.md`'s 3C scope line, and the schema/
+code comments already in the repo pointing at "spec section 3/5/6/7").
+Everything below that's attributable to the spec directly (the hard
+gate's exact trigger condition, the Quantity column's definition, the
+"omit a fully-unavailable line" decision) is quoted or closely
+paraphrased from those existing, already-agreed artifacts — not
+re-derived from scratch. The **exact column names and the exact set of
+header fields** are this round's own best-reasoned reconstruction of
+"4-column product table" / "richer header" (`ROADMAP.md`'s own words
+for this stage, written in an earlier round), not verbatim spec text I
+could re-check against. If the real spec names different columns or
+header fields, that's a cheap, isolated fix in `lib/handover/format-rows.ts`/
+`generate-handover.ts` — say so and it's a quick follow-up, not a redo of
+this round's actual design work (the hard gate, the quantity sourcing,
+the omission handling, Handover Reference generation, and the
+traceability chain are all independent of exactly which columns are
+shown).
+
+### What changed, and why
+
+1. **Hard gate**: `buildHandoverRows` now refuses (409) unless
+   `OrderStatus === READY_TO_INVOICE` — the spec's requirement that
+   generation be blocked "if an order has not completed picking
+   verification, or the quantities have not been authorized."
+   `READY_TO_INVOICE` is set in exactly one place
+   (`lib/picking/authorize-picking.ts`, inside the same transaction that
+   authorizes a session), so this one check is an exact proxy for both
+   halves of that requirement — there's no way to reach
+   `READY_TO_INVOICE` without picking having been both completed and
+   authorized.
+2. **Quantity is now the authorized PICKED quantity.** `buildHandoverRows`
+   fetches the order's most recent `AUTHORIZED` `PickingSession` and
+   sources `quantity` from each `PickingLine.foundQuantity` — never
+   `OrderLine.requestedQuantity`, which the old (2C) version used. The
+   SAP item code/official description resolution is still always current
+   (never a snapshot) for the same "reflect the catalogue as it stands
+   today" reason as before — only the *quantity* is historical, sourced
+   from the authorized pick.
+3. **A fully-unavailable line (`foundQuantity` exactly zero) is omitted
+   entirely** from the handover's rows — your confirmed Milestone 3A
+   decision, now actually wired into the document that matters. Never a
+   *silent* omission: `omittedLineCount` is returned alongside the rows,
+   surfaced in `generateHandover`'s result, and recorded on the
+   `AuditEvent`.
+4. **The product table is now 4 columns**: SAP Item Code, Description,
+   Quantity, Unit — replacing the old 7-column layout (which also
+   carried a Line number, the customer's Original Description, and a
+   free-text Note column). The project's standing "never silently drop a
+   flagged line" principle still holds, just not by widening this grid:
+   a flagged line (no SAP match, an inactive product, a since-removed
+   product with no live description) still gets a row in the 4-column
+   grid itself (blank SAP code, falls back to the customer's own
+   wording), and for CSV/Excel it's *also* listed again, with its reason,
+   in a "Lines needing attention before processing" section appended
+   below the main table — kept entirely separate so the main grid stays
+   exactly what you'd key into SAP, nothing more. The clipboard format
+   gets no such section (nowhere for it to go once pasted, and it's
+   meant to be pasted, not read) — every row is still real and never
+   dropped, just without an attached explanation.
+5. **Richer header** (Excel only — CSV/clipboard never had a metadata
+   header before this round and still don't, by precedent): the
+   existing 5 order/customer fields, plus this handover's own newly-
+   generated **Handover Reference**, and the picking-authorization
+   traceability (**Picking Authorized By** / **Picking Authorized At**)
+   — so the document is self-contained evidence of who verified the
+   picked quantities and when, without needing to look anything else up.
+   This directly answers the spec's traceability requirement (section 6,
+   per the existing schema comment).
+6. **Handover Reference generation**: `generateHandoverReference()`
+   (`lib/handover/generate-handover.ts`) mirrors `lib/orders.ts`'s
+   `generateOrderReference()` exactly — `HND-YYYYMMDD-XXXXXXXX`, same
+   collision-retry loop (`MAX_REFERENCE_ATTEMPTS = 5`, retrying only on a
+   unique-constraint violation that actually targets the `reference`
+   column). `OrderHandover.reference` gained a `@unique` constraint this
+   round (additive-safe: Postgres never treats two `NULL`s as colliding,
+   so every pre-3C row, which has `reference = NULL`, is unaffected).
+   Surfaced in the UI too, not just inside the generated file: the "past
+   handovers" list on `/orders/[id]` now shows each handover's reference.
+7. **The two SAP-grid-compatibility overclaims are softened**, per spec
+   section 5 ("do not claim direct SAP Business One grid compatibility
+   until the invoice team has tested it"):
+   - `handover-panel.tsx`'s clipboard-copy success message changed from
+     *"Copied -- paste directly into SAP or Excel."* to *"Copied to your
+     clipboard -- paste it wherever the invoice team needs it next."*
+     No claim about where it's safe to paste.
+   - `schema.prisma`'s `HandoverFormat` enum comment changed from
+     *"since its whole point is 'copy this text and paste it straight
+     into SAP,' not a document to keep"* to describing the format
+     neutrally (meant to be copied for the invoice team to paste
+     wherever they need it, never stored as a file) with an explicit
+     note that this project makes no claim about where it's safe to
+     paste.
+
+### Schema (additive only)
+
+- `OrderHandover.reference` gains `@unique`. See point 6 above for why
+  this is safe against existing data.
+- `prisma/migrations/20261110170000_add_handover_reference_unique/migration.sql`
+  — one `CREATE UNIQUE INDEX`. No column type, nullability, or data
+  change; no other schema edit this round (`pickingSessionId` already
+  existed, unused, since Milestone 3A).
+
+### UI change (`app/orders/[id]/`)
+
+- `handover-panel.tsx` now takes a `readyToInvoice: boolean` prop
+  (computed server-side on the page, same derived-boolean-prop pattern
+  3B established for `PickingPanel`'s `canAuthorize`) and disables all
+  three Generate buttons with an inline explanation when it's false —
+  UX only; the real enforcement is `buildHandoverRows`'s server-side
+  gate regardless of what this prop says. Also now shows each handover's
+  Handover Reference in the "past handovers" list.
+- `page.tsx` passes `readyToInvoice={order.status === "READY_TO_INVOICE"}`.
+
+### Tests
+
+- `tests/handover-format-rows.test.ts` — rewritten for the 4-column
+  layout: CSV's exact new header, the new "Lines needing attention"
+  exceptions section (present only when something's flagged), and the
+  clipboard format's unchanged "no exceptions, no header row" shape. 8
+  unconditional unit tests (was 7).
+- `tests/handover-db.integration.test.ts` — substantially reworked
+  (gated behind `RUN_DB_INTEGRATION_TESTS=1`, same as before): its
+  fixture now drives the *real* `lib/picking/*` lifecycle (start →
+  record → complete → authorize) via a new `pickAndAuthorizeFully()`
+  helper before generating a handover, with picked quantities
+  deliberately different from requested quantities on two of three
+  lines (so a test asserting "sourced from picked, not requested" can't
+  pass by coincidence) and one line 100% unavailable (to assert the
+  omission). Adds assertions for: the hard gate refusing before/mid-pick
+  (two new scenarios); `omittedLineCount`; a generated, pattern-matching,
+  per-call-unique Handover Reference; `pickingSessionId` recorded on the
+  `OrderHandover` row; and the Excel sheet's new row count under the
+  richer header + 4-column table + exceptions-section layout. 6 gated
+  tests (was 5). `afterAll`'s cleanup now also deletes each test order's
+  `PickingSession` rows before the order itself — required because
+  `PickingSession.order` is `onDelete: Restrict`, which this test didn't
+  need to account for before this round (its `PickingLine` children
+  cascade automatically).
+
+### Build / lint / typecheck / test results — reported honestly
+
+- `npm run lint` — **clean**, zero errors/warnings, including every
+  changed/new 3C file.
+- `npx tsc --noEmit` — **123 errors** (up from the 3B-end baseline of
+  119; **+4**). Confirmed, line by line, that every new occurrence is
+  the same two pre-existing sandbox-stub categories documented in every
+  previous milestone, not real bugs:
+  - `TS7006` implicit `any` on a Prisma-query-result callback parameter
+    (`lib/handover/build-handover-rows.ts`'s `.filter()`/`.sort()`/`.map()`
+    callbacks, `lib/handover/queries.ts`'s `.map()` callback,
+    `lib/handover/generate-handover.ts`'s transaction callback's `tx`) —
+    identical bucket to the dozens of pre-existing occurrences this
+    project has documented since Milestone 2B (e.g. the already-present
+    `lib/orders.ts(237,10)`, `lib/review/confirm-review.ts(340,55)`).
+  - `TS2694`/`TS2339` `Prisma.PrismaClientKnownRequestError` missing from
+    the stub's `Prisma` namespace (`lib/handover/generate-handover.ts`'s
+    new reference-collision retry, mirroring `lib/orders.ts`'s own
+    `isUniqueViolation`) — identical, pre-existing bucket already present
+    at `lib/orders.ts(42,34)`, `lib/orders.ts(244,41)`,
+    `lib/customers.ts(30,29)`, and `lib/users.ts(20,34)`, all already in
+    the 119-error baseline. **No new error category anywhere.**
+- `npx vitest run` — **222 passed, 21 skipped** (up from 221 passed/20
+  skipped at the end of Milestone 3B). Zero failures. +1 passing
+  (`handover-format-rows.test.ts`'s new exceptions-section test), +1
+  skipped (`handover-db.integration.test.ts`'s new mid-pick-refusal
+  test) — see Tests above for the full breakdown of what changed in
+  each file.
+- `npm run build` — same result as every prior round: Turbopack's
+  bundling stage runs cleanly (confirming the new/changed files
+  themselves compile), then the build hits this sandbox's pre-existing
+  Google Fonts network block, unrelated to any 3C code. **Your next real
+  `npm run build`, and a real `RUN_DB_INTEGRATION_TESTS=1 npm test` run,
+  are what actually confirm the reworked handover end to end** — this
+  sandbox cannot reach either at all.
+- `npx prisma validate`/`prisma generate` — not attempted this round
+  (same sandbox network block as every migration since 3A's); hand-
+  verified instead, the same way as every schema change since: every
+  `@relation(...)` name still appears exactly twice (this round adds no
+  new relation), and the file's brace-nesting is balanced by script.
+  **Run `npx prisma migrate dev` / `prisma generate` for real before
+  relying on the `@unique` constraint or the new `reference` field.**
+
+### Open / explicitly not done in this sub-build
+
+- **The exact column/header names are my best reconstruction, not
+  verified against the spec's literal text** — see the honesty note at
+  the top of this section. Flag it if it's wrong; it's a small, isolated
+  fix.
+- **Session abandon/cancel is still not built** — carried forward
+  unanswered from 3A/3B, unchanged.
+- **Milestone 3D** (final full test/doc pass across 3A–3C) is still
+  pending, per the original stage breakdown.
+
+## Milestone 3D — Tests, docs, verification (final stage of the SAP Invoice Handover Specification)
+
+Closes out the 3A–3D stage breakdown. This round added no new
+behavior — it's a coverage and consistency pass, exactly per the
+roadmap's own description of this stage.
+
+### Test coverage gap closed
+
+Auditing 3A–3C's own additions turned up three read-only functions with
+**zero** test coverage anywhere — not a single unit test, DB-integration
+test, or even an indirect assertion through another test — exercised
+only by hand through the UI or a manual walkthrough script until now:
+
+- `lib/picking/queries.ts`'s `listPickingQueue` (Milestone 3B) — the
+  `/fulfilment` queue's actual filtering logic (status exclusion +
+  `handedToSapAt` gate + pagination), previously verified only by
+  SETUP-WINDOWS.md §16's manual click-through.
+- `lib/picking/queries.ts`'s `getLatestPickingSessionForOrder` and
+  `getPickingSessionDetail` (Milestone 3A) — used by the picking API's
+  `GET` routes, previously exercised only indirectly, by hand, through
+  `/fulfilment`'s UI.
+- `lib/handover/queries.ts`'s `listOrderHandovers` — touched in 3C
+  (gained the `reference` field) but never directly tested even before
+  that; its one conditional (no download link for `CLIPBOARD`) was
+  untested.
+
+New: `tests/picking-queries-db.integration.test.ts` (3 gated tests) --
+covers `listPickingQueue`'s exact inclusion/exclusion rules (every
+non-dead, not-yet-handed-to-SAP status included; `DRAFT`/`CANCELLED`/
+`REJECTED` and anything with `handedToSapAt` set excluded, regardless of
+`OrderStatus`), its demo-order default-exclusion, and its pagination
+math; and `getLatestPickingSessionForOrder`/`getPickingSessionDetail`'s
+null-before-any-session, most-recent-session-when-several-exist, and
+unknown-id-returns-null behavior.
+
+Added to `tests/handover-db.integration.test.ts` (1 new gated test,
+6→7): `listOrderHandovers` returns each handover's `reference` and a
+download link only for a stored format (`EXCEL`/`CSV`), never for
+`CLIPBOARD`.
+
+No gaps were found or closed in `lib/picking/start-picking.ts`/
+`record-picked-line.ts`/`complete-picking.ts`/`authorize-picking.ts`
+(3A) or `lib/handover/build-handover-rows.ts`/`generate-handover.ts`/
+`format-rows.ts` (2C/3C) — all of those already had direct test
+coverage from their own milestone's round, confirmed by re-reading
+`tests/picking-db.integration.test.ts`, `tests/picking-validation.test.ts`,
+`tests/handover-db.integration.test.ts`, and
+`tests/handover-format-rows.test.ts` against each function's branches.
+The `/fulfilment` and `/orders/[id]` UI components (`picking-panel.tsx`,
+`handover-panel.tsx`) remain deliberately untested, per this project's
+established precedent (a Client Component that only orchestrates
+already-tested API calls doesn't get its own component test file —
+see 3B's note on this).
+
+### Documentation consistency pass
+
+Re-read `docs/milestones/ROADMAP.md`, this file's 3A–3C sections,
+`CHANGES.md`'s 3A–3C sections, and `SETUP-WINDOWS.md` §§15–17 against
+the actual current code for drift. No corrections were needed —
+everything already matches what's in the repo as of 3C's delivery.
+
+### Known limitation carried forward, now formally closed out (not resolved)
+
+**Session abandon/cancel was never built**, across all of 3A/3B/3C. You
+were asked once (end of 3A) and the question went unanswered through
+two further rounds of terse "build the next stage" instructions, which
+this project's working-unattended rule treats as implicit "proceed
+without it" rather than a reason to keep re-asking. Formally recording
+the state here so it isn't mistaken for an oversight: **Milestone 3, as
+shipped, has no way to abandon an `IN_PROGRESS` or `COMPLETED` picking
+session** — it can only be progressed forward, left unauthorized
+indefinitely (harmless: it simply never produces a handover), or
+authorized and then corrected with a fresh session. If this becomes a
+real problem in practice, it's a small, isolated addition (a new
+session status or a cancelled flag, plus one button in `PickingPanel`)
+for a future round — not re-litigated here.
+
+### Build / lint / typecheck / test results — reported honestly
+
+- `npm run lint` — **clean**, zero errors/warnings, including both new
+  test files.
+- `npx tsc --noEmit` — **125 errors** (up from the 3C-end baseline of
+  123; **+2**). Both are `TS7006` implicit `any` on a `.find()` callback
+  parameter in `tests/handover-db.integration.test.ts`'s new test —
+  same pre-existing sandbox-stub category as every other occurrence
+  documented across every milestone since 2B. `tests/picking-queries-db.integration.test.ts`
+  contributes **zero** new errors — its callbacks all operate on this
+  project's own exported types (`PickingQueueOrderSummary`, etc.), not
+  directly on Prisma's stubbed types, so TypeScript infers them fine
+  even in this sandbox. **No new error category anywhere.**
+- `npx vitest run` — **222 passed, 25 skipped** (up from 222 passed/21
+  skipped at the end of Milestone 3C). Zero failures, zero regressions.
+  +4 skipped (gated): 3 in the new `picking-queries-db.integration.test.ts`,
+  1 added to `handover-db.integration.test.ts`. (Passing-test count is
+  unchanged because every test added this round is DB-gated.)
+- `npm run build` — same result as every prior round: Turbopack's
+  bundling stage runs cleanly, then the build hits this sandbox's
+  pre-existing Google Fonts network block, unrelated to any 3D code.
+- `npx prisma validate`/`prisma generate` — not attempted; no schema
+  change this round.
+- **The one thing this sandbox genuinely cannot confirm**: that the 4
+  new gated tests (3 in the new file, 1 added to the handover file)
+  actually pass against a real database. They're written, they type-
+  check, lint is clean, and they follow this project's own established
+  DB-integration-test conventions exactly — but **run
+  `RUN_DB_INTEGRATION_TESTS=1 npm test` for real** before treating this
+  coverage gap as closed, same as every gated test in this project.
+
+### Milestone 3 (SAP Invoice Handover Specification) — overall status
+
+All four stages are now delivered: 3A (schema + core picking workflow),
+3B (`/fulfilment` UI), 3C (handover rework), 3D (this round — coverage
+and consistency). See `docs/milestones/ROADMAP.md` for the master
+status table, which this round also updates. The one open design
+question (session abandon/cancel) is formally recorded above as a known,
+accepted limitation of this milestone as shipped, not a loose end that
+silently vanished.

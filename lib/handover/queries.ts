@@ -1,6 +1,7 @@
 /**
- * Milestone 2C. Read-side query for the handover panel's "past
- * handovers" list and the download route's authorization lookup.
+ * Milestone 2C, extended in Milestone 3C. Read-side query for the
+ * handover panel's "past handovers" list and the download route's
+ * authorization lookup.
  */
 import "server-only";
 import { prisma } from "@/lib/prisma";
@@ -11,6 +12,7 @@ export async function listOrderHandovers(orderId: string) {
     orderBy: { createdAt: "desc" },
     select: {
       id: true,
+      reference: true,
       format: true,
       lineCount: true,
       matchedLineCount: true,
@@ -24,6 +26,10 @@ export async function listOrderHandovers(orderId: string) {
 
   return rows.map((row) => ({
     id: row.id,
+    // Nullable only for a handover generated before Milestone 3C added
+    // this field -- never backfilled, see OrderHandover.reference's
+    // schema comment.
+    reference: row.reference,
     format: row.format,
     lineCount: row.lineCount,
     matchedLineCount: row.matchedLineCount,

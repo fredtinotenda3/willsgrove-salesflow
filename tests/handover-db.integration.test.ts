@@ -1,21 +1,26 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 
 /**
- * Milestone 2C. DB-backed acceptance tests for the handover feature --
- * buildHandoverRows' three-way product-match fallback, generateHandover's
- * append-only OrderHandover rows and once-only handedToSapAt marker, and
- * that every format (Excel/CSV/clipboard) really is built from that same
- * row set -- against a REAL database through a REAL generated
- * @prisma/client.
+ * Milestone 2C, substantially reworked in Milestone 3C (SAP Invoice
+ * Handover Specification). DB-backed acceptance tests for the handover
+ * feature -- buildHandoverRows' three-way product-match fallback (now
+ * sourced from an AUTHORIZED PickingSession's picked quantities, never
+ * OrderLine.requestedQuantity), the hard gate on OrderStatus.READY_TO_INVOICE,
+ * the "omit a fully-unavailable line entirely" rule, Handover Reference
+ * generation, generateHandover's append-only OrderHandover rows and
+ * once-only handedToSapAt marker, and that every format (Excel/CSV/
+ * clipboard) really is built from that same row set -- against a REAL
+ * database through a REAL generated @prisma/client.
  *
  * OFF BY DEFAULT, for the exact same one reason as
- * tests/matching-review-db.integration.test.ts and
- * tests/orders-db.integration.test.ts: @prisma/client in this sandbox is
+ * tests/matching-review-db.integration.test.ts, tests/orders-db.integration.test.ts,
+ * and tests/picking-db.integration.test.ts: @prisma/client in this sandbox is
  * a stub that THROWS when merely constructed (see
  * docs/milestones/PROGRESS.md's "Sandbox-only blocker"). Every lib
- * touched here (lib/handover/*, lib/storage, lib/prisma) is imported with
- * a dynamic `await import(...)` INSIDE the (skippable) test bodies below,
- * never a static top-of-file import, for the same reason given there.
+ * touched here (lib/handover/*, lib/picking/*, lib/storage, lib/prisma)
+ * is imported with a dynamic `await import(...)` INSIDE the (skippable)
+ * test bodies below, never a static top-of-file import, for the same
+ * reason given there.
  *
  * On your machine, where `prisma generate` has actually run against a
  * real schema, set RUN_DB_INTEGRATION_TESTS=1 to include it
@@ -37,7 +42,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 const RUN_DB_INTEGRATION_TESTS =
   Boolean(process.env.DATABASE_URL) && process.env.RUN_DB_INTEGRATION_TESTS === "1";
 
-describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 2C: handover generation", () => {
+describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 3C: handover generation (authorized picking -> SAP handover)", () => {
   let skipAll = false;
 
   let adminId: string;
@@ -66,7 +71,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 2C: handover generation", 
 
     if (!admin || !customer || !product) {
       console.log(
-        "Skipping Milestone 2C handover DB integration test: need an admin user, a DEMO-CUST-* customer, " +
+        "Skipping Milestone 3C handover DB integration test: need an admin user, a DEMO-CUST-* customer, " +
           "and at least one active product. Run `npm run db:seed` first, then re-run with RUN_DB_INTEGRATION_TESTS=1."
       );
       skipAll = true;
@@ -90,6 +95,10 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 2C: handover generation", 
       }
       for (const orderId of createdOrderIds) {
         await prisma.orderHandover.deleteMany({ where: { orderId } });
+        // PickingSession.order is onDelete: Restrict, so every session
+        // for this order must go before the order itself can -- its
+        // PickingLines cascade automatically (onDelete: Cascade).
+        await prisma.pickingSession.deleteMany({ where: { orderId } });
         await prisma.orderStatusHistory.deleteMany({ where: { orderId } });
         await prisma.orderLine.deleteMany({ where: { orderId } });
         await prisma.auditEvent.deleteMany({ where: { entityType: { in: ["CustomerOrder", "OrderHandover"] }, entityId: orderId } });
@@ -102,7 +111,20 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 2C: handover generation", 
     }
   });
 
-  /** A fresh order with three lines exercising buildHandoverRows' full three-way fallback: a live product match, a snapshot-only match (the product has since been removed from the catalogue), and no match at all. */
+  /**
+   * A fresh order with three lines exercising buildHandoverRows' full
+   * three-way product-match fallback: a live product match, a
+   * snapshot-only match (the product has since been removed from the
+   * catalogue), and no match at all. Quantities are deliberately chosen
+   * so the picked (found) quantity differs from the requested quantity
+   * on two of the three lines, so a test asserting the handover sources
+   * from the PICKED quantity can't accidentally pass by coincidence:
+   *   - Line 1 (live match):      requested 10, found 10, unavailable 0.
+   *   - Line 2 (snapshot-only):   requested 5,  found 3,  unavailable 2.
+   *   - Line 3 (no match at all): requested 1,  found 0,  unavailable 1
+   *     -- 100% unavailable, so per your confirmed Milestone 3A decision
+   *     this line must be entirely OMITTED from the handover.
+   */
   async function createThreeLineOrder() {
     const { prisma } = await import("@/lib/prisma");
     const { generateOrderReference } = await import("@/lib/orders");
@@ -125,7 +147,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 2C: handover generation", 
               lineNumber: 1,
               originalProductDescription: `Live match ${uniqueSuffix}`,
               productId: productAId,
-              requestedQuantity: "2.0000",
+              requestedQuantity: "10.0000",
               requestedUnitCode: "EA",
               isDemo: true,
             },
@@ -156,34 +178,96 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 2C: handover generation", 
     return order.id;
   }
 
-  it("buildHandoverRows applies the three-way fallback and never drops a line", async () => {
+  /**
+   * Drives the real Milestone 3A lifecycle (start -> record each line ->
+   * complete -> authorize) through the actual lib/picking/* functions
+   * rather than hand-inserting PickingSession/PickingLine rows -- this
+   * exercises the real pipeline end to end and stays correct even if
+   * that module's internal shape changes later. `picks` maps each
+   * OrderLine's lineNumber to its found/unavailable split. Returns the
+   * authorized session's id. Leaves the order at OrderStatus.READY_TO_INVOICE.
+   */
+  async function pickAndAuthorizeFully(orderId: string, picks: Record<number, { found: string; unavailable: string }>) {
+    const { prisma } = await import("@/lib/prisma");
+    const { startPickingSession } = await import("@/lib/picking/start-picking");
+    const { recordPickedLine } = await import("@/lib/picking/record-picked-line");
+    const { completePickingSession } = await import("@/lib/picking/complete-picking");
+    const { authorizePickingSession } = await import("@/lib/picking/authorize-picking");
+
+    const orderLines = await prisma.orderLine.findMany({
+      where: { orderId },
+      orderBy: { lineNumber: "asc" },
+      select: { id: true, lineNumber: true },
+    });
+
+    const started = await startPickingSession(orderId, adminId);
+    if (!started.ok) throw new Error(started.message);
+
+    for (const orderLine of orderLines) {
+      const pick = picks[orderLine.lineNumber];
+      if (!pick) continue;
+      const recorded = await recordPickedLine(started.session.id, orderLine.id, pick.found, pick.unavailable, undefined, adminId);
+      if (!recorded.ok) throw new Error(recorded.message);
+    }
+
+    const completed = await completePickingSession(started.session.id, adminId);
+    if (!completed.ok) throw new Error(completed.message);
+
+    const authorized = await authorizePickingSession(started.session.id, adminId);
+    if (!authorized.ok) throw new Error(authorized.message);
+
+    return started.session.id;
+  }
+
+  const THREE_LINE_PICKS = {
+    1: { found: "10.0000", unavailable: "0.0000" },
+    2: { found: "3.0000", unavailable: "2.0000" },
+    3: { found: "0.0000", unavailable: "1.0000" },
+  };
+
+  it("buildHandoverRows sources the PICKED quantity (not requested), applies the three-way fallback, omits a fully-unavailable line, and refuses before picking is authorized", async () => {
     if (skipAll) return;
     const { buildHandoverRows } = await import("@/lib/handover/build-handover-rows");
 
     const orderId = await createThreeLineOrder();
-    const built = await buildHandoverRows(orderId);
 
+    // Before any picking has happened at all, generation must be refused.
+    const beforePicking = await buildHandoverRows(orderId);
+    expect(beforePicking.ok).toBe(false);
+    if (beforePicking.ok) throw new Error("expected refusal before picking");
+    expect(beforePicking.status).toBe(409);
+
+    const sessionId = await pickAndAuthorizeFully(orderId, THREE_LINE_PICKS);
+
+    const built = await buildHandoverRows(orderId);
     expect(built.ok).toBe(true);
     if (!built.ok) throw new Error(built.message);
-    expect(built.rows).toHaveLength(3);
 
-    const [liveMatch, snapshotOnly, noMatch] = built.rows;
+    // Line 3 (100% unavailable) never becomes a row -- omitted, not
+    // silently dropped: it's counted instead.
+    expect(built.rows).toHaveLength(2);
+    expect(built.omittedLineCount).toBe(1);
+    expect(built.order.pickingSessionId).toBe(sessionId);
+    expect(built.order.authorizedByName).toBeTruthy();
+
+    const [liveMatch, snapshotOnly] = built.rows;
+
+    // The PICKED quantity, not the requested one -- 10 for line 1 (picked
+    // in full) and 3 for line 2 (partially unavailable; requested was 5).
+    expect(liveMatch!.quantity).toBe("10.0000");
     expect(liveMatch!.matched).toBe(true);
     expect(liveMatch!.sapItemCode).toBe(productASapCode);
     expect(liveMatch!.officialDescription).toBe(productAItemName);
+    expect(liveMatch!.note).toBeNull();
 
+    expect(snapshotOnly!.quantity).toBe("3.0000");
     expect(snapshotOnly!.matched).toBe(true);
     expect(snapshotOnly!.sapItemCode).toBe(`SNAP-${uniqueSuffix}`);
     expect(snapshotOnly!.officialDescription).toBeNull();
     expect(snapshotOnly!.note).not.toBeNull();
-
-    expect(noMatch!.matched).toBe(false);
-    expect(noMatch!.sapItemCode).toBeNull();
-    expect(noMatch!.officialDescription).toBeNull();
-    expect(noMatch!.note).not.toBeNull();
   });
 
-  it("generateHandover(EXCEL) creates a readable .xlsx, an append-only OrderHandover row, and sets handedToSapAt once", async () => {
+  it("generateHandover(EXCEL) creates a readable .xlsx with the richer header and 4-column table, an append-only OrderHandover row, a generated Handover Reference, and sets handedToSapAt once", async () => {
     if (skipAll) return;
     const { prisma } = await import("@/lib/prisma");
     const { generateHandover } = await import("@/lib/handover/generate-handover");
@@ -191,23 +275,28 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 2C: handover generation", 
     const ExcelJS = (await import("exceljs")).default;
 
     const orderId = await createThreeLineOrder();
+    await pickAndAuthorizeFully(orderId, THREE_LINE_PICKS);
 
     const firstResult = await generateHandover(orderId, adminId, "EXCEL", { isDemo: true });
     expect(firstResult.ok).toBe(true);
     if (!firstResult.ok) throw new Error(firstResult.message);
-    expect(firstResult.handover.lineCount).toBe(3);
+    expect(firstResult.handover.lineCount).toBe(2);
     expect(firstResult.handover.matchedLineCount).toBe(2);
-    expect(firstResult.handover.unmatchedLineCount).toBe(1);
+    expect(firstResult.handover.unmatchedLineCount).toBe(0);
+    expect(firstResult.handover.omittedLineCount).toBe(1);
+    expect(firstResult.handover.reference).toMatch(/^HND-\d{8}-[0-9A-F]{8}$/);
     expect(firstResult.handover.downloadUrl).toBeTruthy();
 
     const storedRow = await prisma.orderHandover.findUniqueOrThrow({
       where: { id: firstResult.handover.id },
-      select: { format: true, storageKey: true, mimeType: true, fileSize: true },
+      select: { format: true, storageKey: true, mimeType: true, fileSize: true, reference: true, pickingSessionId: true },
     });
     expect(storedRow.format).toBe("EXCEL");
     expect(storedRow.storageKey).toBeTruthy();
     expect(storedRow.mimeType).toBe("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     expect(Number(storedRow.fileSize)).toBeGreaterThan(0);
+    expect(storedRow.reference).toBe(firstResult.handover.reference);
+    expect(storedRow.pickingSessionId).toBeTruthy();
     createdStorageKeys.push(storedRow.storageKey!);
 
     // The stored bytes must be a real, readable .xlsx with the expected
@@ -220,8 +309,10 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 2C: handover generation", 
     await workbook.xlsx.load(fileBytes as any);
     const sheet = workbook.getWorksheet("Handover");
     expect(sheet).toBeDefined();
-    // 6 header/metadata rows (see buildExcelBuffer) + 1 column-header row + 3 data rows.
-    expect(sheet!.rowCount).toBe(10);
+    // 8 header/metadata rows + 1 blank + 1 column-header row + 2 data
+    // rows + (one line is flagged: the snapshot-only match) 1 blank +
+    // 1 "needing attention" header + 1 column-header row + 1 flagged row.
+    expect(sheet!.rowCount).toBe(16);
 
     const orderAfterFirst = await prisma.customerOrder.findUniqueOrThrow({ where: { id: orderId }, select: { handedToSapAt: true } });
     expect(orderAfterFirst.handedToSapAt).not.toBeNull();
@@ -232,6 +323,8 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 2C: handover generation", 
     const secondResult = await generateHandover(orderId, adminId, "CSV", { isDemo: true });
     expect(secondResult.ok).toBe(true);
     if (!secondResult.ok) throw new Error(secondResult.message);
+    // A fresh Handover Reference every time, even for the same order.
+    expect(secondResult.handover.reference).not.toBe(firstResult.handover.reference);
     const secondStoredRow = await prisma.orderHandover.findUniqueOrThrow({
       where: { id: secondResult.handover.id },
       select: { storageKey: true },
@@ -255,6 +348,8 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 2C: handover generation", 
     const { getStorageDriver } = await import("@/lib/storage");
 
     const orderId = await createThreeLineOrder();
+    await pickAndAuthorizeFully(orderId, THREE_LINE_PICKS);
+
     const built = await buildHandoverRows(orderId);
     if (!built.ok) throw new Error(built.message);
     const expectedCsv = rowsToCsvText(built.rows);
@@ -283,6 +378,8 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 2C: handover generation", 
     const { rowsToClipboardText } = await import("@/lib/handover/format-rows");
 
     const orderId = await createThreeLineOrder();
+    await pickAndAuthorizeFully(orderId, THREE_LINE_PICKS);
+
     const built = await buildHandoverRows(orderId);
     if (!built.ok) throw new Error(built.message);
     const expectedClipboardText = rowsToClipboardText(built.rows);
@@ -303,7 +400,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 2C: handover generation", 
     expect(storedRow.fileSize).toBeNull();
   });
 
-  it("refuses to generate a handover for a cancelled or rejected order", async () => {
+  it("refuses to generate a handover for a cancelled order", async () => {
     if (skipAll) return;
     const { prisma } = await import("@/lib/prisma");
     const { generateHandover } = await import("@/lib/handover/generate-handover");
@@ -341,5 +438,62 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 2C: handover generation", 
     const result = await generateHandover(cancelledOrder.id, adminId, "EXCEL", { isDemo: true });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.status).toBe(409);
+  });
+
+  it("refuses to generate a handover for an order that hasn't completed and authorized picking yet, even mid-pick", async () => {
+    if (skipAll) return;
+    const { generateHandover } = await import("@/lib/handover/generate-handover");
+    const { startPickingSession } = await import("@/lib/picking/start-picking");
+
+    const orderId = await createThreeLineOrder();
+
+    // Freshly received, picking not even started.
+    const beforeStart = await generateHandover(orderId, adminId, "CLIPBOARD", { isDemo: true });
+    expect(beforeStart.ok).toBe(false);
+    if (!beforeStart.ok) expect(beforeStart.status).toBe(409);
+
+    // Picking started but not completed/authorized -- OrderStatus.PICKING,
+    // still not READY_TO_INVOICE.
+    const started = await startPickingSession(orderId, adminId);
+    if (!started.ok) throw new Error(started.message);
+
+    const midPick = await generateHandover(orderId, adminId, "CLIPBOARD", { isDemo: true });
+    expect(midPick.ok).toBe(false);
+    if (!midPick.ok) expect(midPick.status).toBe(409);
+  });
+
+  it("listOrderHandovers surfaces each handover's reference and a download link only for stored formats (Milestone 3D coverage gap)", async () => {
+    if (skipAll) return;
+    const { prisma } = await import("@/lib/prisma");
+    const { generateHandover } = await import("@/lib/handover/generate-handover");
+    const { listOrderHandovers } = await import("@/lib/handover/queries");
+
+    const orderId = await createThreeLineOrder();
+    await pickAndAuthorizeFully(orderId, THREE_LINE_PICKS);
+
+    const excelResult = await generateHandover(orderId, adminId, "EXCEL", { isDemo: true });
+    if (!excelResult.ok) throw new Error(excelResult.message);
+    const excelStoredRow = await prisma.orderHandover.findUniqueOrThrow({
+      where: { id: excelResult.handover.id },
+      select: { storageKey: true },
+    });
+    createdStorageKeys.push(excelStoredRow.storageKey!);
+
+    const clipboardResult = await generateHandover(orderId, adminId, "CLIPBOARD", { isDemo: true });
+    if (!clipboardResult.ok) throw new Error(clipboardResult.message);
+
+    const list = await listOrderHandovers(orderId);
+    expect(list).toHaveLength(2);
+
+    const excelEntry = list.find((h) => h.id === excelResult.handover.id);
+    expect(excelEntry).toBeDefined();
+    expect(excelEntry!.reference).toBe(excelResult.handover.reference);
+    expect(excelEntry!.downloadUrl).toBe(`/api/orders/${orderId}/handover/${excelResult.handover.id}/download`);
+
+    const clipboardEntry = list.find((h) => h.id === clipboardResult.handover.id);
+    expect(clipboardEntry).toBeDefined();
+    expect(clipboardEntry!.reference).toBe(clipboardResult.handover.reference);
+    // No file is ever stored for CLIPBOARD -- no download link either.
+    expect(clipboardEntry!.downloadUrl).toBeNull();
   });
 });

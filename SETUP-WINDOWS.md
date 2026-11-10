@@ -1122,3 +1122,161 @@ generate` again. Also tell Prisma's migration history about the rollback:
 ```powershell
 npx prisma migrate resolve --rolled-back 20261110060000_add_picking_sessions
 ```
+
+## 16. Milestone 3B: picking UI (SAP Invoice Handover Specification, stage 2 of 4)
+
+No migration this round — 3B builds the `/fulfilment` UI on top of 3A's
+schema and API, unchanged. Just confirm the app builds and runs:
+
+```powershell
+npx tsc --noEmit
+npm run lint
+npm test
+npm run dev
+```
+
+### Manual test script (now via the real UI)
+
+Replace `<ORDER_ID>` below with a real order's id if you want to jump
+straight to its workstation; otherwise just click through from the
+queue.
+
+1. Sign in at `/login`, then open **Picking & Fulfilment** in the
+   sidebar (`/fulfilment`). You should see every live order that hasn't
+   yet been handed to SAP, each with a **Not started** / **Picking in
+   progress** / **Ready to invoice** badge.
+2. Click an order with **Not started** to open its workstation
+   (`/fulfilment/<ORDER_ID>`). Click **Start picking**.
+3. For each line, enter a found quantity and an unavailable quantity
+   (they must sum to the requested quantity) and click **Save** on that
+   row. Try an invalid split first (e.g. leave unavailable blank, or make
+   the two not sum to the requested quantity) to confirm the inline error
+   message appears and nothing is saved.
+4. Once every line is saved and accounted for, click **Complete
+   picking**. If you leave a line short on purpose, confirm the error
+   message names the specific line number(s) still incomplete.
+5. While signed in as a `SALESPERSON`, confirm you see the "only a sales
+   manager or administrator can authorize" note instead of an Authorize
+   button. Sign in as a `SALES_MANAGER` or `ADMINISTRATOR` and confirm
+   the **Authorize** button appears and works.
+6. After authorizing, confirm the order now shows **Ready to invoice**
+   back on the `/fulfilment` queue, and a **Ready to Invoice** badge on
+   the regular **Orders** list/detail pages too (no code change needed —
+   this already worked from 3A).
+7. Click **Start a new picking session** on an already-authorized order
+   to confirm the re-pick/correction path works, and that the previous
+   session isn't lost (there's no UI to inspect picking history directly
+   yet, but confirming the new session starts cleanly and the order
+   briefly shows **Picking in progress** again is enough for this round).
+
+## 17. Milestone 3C: Invoice Handover rework (SAP Invoice Handover Specification, stage 3 of 4)
+
+One small, additive migration this round -- a uniqueness guarantee on
+the new Handover Reference field. Apply it the same way as every
+previous one:
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_handover_reference_unique
+
+# 2. Regenerate the Prisma client
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+```
+
+If `prisma migrate dev` reports schema drift, use `migrate deploy`
+instead (same as every previous round):
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the reworked `tests/handover-db.integration.test.ts` -- it now
+drives a real picking lifecycle (start → record → complete → authorize)
+before generating each test handover, so it's exercising the actual
+end-to-end 3A→3C pipeline, not just the handover layer in isolation.
+
+### Manual test script (via the UI)
+
+1. Open an order on `/orders/[id]` that hasn't been through picking yet
+   (any status other than **Ready to Invoice**). Confirm the **SAP
+   Invoice Handover** panel's three Generate buttons are all disabled,
+   with the message explaining picking must be completed and authorized
+   first.
+2. Take that order through `/fulfilment/<ORDER_ID>`: start picking,
+   record each line, complete, and authorize (see §16's script above).
+3. Back on `/orders/[id]`, confirm the Generate buttons are now enabled.
+   Click **Generate Excel** and open the downloaded file. Confirm:
+   - The header block shows a **Handover Reference** (`HND-...`),
+     **Picking Authorized By**, and **Picking Authorized At**, alongside
+     the existing order/customer fields.
+   - The product table has exactly 4 columns: SAP Item Code,
+     Description, Quantity, Unit.
+   - The **Quantity** column matches what was actually found in
+     picking, not what was originally requested, for any line where the
+     two differ.
+   - A line that was recorded as 100% unavailable in picking does not
+     appear in the table at all.
+   - If any line has no SAP match (or a stale snapshot), a "Lines
+     needing attention before processing" section appears below the
+     main table naming it and why.
+4. Click **Copy to clipboard** and confirm the success message no
+   longer claims it's safe to paste directly into SAP -- it should read
+   "Copied to your clipboard -- paste it wherever the invoice team needs
+   it next."
+5. Confirm the new handover's reference appears in the "past handovers"
+   list underneath the Generate buttons.
+
+## 18. Milestone 3D: tests, docs, verification (final stage) -- and what Milestone 3 ships with overall
+
+No schema change this round, so nothing to migrate. Just run the full
+suite, which now also covers the three previously-untested query
+functions found during this round's audit:
+
+```powershell
+npx tsc --noEmit
+npm run lint
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+npm run build
+```
+
+The two files worth checking specifically are new/changed this round:
+`tests/picking-queries-db.integration.test.ts` (new) and
+`tests/handover-db.integration.test.ts` (one test added). Both are
+gated the same way as every other DB-integration test in this project
+-- they only run with `RUN_DB_INTEGRATION_TESTS=1` set and a seeded
+database.
+
+### What Milestone 3 (SAP Invoice Handover Specification) ships with, end to end
+
+Across 3A-3D: warehouse picking (`/fulfilment`, start → record →
+complete → authorize, with authorization restricted to SALES_MANAGER/
+ADMINISTRATOR) is now a hard prerequisite for generating an SAP Invoice
+Handover, which itself now sources its quantities from what was actually
+picked and authorized, not what the customer originally requested, with
+a generated Handover Reference and full who/when traceability on the
+document.
+
+**One thing it deliberately does not ship with**: there is no way to
+abandon or cancel an in-progress or completed-but-not-yet-authorized
+picking session -- it can only be progressed forward. This was flagged
+as an open question at the end of 3A and never answered across three
+further rounds, so it was never built (per this project's "don't build
+speculatively" rule) and is now formally recorded as a known limitation
+rather than a bug. If you want it, it's a small, isolated addition --
+just ask for it in a future round.

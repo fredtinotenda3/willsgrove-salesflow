@@ -983,8 +983,12 @@ model AuditEvent {
 // Milestone 2C (handover, multi-store split, repeat orders). How a
 // generated handover's content was delivered -- EXCEL and CSV are stored
 // files (StorageDriver), CLIPBOARD is never stored as a file at all (see
-// OrderHandover.storageKey below) since its whole point is "copy this
-// text and paste it straight into SAP," not a document to keep.
+// OrderHandover.storageKey below) since it's meant to be copied straight
+// onto the clipboard for the invoice team to paste wherever they need it,
+// not kept as a document. (Milestone 3C: this project makes no claim
+// about where it's safe to paste -- see HandoverPanel's copy-success
+// message -- only that the clipboard format itself is never persisted as
+// a file.)
 enum HandoverFormat {
   EXCEL
   CSV
@@ -1102,16 +1106,21 @@ model PickingLine {
 //
 // Milestone 3A/3C additions: `reference` is the spec's "Handover
 // Reference" header field (nullable because handovers generated before
-// this field existed have none -- never backfilled). `pickingSessionId`
-// records exactly which AUTHORIZED PickingSession this handover's
-// quantities were sourced from (lib/handover/generate-handover.ts,
-// Milestone 3C), so the traceability chain (spec section 6) is never
-// ambiguous even after a later re-pick.
+// this field existed have none -- never backfilled; generated fresh per
+// handover by lib/handover/generate-handover.ts's generateHandoverReference(),
+// same HND-YYYYMMDD-XXXXXXXX shape and collision-retry convention as
+// lib/orders.ts's generateOrderReference() -- see that function). @unique
+// is safe to add even with many existing NULL rows: Postgres never treats
+// two NULLs as colliding under a unique index. `pickingSessionId` records
+// exactly which AUTHORIZED PickingSession this handover's quantities were
+// sourced from (lib/handover/generate-handover.ts, Milestone 3C), so the
+// traceability chain (spec section 6) is never ambiguous even after a
+// later re-pick.
 model OrderHandover {
   id               String          @id @default(cuid())
   orderId          String
   pickingSessionId String?
-  reference        String?
+  reference        String?         @unique
   format           HandoverFormat
   generatedById    String
 
