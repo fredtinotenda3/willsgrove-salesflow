@@ -1343,3 +1343,139 @@ seeded database, same as every prior round.
    unavailable line from step 5 does not appear anywhere in the
    generated Excel/CSV, and the partially-available line shows only the
    quantity actually found, not what was originally requested.
+
+## 20. Milestone 4: Lost-Sales Management
+
+This migration is purely additive: 5 new enums and 3 new tables only.
+No existing table, column, or enum value is touched — every "new field"
+you'll see on `Product`/`CustomerOrder`/`OrderLine`/`PickingSession`/
+`PickingLine` in `prisma/schema.prisma` is a pure Prisma inverse-relation
+side with no new column of its own. As with every previous milestone's
+migration, it cannot be validated or generated in the build sandbox —
+run these for real on your machine.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_lost_sales_management
+
+# 2. Regenerate the Prisma client so it knows about UnfulfilledDemand,
+#    CustomerDecisionEvent, LostSaleRecord, and their 5 new enums
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+```
+
+If `prisma migrate dev` reports schema drift because you've been running
+against the hand-written SQL already, use `migrate deploy` instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the new `tests/lost-sales-db.integration.test.ts` (creation on
+authorization, every decision type, substitution, outstanding-to-lost
+conversion, original-PO immutability, audit history, reporting)
+alongside every pre-existing gated integration test. Everything it
+creates is marked `isDemo: true`; cleanup happens in `afterAll` in an
+order that respects every new foreign key (`LostSaleRecord` →
+`CustomerDecisionEvent` → `UnfulfilledDemand` → `PickingSession`, then
+the pre-existing order/order-line cleanup). It needs an admin user, a
+`DEMO-CUST-*` customer, and **at least two** active products already
+seeded (one as the original demand's product, one as a substitute) — if
+your seed data has fewer than two active products, add one or re-run
+`npm run db:seed`.
+
+### Manual test script (via the UI)
+
+1. Pick (or create) an order with at least one line, then on
+   `/fulfilment/<ORDER_ID>` start picking and record that line as
+   **partially available** — e.g. requested 20, found 12, unavailable 8
+   — then complete and authorize the session (SALES_MANAGER or
+   ADMINISTRATOR).
+2. Open **Lost Sales** in the sidebar (`/lost-sales`). Confirm the new
+   record for that order/line appears with status **"Awaiting customer
+   decision"**, unavailable quantity 8, and every other bucket at 0 —
+   it should never show as lost or cancelled on its own.
+3. Open the record (`/lost-sales/<id>`). Confirm the quantity-summary
+   tiles match (requested 20 / found 12 / unavailable 8 / all others 0)
+   and there's no decision history yet.
+4. Record a decision: choose **"Partial cancellation"**, source
+   **"Customer email"**, quantity `5.0000`, and submit. Confirm the page
+   refreshes to show outstanding/cancelled quantities updated (cancelled
+   = 5, undecided = 3) and the decision appears in the history list with
+   its source clearly shown.
+5. Record a second decision on the remaining 3: **"Await remaining
+   quantity"**, source **"Customer phone call"**, quantity `3.0000`, with
+   an expected follow-up date a week out. Confirm status becomes
+   **"Waiting for remaining supply"** and the follow-up date appears.
+6. If signed in as SALES_MANAGER or ADMINISTRATOR, confirm a lost sale
+   on the cancelled 5: reason **"Product unavailable"**, quantity
+   `5.0000`. Confirm it appears under "Confirmed Lost Sales" with either
+   an estimated value (if the order line had an approved price or the
+   customer has a price list entry) or an explicit "No estimated value
+   available" message — never a guessed number. Confirm the status stays
+   **"Waiting for remaining supply"** (the 3 still-outstanding units take
+   priority over the now-partially-confirmed-lost cancelled bucket).
+7. Sign in as a plain SALESPERSON and confirm the "Confirm lost sale"
+   form does **not** appear on this page at all, and confirm a direct
+   `POST` to `/api/lost-sales/<id>/confirm-lost` with that session's
+   cookie returns `403`.
+8. Back on `/lost-sales`, confirm the stat tiles (awaiting decision,
+   total outstanding, total confirmed lost) reflect what you just did,
+   and that filtering by status narrows the list correctly.
+
+### 20a. Undoing this migration
+
+**This is destructive** — it drops the 3 new tables and the 5 new enum
+types. Unlike some earlier milestones, no existing enum was modified, so
+there's no "recreate the enum type" step needed. Back up first:
+
+```powershell
+pg_dump -Fc -d <your-database-name> -f backup-before-undo-milestone-4.dump
+```
+
+```sql
+ALTER TABLE "LostSaleRecord" DROP CONSTRAINT "LostSaleRecord_unfulfilledDemandId_fkey";
+ALTER TABLE "LostSaleRecord" DROP CONSTRAINT "LostSaleRecord_confirmedById_fkey";
+ALTER TABLE "CustomerDecisionEvent" DROP CONSTRAINT "CustomerDecisionEvent_unfulfilledDemandId_fkey";
+ALTER TABLE "CustomerDecisionEvent" DROP CONSTRAINT "CustomerDecisionEvent_substituteProductId_fkey";
+ALTER TABLE "CustomerDecisionEvent" DROP CONSTRAINT "CustomerDecisionEvent_recordedById_fkey";
+ALTER TABLE "UnfulfilledDemand" DROP CONSTRAINT "UnfulfilledDemand_orderId_fkey";
+ALTER TABLE "UnfulfilledDemand" DROP CONSTRAINT "UnfulfilledDemand_orderLineId_fkey";
+ALTER TABLE "UnfulfilledDemand" DROP CONSTRAINT "UnfulfilledDemand_customerId_fkey";
+ALTER TABLE "UnfulfilledDemand" DROP CONSTRAINT "UnfulfilledDemand_pickingSessionId_fkey";
+ALTER TABLE "UnfulfilledDemand" DROP CONSTRAINT "UnfulfilledDemand_pickingLineId_fkey";
+ALTER TABLE "UnfulfilledDemand" DROP CONSTRAINT "UnfulfilledDemand_productId_fkey";
+
+DROP TABLE "LostSaleRecord";
+DROP TABLE "CustomerDecisionEvent";
+DROP TABLE "UnfulfilledDemand";
+
+DROP TYPE "LostSaleValueSource";
+DROP TYPE "LostSaleReason";
+DROP TYPE "UnfulfilledDemandStatus";
+DROP TYPE "DecisionSource";
+DROP TYPE "CustomerDecisionType";
+```
+
+Apply the reversible part the same way as previous rollbacks (`psql`, a
+GUI client, or `npx prisma db execute --file
+.\rollback-milestone-4.sql --schema prisma/schema.prisma`), then revert
+`prisma/schema.prisma` to remove the same changes and run `npx prisma
+generate` again. Also tell Prisma's migration history about the rollback:
+
+```powershell
+npx prisma migrate resolve --rolled-back 20261110180000_add_lost_sales_management
+```

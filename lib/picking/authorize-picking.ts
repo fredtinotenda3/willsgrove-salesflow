@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { TRANSACTION_OPTIONS } from "@/lib/orders";
+import { createUnfulfilledDemandsForSession } from "@/lib/lost-sales/create-unfulfilled-demand";
 
 /**
  * Milestone 3A (SAP Invoice Handover Specification -- warehouse picking).
@@ -64,6 +65,13 @@ export async function authorizePickingSession(sessionId: string, actorId: string
         afterData: { orderId: session.orderId },
       },
     });
+
+    // Milestone 4 (Lost-Sales Management). Additive: creates one
+    // UnfulfilledDemand per line left unavailable by this authorization,
+    // inside this same transaction, so the two can never disagree about
+    // whether authorization happened. A fully-available session creates
+    // none at all. See lib/lost-sales/create-unfulfilled-demand.ts.
+    await createUnfulfilledDemandsForSession(tx, sessionId, actorId);
 
     return result;
   }, TRANSACTION_OPTIONS);

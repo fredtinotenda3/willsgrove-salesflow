@@ -24,6 +24,7 @@ import {
   Building2,
   Activity,
   Inbox,
+  TrendingDown,
 } from "lucide-react";
 
 const navigation = [
@@ -84,6 +85,14 @@ const navigation = [
         name: "Dispatch & Delivery",
         href: "/deliveries",
         icon: Truck,
+      },
+      // Milestone 4 (Lost-Sales Management). Unlike /fulfilment and
+      // /deliveries above, there was no pre-existing dead placeholder
+      // link for this -- added fresh.
+      {
+        name: "Lost Sales",
+        href: "/lost-sales",
+        icon: TrendingDown,
       },
     ],
   },

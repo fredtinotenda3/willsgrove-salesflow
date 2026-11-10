@@ -1811,3 +1811,77 @@ full audit findings, design rationale, and honest verification results.
 | `docs/milestones/PROGRESS.md` | Modified | Added the "Milestone 3 completion" section: what was audited and found already correct, what was actually built and why, what was deliberately not touched, honest verification results, and the explicit end-to-end workflow confirmation the completion spec asks for. |
 | `CHANGES.md` | Modified | This section. |
 | `SETUP-WINDOWS.md` | Modified | Added §19 -- how to run the new/changed test files, and a manual browser script for printing the assembly form and confirming the new Availability badges on `/fulfilment`. |
+
+# Milestone 4 — Changes (Lost-Sales Management)
+
+New feature built on top of Milestones 0–3 (+completion): tracking what
+the warehouse couldn't supply, what the customer decided to do about it,
+and genuine, separately-confirmed lost sales, with the spec's central
+rule ("never automatically classify unavailable products as lost sales")
+enforced structurally. No existing file's behavior changes except the
+one additive integration line into `authorizePickingSession`. See
+`docs/milestones/PROGRESS.md`'s Milestone 4 section for the full
+architecture assessment, design rationale, and honest verification
+results (including the newly-confirmed sandbox-level reason `prisma
+generate` cannot run here).
+
+## Schema / migration
+
+| File | Change | Reason |
+|---|---|---|
+| `prisma/schema.prisma` | Modified | 5 new enums (`CustomerDecisionType`, `DecisionSource`, `UnfulfilledDemandStatus`, `LostSaleReason`, `LostSaleValueSource`) and 3 new models (`UnfulfilledDemand`, `CustomerDecisionEvent`, `LostSaleRecord`). Purely additive inverse-relation fields added to `Product`/`CustomerOrder`/`OrderLine`/`PickingSession`/`PickingLine` — no new column on any existing table. |
+| `prisma/migrations/20261110180000_add_lost_sales_management/migration.sql` | Added | Hand-authored (this sandbox cannot run `prisma migrate dev`), matching the schema exactly: 5 `CREATE TYPE`, 3 `CREATE TABLE`, 11 indexes, 8 foreign keys. No existing table/column/enum value touched. |
+
+## `lib/lost-sales/` (new module)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/lost-sales/validation.ts` | Added | Pure core: decision-type/source/status/reason value lists, `WHOLE_REMAINDER_DECISION_TYPES`, zod schemas, the quantity-bucket math (`computeUndecidedQuantity`, `computeLostSaleConsumption`, `decisionTypeToBucket`), and the 6-state status derivation (`deriveUnfulfilledDemandStatus`). Imports `decimalStringSchema`/`parseScaledDecimal` from `lib/picking/validation.ts` rather than duplicating byte-identical arithmetic. |
+| `lib/lost-sales/resolve-fields.ts` | Added | Pure three-way SAP-code/description resolution for the original demand and any substitute product, mirroring `lib/assembly-form/resolve-line.ts`'s established fallback order. |
+| `lib/lost-sales/create-unfulfilled-demand.ts` | Added | `createUnfulfilledDemandsForSession()` — called from inside `authorizePickingSession`'s own transaction; creates one `UnfulfilledDemand` per `PickingLine` left with `unavailableQuantity > 0`, always starting at `PENDING_DECISION` with every bucket zero. |
+| `lib/lost-sales/estimate-value.ts` | Added | `resolveEstimatedLostSaleValue()` — order line's own approved price first, then the customer's price list; returns `null` rather than ever inventing a figure. |
+| `lib/lost-sales/record-decision.ts` | Added | `recordCustomerDecision()` — validates the quantity against whatever is undecided right now (never a stale client-supplied figure), updates the correct bucket, derives the new status, writes an audit event. No dedicated role. |
+| `lib/lost-sales/confirm-lost-sale.ts` | Added | `confirmLostSale()` — the one and only path that can set `confirmedLostQuantity`, drawing first from the cancelled bucket and then from outstanding where needed. Role-agnostic itself; gated only at the route. |
+| `lib/lost-sales/queries.ts` | Added | `listUnfulfilledDemands`, `getUnfulfilledDemandDetail`, `parseUnfulfilledDemandListQuery`, `getLostSalesReportSummary` — section 7's reporting figures, deliberately kept as distinct labelled numbers rather than one blended "lost sales" figure. |
+| `lib/lost-sales/display.ts` | Added | Pure label/style maps for the UI, no `@prisma/client` import — safe for Client Components. |
+
+## Integration with Milestone 3
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/picking/authorize-picking.ts` | Modified | One additive call, `await createUnfulfilledDemandsForSession(tx, sessionId, actorId)`, added inside the existing transaction right after the pre-existing `PICKING_SESSION_AUTHORIZED` audit event. Nothing else in this file changes. |
+
+## API routes (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/api/lost-sales/route.ts` | Added | `GET` — list, any authenticated user. |
+| `app/api/lost-sales/[id]/route.ts` | Added | `GET` — detail with full history, any authenticated user. |
+| `app/api/lost-sales/[id]/decisions/route.ts` | Added | `POST` — record a customer decision. CSRF-checked, any authenticated user (no dedicated role, same as picking's start/record/complete). |
+| `app/api/lost-sales/[id]/confirm-lost/route.ts` | Added | `POST` — confirm a lost sale. CSRF-checked, `SALES_MANAGER`/`ADMINISTRATOR` only via `requireUserOrResponse`. |
+| `app/api/lost-sales/reports/route.ts` | Added | `GET` — section 7's reporting summary, any authenticated user. |
+
+## UI (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/lost-sales/page.tsx` | Added | List page: 3 stat tiles, status-filter pills, a full data table, plain query-string pagination — section 6's required list. |
+| `app/lost-sales/[id]/page.tsx` | Added | Detail page: identification, status badge, 7-tile quantity summary, the `DecisionPanel` client island, decision history, confirmed lost-sale records. `canConfirmLost` computed server-side and passed down as a plain boolean, never the user object. |
+| `app/lost-sales/[id]/decision-panel.tsx` | Added | Client island — record-a-decision form (with debounced substitute-product search against the existing `/api/products` endpoint) and, only when `canConfirmLost`, a confirm-lost-sale form. Calls `router.refresh()` on success rather than managing local state optimistically. |
+| `app/components/sidebar.tsx` | Modified | New "Lost Sales" entry under Operations (`TrendingDown` icon) linking to `/lost-sales` — added fresh, since (unlike `/fulfilment`/`/deliveries`) there was no pre-existing dead placeholder for it. |
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/lost-sales-validation.test.ts` | Added | 36 unconditional tests covering every pure function in `lib/lost-sales/validation.ts` and `resolve-fields.ts` directly. All passing. |
+| `tests/lost-sales-db.integration.test.ts` | Added | 8 gated tests against a real database, covering the full lifecycle end to end (creation, every decision type, substitution, outstanding-to-lost conversion, original-PO immutability, audit history, reporting). Follows this project's established DB-integration-test conventions exactly; not yet run against a real database from this sandbox — see PROGRESS.md's honest verification results. |
+
+## Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/ROADMAP.md` | Modified | Added the Milestone 4 row (renumbered the previously-"4+" deferred rows to "5+"), its "never conflate" entry, and its change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the full Milestone 4 section: architecture assessment, design rationale for the quantity-bucket model and every decision this milestone made, what was built, what was deliberately not touched, tests, honest verification results, and the explicit nine-step acceptance-criterion confirmation the spec's closing section asks for. |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §20 — apply the new migration, regenerate the Prisma client, run the new gated test file, and a manual test script walking through recording decisions and confirming a lost sale via the UI. |

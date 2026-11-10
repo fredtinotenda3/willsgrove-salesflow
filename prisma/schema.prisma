@@ -232,6 +232,13 @@ model User {
   authorizedPickingSessions PickingSession[] @relation("PickingSessionAuthorizer")
   pickedLines               PickingLine[]    @relation("PickingLinePicker")
 
+  // Milestone 4 (Lost-Sales Management). Same "no dedicated role"
+  // convention as picking: any authenticated user can record a customer
+  // decision; only SALES_MANAGER/ADMINISTRATOR can confirm a lost sale
+  // (enforced at the API route -- see app/api/lost-sales/*).
+  recordedDecisionEvents CustomerDecisionEvent[] @relation("DecisionRecorder")
+  confirmedLostSales     LostSaleRecord[]        @relation("LostSaleConfirmer")
+
   @@index([isDemo])
 }
 
@@ -303,6 +310,9 @@ model Customer {
   // Milestone 2B.
   productAliases  ProductAlias[]
   customerAliases CustomerAlias[]
+
+  // Milestone 4 (Lost-Sales Management).
+  unfulfilledDemands UnfulfilledDemand[]
 
   @@index([name])
   @@index([status])
@@ -409,6 +419,10 @@ model Product {
   // Milestone 2B.
   aliases                 ProductAlias[]
   matchedByExtractedLines ExtractedOrderLine[]
+
+  // Milestone 4 (Lost-Sales Management).
+  unfulfilledDemands        UnfulfilledDemand[]
+  substituteDecisionEvents  CustomerDecisionEvent[] @relation("SubstituteProductRef")
 
   @@index([itemName])
   @@index([category])
@@ -551,6 +565,9 @@ model CustomerOrder {
   handovers      OrderHandover[]
   pickingSessions PickingSession[]
 
+  // Milestone 4 (Lost-Sales Management).
+  unfulfilledDemands UnfulfilledDemand[]
+
   @@index([customerId])
   @@index([status])
   @@index([orderDate])
@@ -590,6 +607,12 @@ model OrderLine {
   verifications  ProductVerification[]
   priceDecisions PriceDecision[]
   pickingLines   PickingLine[]
+
+  // Milestone 4 (Lost-Sales Management). One per OrderLine whose picking
+  // ultimately left some quantity unavailable -- see UnfulfilledDemand's
+  // own comment for why this is keyed off PickingLine, not directly off
+  // this relation's cardinality.
+  unfulfilledDemands UnfulfilledDemand[]
 
   // Milestone 2B. Set once this line is created FROM a reviewed/confirmed
   // ExtractedOrderLine (see lib/review/confirm-review.ts) -- null for any
@@ -1044,6 +1067,9 @@ model PickingSession {
   lines     PickingLine[]
   handovers OrderHandover[]
 
+  // Milestone 4 (Lost-Sales Management).
+  unfulfilledDemands UnfulfilledDemand[]
+
   @@index([orderId])
   @@index([status])
   @@index([isDemo])
@@ -1084,6 +1110,16 @@ model PickingLine {
   pickingSession PickingSession @relation(fields: [pickingSessionId], references: [id], onDelete: Cascade)
   orderLine      OrderLine      @relation(fields: [orderLineId], references: [id], onDelete: Restrict)
   pickedBy       User?          @relation("PickingLinePicker", fields: [pickedById], references: [id], onDelete: Restrict)
+
+  // Milestone 4 (Lost-Sales Management). At most one -- enforced by
+  // UnfulfilledDemand's own @@unique([pickingLineId]) -- created
+  // automatically by lib/picking/authorize-picking.ts the moment this
+  // line is authorized with unavailableQuantity > 0. A later re-pick
+  // creates a brand-new PickingLine (Milestone 3A's existing
+  // history-preserving design), so it gets its own separate
+  // UnfulfilledDemand too; this line's own record and its full decision
+  // history are never touched or reused.
+  unfulfilledDemand UnfulfilledDemand?
 
   @@unique([pickingSessionId, orderLineId])
   @@index([orderLineId])
@@ -1150,4 +1186,295 @@ model OrderHandover {
   @@index([orderId])
   @@index([isDemo])
   @@index([pickingSessionId])
+}
+
+// ============================================================================
+// Milestone 4 -- Lost-Sales Management.
+//
+// Three concepts this module exists to keep distinct (spec section 3) --
+// never collapsed into one "lost sales" figure:
+//
+//   A. Warehouse unavailability  -- already fully captured by Milestone 3A's
+//      PickingLine.unavailableQuantity. A supply shortfall, not yet a
+//      decision or a loss.
+//   B. Customer decision         -- CustomerDecisionEvent (append-only, one
+//      row per decision communicated, never edited/overwritten).
+//   C. Confirmed lost sale       -- LostSaleRecord. Always a separate,
+//      deliberate, explicit action -- NEVER implied automatically by a
+//      cancellation decision alone, and NEVER auto-derived from
+//      unavailableQuantity alone.
+//
+// UnfulfilledDemand is the hub: one row per PickingLine whose
+// unavailableQuantity > 0 at the moment picking is authorized (created
+// automatically, from inside the existing lib/picking/authorize-picking.ts
+// transaction -- additive only, no new API route needed for creation). A
+// fully-available line creates none at all (test scenario 1).
+// ============================================================================
+
+// The 7 decision outcomes a salesperson can actually RECORD (spec 4.2's
+// list item 1, "pending customer decision", is deliberately NOT a value
+// here -- it is the absence of any CustomerDecisionEvent, represented by
+// UnfulfilledDemandStatus.PENDING_DECISION, never by an event that would
+// contradict itself by recording "no decision").
+//
+// AWAIT_REMAINING_QUANTITY and SCHEDULE_LATER_SUPPLY are kept as two
+// distinct values (matching the spec's own separate list items 3 and 4)
+// even though both move quantity into the same outstandingQuantity bucket
+// -- they differ in customer commitment/semantics and reporting, not in
+// quantity accounting.
+enum CustomerDecisionType {
+  ACCEPT_PARTIAL_CANCEL_REMAINDER // outcome 2: accept what was found, cancel the rest
+  AWAIT_REMAINING_QUANTITY // outcome 3: customer agrees to wait, no firm commitment
+  SCHEDULE_LATER_SUPPLY // outcome 4: remaining quantity committed to be supplied later
+  SUBSTITUTE_ACCEPTED // outcome 5
+  PARTIAL_CANCELLATION // outcome 6: cancel part of the remaining undecided/outstanding quantity
+  ENTIRE_LINE_CANCELLED // outcome 7: cancel the entire remaining quantity on this line
+  ENTIRE_ORDER_CANCELLED // outcome 8: scoped to THIS UnfulfilledDemand only -- deliberately
+  // does not cascade to other order lines or change OrderStatus (see
+  // lib/lost-sales/record-decision.ts's own comment); recording it against
+  // every unresolved UnfulfilledDemand on an order is a salesperson/UI
+  // workflow concern, not something this schema enforces automatically.
+}
+
+// Spec 4.2: "Do not assume that a salesperson's entry is automatically
+// proof of a customer's decision. Record the source of the decision."
+// SALESPERSON_JUDGEMENT_UNCONFIRMED exists specifically so that case is a
+// visible, honest, filterable value rather than silently defaulting to
+// looking like a confirmed customer decision.
+enum DecisionSource {
+  CUSTOMER_PHONE_CALL
+  CUSTOMER_EMAIL
+  CUSTOMER_WRITTEN_COMMUNICATION
+  CUSTOMER_IN_PERSON
+  CUSTOMER_PORTAL_OR_SYSTEM
+  SALESPERSON_JUDGEMENT_UNCONFIRMED
+  OTHER
+}
+
+// Priority-ordered derived status (lib/lost-sales/validation.ts's
+// deriveUnfulfilledDemandStatus()), stored (not computed on read) so it is
+// directly filterable/indexable for the UI (spec section 6's "make it easy
+// to identify...") and for reporting (section 7). Recomputed and persisted
+// every time a decision event or lost-sale record changes this row's
+// quantity buckets -- never hand-set.
+//
+// Priority order (first match wins -- zero overlap by construction):
+//   1. PENDING_DECISION      -- any undecided remainder > 0
+//   2. AWAITING_SUPPLY       -- fully decided, outstandingQuantity > 0
+//   3. PARTIALLY_CANCELLED   -- fully decided, no outstanding, 0 < cancelled < unavailable
+//   4. FULLY_CANCELLED       -- cancelled == unavailable, not yet all confirmed lost
+//   5. CONFIRMED_LOST        -- confirmedLost == cancelled == unavailable
+//   6. RESOLVED              -- fully decided via substitution only, nothing outstanding/cancelled
+enum UnfulfilledDemandStatus {
+  PENDING_DECISION
+  AWAITING_SUPPLY
+  PARTIALLY_CANCELLED
+  FULLY_CANCELLED
+  CONFIRMED_LOST
+  RESOLVED
+}
+
+// Spec 4.6's configurable loss-reason list.
+enum LostSaleReason {
+  PRODUCT_UNAVAILABLE
+  INSUFFICIENT_QUANTITY
+  CUSTOMER_CANCELLED
+  CUSTOMER_SOURCED_ELSEWHERE
+  DELIVERY_OR_TIMING_ISSUE
+  QUALITY_RELATED_ISSUE
+  SUBSTITUTE_REJECTED
+  OTHER // reasonDetail is required (validated in lib/lost-sales/validation.ts) when this is used
+}
+
+// Spec 4.6: "Do not assume the financial value of a lost sale from the
+// warehouse's unavailable quantity alone... Clearly label estimated values
+// as estimates. Do not invent prices." Both estimatedUnitPrice/Value on
+// LostSaleRecord stay null (never defaulted to 0) unless one of these two
+// real, historically-valid sources actually resolves.
+enum LostSaleValueSource {
+  ORDER_LINE_APPROVED_PRICE // OrderLine.approvedUnitPrice, tried first
+  PRICE_LIST_ENTRY // most recent valid PriceListEntry as of confirmedAt, tried second
+}
+
+// One row per PickingLine with unavailableQuantity > 0, created
+// automatically at authorization time (never manually) by
+// lib/picking/authorize-picking.ts. @@unique([pickingLineId]) is the
+// structural guarantee against duplicates; a later re-pick creates a new
+// PickingSession/PickingLine (Milestone 3A's existing history-preserving
+// design) and therefore its own separate UnfulfilledDemand, leaving any
+// earlier one -- and its full decision history -- completely untouched.
+//
+// requestedQuantity/foundQuantity/unavailableQuantity are snapshots taken
+// once at creation and never written again (same convention as
+// PickingLine.requestedQuantity and OrderLine.sapItemCodeSnapshot), so this
+// row stays an honest historical record even if upstream data changes
+// later. The original CustomerOrder/OrderLine/PickingLine are never
+// overwritten by anything in this module (spec section 5).
+//
+// Quantity-bucket invariant (enforced in lib/lost-sales/validation.ts,
+// never trusted to the database alone, re-checked on every write):
+//   outstandingQuantity + cancelledQuantity + substitutedQuantity
+//     + <undecided remainder, not its own column> == unavailableQuantity
+// confirmedLostQuantity is NOT a fifth independent bucket -- it is always
+// a subset of cancelledQuantity (confirmedLostQuantity <= cancelledQuantity),
+// since lib/lost-sales/confirm-lost-sale.ts is allowed to draw a lost-sale
+// confirmation from either already-cancelled quantity or abandoned
+// outstanding quantity (spec test scenario 12, "conversion from outstanding
+// demand to confirmed lost quantity"): it consumes from
+// (cancelledQuantity - confirmedLostQuantity) first, then moves any
+// shortfall out of outstandingQuantity into cancelledQuantity as part of
+// the same transaction, so the subset invariant never breaks.
+model UnfulfilledDemand {
+  id String @id @default(cuid())
+
+  // Full traceability chain -- spec 4.1's required link list, all
+  // denormalized at creation time from already-authorized picking data.
+  orderId          String
+  orderLineId      String
+  customerId       String
+  pickingSessionId String
+  pickingLineId    String
+
+  productId                  String?
+  sapItemCodeSnapshot        String? // from OrderLine.sapItemCodeSnapshot at creation time; null if the order line never resolved one
+  productDescriptionSnapshot String // resolved the same three-way way as lib/assembly-form/resolve-line.ts (live Product name > OrderLine snapshot > customer's own original wording), frozen at creation time
+
+  requestedQuantity Decimal @db.Decimal(18, 4) // snapshot of PickingLine.requestedQuantity
+
+  // Snapshot of PickingLine.foundQuantity at authorization. This also IS
+  // the spec's "Accepted for fulfilment" figure (spec 4.3's worked
+  // example): the found quantity already proceeds through the existing
+  // picking-authorization/SAP-handover pipeline regardless of any decision
+  // recorded here, so no separate "accepted" column is needed -- it would
+  // only ever duplicate this one.
+  foundQuantity Decimal @db.Decimal(18, 4)
+
+  // Snapshot of PickingLine.unavailableQuantity at authorization.
+  // IMMUTABLE for the life of this row -- every decision below only ever
+  // partitions this fixed total, never changes it.
+  unavailableQuantity Decimal @db.Decimal(18, 4)
+
+  outstandingQuantity   Decimal @default(0) @db.Decimal(18, 4)
+  cancelledQuantity     Decimal @default(0) @db.Decimal(18, 4)
+  substitutedQuantity   Decimal @default(0) @db.Decimal(18, 4)
+  confirmedLostQuantity Decimal @default(0) @db.Decimal(18, 4)
+
+  status UnfulfilledDemandStatus @default(PENDING_DECISION)
+
+  // Spec 4.4. Only ever set by an AWAIT_REMAINING_QUANTITY/
+  // SCHEDULE_LATER_SUPPLY decision event; left null otherwise.
+  expectedFollowUpDate DateTime? @db.Date
+  followUpRemarks      String?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  order          CustomerOrder  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  orderLine      OrderLine      @relation(fields: [orderLineId], references: [id], onDelete: Restrict)
+  customer       Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  pickingSession PickingSession @relation(fields: [pickingSessionId], references: [id], onDelete: Restrict)
+  pickingLine    PickingLine    @relation(fields: [pickingLineId], references: [id], onDelete: Restrict)
+  product        Product?       @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  decisionEvents  CustomerDecisionEvent[]
+  lostSaleRecords LostSaleRecord[]
+
+  @@unique([pickingLineId])
+  @@index([orderId])
+  @@index([customerId])
+  @@index([productId])
+  @@index([status])
+  @@index([isDemo])
+}
+
+// Append-only -- every decision communicated is its own permanent row,
+// never edited/overwritten (same convention as ExtractionRun/OrderHandover),
+// so the full history survives even when a later decision supersedes an
+// earlier one in effect (e.g. a customer who first agreed to wait later
+// cancels the remainder). quantity is validated at recording time (in
+// lib/lost-sales/record-decision.ts) against whatever undecided amount
+// actually remains on the parent UnfulfilledDemand at that moment --
+// never against a stale client-supplied figure.
+//
+// Substitution is folded into this row rather than a separate table: a
+// substitution is always exactly 1:1 with one SUBSTITUTE_ACCEPTED event,
+// so the handful of substitute-specific fields below are simply nullable,
+// avoiding an extra model/dependency the spec explicitly warns against
+// introducing unnecessarily (section 9).
+model CustomerDecisionEvent {
+  id                  String               @id @default(cuid())
+  unfulfilledDemandId String
+  decisionType        CustomerDecisionType
+  source              DecisionSource
+
+  // Portion of the parent's undecided remainder this event resolves.
+  quantity Decimal @db.Decimal(18, 4)
+
+  // Populated only when decisionType == SUBSTITUTE_ACCEPTED.
+  substituteProductId                  String?
+  substituteSapItemCodeSnapshot        String?
+  substituteProductDescriptionSnapshot String?
+
+  customerContactName String? // who communicated the decision, where available (spec 4.2)
+  reason              String?
+  remarks             String?
+  attachmentReference String? // free-text reference to supporting attachment/communication (e.g. an OrderDocument id, email subject/message-id) -- spec 4.2
+
+  decidedAt    DateTime @db.Timestamptz(6) // when the customer actually decided -- may predate recordedAt
+  recordedById String
+  recordedAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  unfulfilledDemand UnfulfilledDemand @relation(fields: [unfulfilledDemandId], references: [id], onDelete: Restrict)
+  substituteProduct Product?          @relation("SubstituteProductRef", fields: [substituteProductId], references: [id], onDelete: SetNull)
+  recordedBy        User              @relation("DecisionRecorder", fields: [recordedById], references: [id], onDelete: Restrict)
+
+  @@index([unfulfilledDemandId])
+  @@index([decisionType])
+  @@index([recordedById])
+}
+
+// A genuine, confirmed lost sale -- always its own deliberate action
+// (lib/lost-sales/confirm-lost-sale.ts), role-gated to
+// SALES_MANAGER/ADMINISTRATOR at the API route (same two-tier pattern as
+// Milestone 3A's authorizePickingSession: never automatically implied by a
+// cancellation decision alone, enforced at the route, not duplicated into
+// the lib function itself).
+//
+// All traceability (product/SAP code, customer, original order) is reached
+// through unfulfilledDemand -- not duplicated here, consistent with
+// avoiding disconnected records (spec 4.1) and with this codebase's
+// existing "don't denormalize what a relation already gives you" style.
+model LostSaleRecord {
+  id                  String @id @default(cuid())
+  unfulfilledDemandId String
+
+  // Drawn from (cancelledQuantity - confirmedLostQuantity) first, then any
+  // shortfall from outstandingQuantity -- see UnfulfilledDemand's own
+  // comment for the exact consumption rule this must satisfy.
+  quantity Decimal @db.Decimal(18, 4)
+
+  reason       LostSaleReason
+  reasonDetail String? // required when reason == OTHER (lib/lost-sales/validation.ts)
+
+  decisionSource DecisionSource // spec 4.6's "customer decision source"
+
+  // Never invented. Both null means "no estimate available" -- displayed
+  // as such, never defaulted to 0 or guessed.
+  estimatedUnitPrice   Decimal?             @db.Decimal(18, 4)
+  estimatedValue       Decimal?             @db.Decimal(18, 4)
+  estimatedValueSource LostSaleValueSource?
+
+  remarks String?
+
+  confirmedById String
+  confirmedAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  unfulfilledDemand UnfulfilledDemand @relation(fields: [unfulfilledDemandId], references: [id], onDelete: Restrict)
+  confirmedBy       User              @relation("LostSaleConfirmer", fields: [confirmedById], references: [id], onDelete: Restrict)
+
+  @@index([unfulfilledDemandId])
+  @@index([reason])
+  @@index([confirmedById])
 }

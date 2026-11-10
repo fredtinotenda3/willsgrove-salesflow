@@ -2492,3 +2492,346 @@ effect-free (by test, against a real database) and that the printed
 form's data is correct (by test, against a real database) — the
 strongest form of verification available for a feature whose actual
 output is a piece of paper.
+
+
+## Milestone 4 — Lost-Sales Management
+
+Built on top of Milestones 0–3 (+completion) per the full "WILLGROVE
+SALESFLOW — MILESTONE 4: LOST-SALES MANAGEMENT" specification. Per that
+spec's section 9 instruction ("inspect the existing repo first... provide
+a short architecture assessment before implementation"), the assessment
+below was done before any schema or code was written.
+
+### Architecture assessment (done before implementation)
+
+**Reusable, unmodified:** `PickingSession`/`PickingLine` (Milestone 3A)
+already capture exactly the warehouse-unavailability data this
+milestone's section 4.1 asks every record to link back to
+(`requestedQuantity`/`foundQuantity`/`unavailableQuantity` per line,
+plus the authorizing user/timestamp already on `PickingSession`); the
+picking role/no-role convention (any user picks, only `SALES_MANAGER`/
+`ADMINISTRATOR` authorizes, enforced at the route) is the exact pattern
+this milestone's own role split (anyone records a decision, only
+`SALES_MANAGER`/`ADMINISTRATOR` confirms a lost sale) reuses rather than
+reinvents; `lib/assembly-form/resolve-line.ts`'s three-way SAP-code/
+description fallback (live `Product` → order-time snapshot → customer's
+own wording) is the exact resolution this milestone needs for both the
+original demand and any substitute product, so it's mirrored, not
+rebuilt, in `lib/lost-sales/resolve-fields.ts`; `lib/picking/validation.ts`'s
+scaled-BigInt decimal-string arithmetic is reused directly (imported, not
+copied) since it's byte-for-byte the arithmetic this milestone needs too.
+
+**Schema additions identified as required:** one new table per concept
+the spec's section 3 insists stay distinct — warehouse unavailability
+already exists (`PickingLine`); customer decision needed its own
+append-only event log (`CustomerDecisionEvent`, never edited after the
+fact, so an earlier "wait" decision later reversed to "cancel" leaves
+both as permanent history); and a genuine confirmed lost sale needed its
+own explicit, separately-authorized record (`LostSaleRecord`) that is
+never implied by a cancellation alone. A fourth table, `UnfulfilledDemand`,
+was identified as necessary to be the stable, traceable anchor
+section 4.1 asks for — one row per `PickingLine` left with
+`unavailableQuantity > 0`, holding the quantity-bucket partition
+(outstanding/cancelled/substituted/confirmed-lost) that the decision and
+lost-sale tables both update.
+
+**Conflicts with Milestone 3: none found.** `PickingLine`/`PickingSession`
+are read-only from this milestone's perspective (never updated once an
+`UnfulfilledDemand` exists) — Milestone 3's own completed/authorized
+workflow, SAP handover sourcing, and the Warehouse Assembly Form are
+untouched. The one integration point is additive and sits inside
+`authorizePickingSession`'s own existing transaction (see "What was
+built" below), never modifying what that function already did.
+
+### The central rule this milestone exists to enforce
+
+Section 3, quoted directly: *"Never automatically classify unavailable
+products as lost sales."* Implemented structurally, not just by
+convention: `createUnfulfilledDemandsForSession()` (run automatically on
+authorization) only ever sets `status: PENDING_DECISION` with every
+bucket at zero — there is no code path anywhere in this milestone that
+can set `confirmedLostQuantity > 0` except `confirmLostSale()`, which is
+its own explicit, separately-authorized action, called from nowhere else
+in the codebase. A cancelled quantity (`cancelledQuantity`) is *not* the
+same as a *confirmed lost* quantity (`confirmedLostQuantity`) — the
+latter is always `<= cancelledQuantity`, a deliberate subset relationship
+(see "Quantity-bucket model" below), so "the customer cancelled this
+line" and "this is now counted as a lost sale" are two separate,
+separately-recorded facts, exactly as section 3 distinguishes concepts
+(A) warehouse unavailability, (B) customer decision, and (C) actual lost
+sale.
+
+### Design rationale for the data model
+
+- **Quantity-bucket partition, not a status enum alone.**
+  `UnfulfilledDemand.unavailableQuantity` is an immutable snapshot
+  (never changed after creation); `outstandingQuantity` +
+  `cancelledQuantity` + `substitutedQuantity` + an *undecided remainder*
+  (never its own column — always derived as
+  `unavailable - outstanding - cancelled - substituted`) must always sum
+  to `unavailableQuantity`. `confirmedLostQuantity` is a **subset** of
+  `cancelledQuantity`, never a fourth independent bucket — so "cancelled
+  but not yet confirmed lost" and "cancelled and confirmed lost" are
+  both representable without ever double-counting the same unit of
+  product. This directly implements section 5's reconciliation
+  requirement: the same unavailable quantity can never simultaneously be
+  waiting, cancelled, and lost, because the arithmetic itself forbids it
+  — not because application code remembers to check.
+- **Six-state derived status**, computed fresh from the buckets on every
+  read/write rather than stored as independent truth that could drift:
+  `PENDING_DECISION` (undecided remainder > 0) → `AWAITING_SUPPLY`
+  (fully decided, but outstanding > 0 — checked *before* the cancelled/
+  lost checks, so a line with any outstanding quantity always reads as
+  "awaiting supply" even if part of its cancelled bucket has separately
+  been confirmed lost) → `CONFIRMED_LOST` / `FULLY_CANCELLED` (depending
+  on whether the fully-cancelled amount has been confirmed lost yet) →
+  `PARTIALLY_CANCELLED` → `RESOLVED`. These are exactly the six states
+  section 6 asks the UI to make easy to identify.
+- **Seven recordable decision types**, not the spec's eight — "pending"
+  (outcome 1) is represented by the *absence* of any decision event plus
+  the derived `PENDING_DECISION` status, never by an event of its own,
+  since recording a "the customer hasn't decided yet" event would be a
+  decision event describing a non-decision. Three of the seven
+  (`ACCEPT_PARTIAL_CANCEL_REMAINDER`, `ENTIRE_LINE_CANCELLED`,
+  `ENTIRE_ORDER_CANCELLED`) always consume the *entire* currently-
+  undecided remainder, computed server-side — never a caller-supplied
+  figure — because the spec's own worked example for outcome 2 ("accepts
+  12, cancels the remaining 8") always cancels 100% of what's left,
+  mechanically identical to "entire line cancelled," differing only in
+  narrative framing. `ENTIRE_ORDER_CANCELLED` deliberately affects only
+  its own `UnfulfilledDemand` row — it does not cascade to other lines
+  on the order or touch `OrderStatus`, documented explicitly in the
+  schema and in `record-decision.ts`, since cascading an order-wide
+  cancellation was never asked for and would silently affect lines this
+  milestone has no visibility into (lines that were fully available,
+  for instance).
+- **Section 4.2's explicit warning — "do not assume a salesperson's
+  entry is automatically proof of a customer's decision" — is the reason
+  `CustomerDecisionEvent.source` exists as its own required field** (7
+  values: phone call, email, written communication, in person, customer
+  portal/system, salesperson judgement — unconfirmed, or other),
+  independent of who recorded it (`recordedById`) or who the customer
+  contact was (`customerContactName`). A salesperson can record a
+  decision sourced from `SALESPERSON_JUDGEMENT_UNCONFIRMED`, and that
+  provenance is permanently visible in the record — it is never
+  conflated with a customer's own confirmed instruction.
+- **Substitution is folded into `CustomerDecisionEvent`, not a separate
+  model** — a substitution is always exactly 1:1 with one
+  `SUBSTITUTE_ACCEPTED` event, so the handful of substitute-specific
+  fields are simply nullable on that row, avoiding the extra model/
+  dependency section 9 explicitly warns against introducing
+  unnecessarily. The substitute's SAP code/description are frozen at
+  acceptance time from a real `Product`, and — per section 4.5 — the
+  *original* order line is never touched: `OrderLine.productId`/
+  `sapItemCodeSnapshot` for the original line are never written to by
+  this milestone, anywhere.
+- **No separate "accepted for fulfilment" column.** Section 4.3's
+  worked example calls out an "Accepted for fulfilment" figure, but
+  that figure is already exactly `PickingLine.foundQuantity` /
+  `UnfulfilledDemand.foundQuantity` — the quantity that was actually
+  found and already proceeds through the existing picking-authorization/
+  SAP-handover pipeline regardless of any decision recorded here. A
+  separate column would only ever duplicate it, so none was added.
+- **Estimated value, never invented** (section 4.6's explicit
+  instruction). `resolveEstimatedLostSaleValue()` tries the order line's
+  own `approvedUnitPrice` first, then the customer's assigned price
+  list's most recent valid entry as of the confirmation date; if neither
+  resolves, `estimatedUnitPrice`/`estimatedValue` are left `null` —
+  never defaulted, never guessed. Every stored value also carries
+  `estimatedValueSource` so a report can show *where* the figure came
+  from, and the field name itself says "estimated" throughout the UI and
+  API, never "value" alone.
+- **One `UnfulfilledDemand` row per `PickingLine`**, enforced by
+  `@@unique([pickingLineId])` — created automatically, and only when
+  `unavailableQuantity > 0`, from inside `authorizePickingSession`'s own
+  transaction. A fully-available authorization creates zero rows. A
+  later re-pick (Milestone 3A's own history-preserving design) creates a
+  brand-new `PickingLine` and therefore its own separate
+  `UnfulfilledDemand` — the earlier line's record and full decision
+  history are never touched or reused.
+
+### What was built
+
+- **Schema** (`prisma/schema.prisma`): 5 new enums
+  (`CustomerDecisionType`, `DecisionSource`, `UnfulfilledDemandStatus`,
+  `LostSaleReason`, `LostSaleValueSource`) and 3 new models
+  (`UnfulfilledDemand`, `CustomerDecisionEvent`, `LostSaleRecord`).
+  Entirely additive — every "new field" on `Product`/`CustomerOrder`/
+  `OrderLine`/`PickingSession`/`PickingLine`/`Customer`/`User` is a pure
+  Prisma inverse-relation side with no new column of its own; every
+  actual new column lives on the 3 new tables only.
+- **Migration** (`prisma/migrations/20261110180000_add_lost_sales_management/
+  migration.sql`): hand-authored, in this project's established format
+  (this sandbox cannot run `prisma migrate dev` — see "Honest
+  verification results" below), matching the schema exactly.
+- **`lib/lost-sales/`** (new module, mirroring `lib/picking/`'s own
+  split): `validation.ts` (pure — status derivation, quantity-bucket
+  math, decimal helpers), `resolve-fields.ts` (pure — three-way
+  fallback), `estimate-value.ts`, `create-unfulfilled-demand.ts`,
+  `record-decision.ts`, `confirm-lost-sale.ts`, `queries.ts`, `display.ts`.
+- **One integration line into Milestone 3's existing code**:
+  `lib/picking/authorize-picking.ts` calls
+  `createUnfulfilledDemandsForSession(tx, sessionId, actorId)` once,
+  inside its own existing transaction, immediately after the
+  pre-existing `PICKING_SESSION_AUTHORIZED` audit event — so
+  authorization and demand-creation can never disagree about whether
+  authorization actually happened.
+- **API routes**: `GET /api/lost-sales` (list), `GET /api/lost-sales/[id]`
+  (detail), `POST /api/lost-sales/[id]/decisions` (record a decision, any
+  authenticated user), `POST /api/lost-sales/[id]/confirm-lost`
+  (SALES_MANAGER/ADMINISTRATOR only, enforced via
+  `requireUserOrResponse` — never duplicated into the lib function
+  itself, same two-tier pattern as `authorizePickingSession`),
+  `GET /api/lost-sales/reports` (section 7's reporting figures).
+- **UI**: `/lost-sales` (list, 3 stat tiles, status filter, pagination —
+  section 6's required list) and `/lost-sales/[id]` (detail: quantity
+  summary, the `DecisionPanel` client island for recording decisions/
+  confirming lost sales, full decision/lost-sale history on open — "open
+  a record and see its full history," also section 6). A new "Lost
+  Sales" sidebar entry under Operations (`TrendingDown` icon) — unlike
+  `/fulfilment`/`/deliveries`, there was no pre-existing dead placeholder
+  link for this, so it's added fresh.
+
+### Explicitly not touched, and why (section 11 boundaries)
+
+No SAP invoice reconciliation/importing, invoice claims, returns, credit
+notes, new picking workflows, automated customer communication, or
+predictive analytics — none were built, per the spec's own exclusion
+list. `lib/picking/*`, `lib/handover/*`, and every existing UI page
+outside the new `/lost-sales` routes and the one `authorize-picking.ts`
+integration line are unmodified. No inventory management or stock
+reservation was added — SAP B1/iVend remain the sole source of truth for
+stock; this milestone only ever records what warehouse picking already
+found, never predicts or reserves anything.
+
+### Tests added
+
+- `tests/lost-sales-validation.test.ts` — 36 unconditional tests
+  covering the pure logic directly: decimal round-tripping/precision/
+  truncation, undecided-quantity computation, all 6 derived statuses
+  (including the "awaiting supply takes priority over partial lost
+  confirmation" edge case), decision-quantity validation (zero/negative/
+  exceeds-remaining rejected, exact-boundary accepted), lost-sale
+  consumption (pure-cancelled source, outstanding-to-cancelled
+  conversion, exceeds-both refused), the decision-type → bucket mapping
+  (exhaustive, so a future unmapped decision type fails to compile), and
+  the reason-requires-detail-for-"Other" rule. **All 36 passing**
+  (`npx vitest run tests/lost-sales-validation.test.ts`, 343ms).
+- `tests/lost-sales-db.integration.test.ts` (new, gated, 8 tests) —
+  against a real database, mirroring `tests/picking-db.integration.test.ts`/
+  `tests/handover-db.integration.test.ts`'s exact conventions
+  (`RUN_DB_INTEGRATION_TESTS=1`, demo-marked rows, `beforeAll`/`afterAll`
+  cleanup in FK-safe order). Covers: a fully-available line creates no
+  `UnfulfilledDemand` (scenario 1); partial and completely-unavailable
+  lines each create exactly one, correctly snapshotted, never
+  auto-classified as lost (scenarios 2–4); multiple unavailable lines on
+  one order each get their own record (scenario 20); whole-remainder
+  cancellation consumes exactly the undecided amount and a further
+  decision against an exhausted record is refused (scenarios 5, 9, 13,
+  14); a mix of waiting/partial-cancellation/substitution on the same
+  line, including the frozen substitute snapshot (scenarios 6, 9, 10,
+  11); a substitute referencing a non-existent product is refused;
+  outstanding-to-cancelled conversion when confirming a lost sale that
+  exceeds the cancelled bucket alone (scenario 12), plus the
+  exceeds-everything and missing-"Other"-detail refusals; the original
+  `CustomerOrder`/`OrderLine` rows are byte-identical before and after a
+  full decision/confirmation sequence (scenario 15); `AuditEvent` rows
+  exist for creation, decision-recording, and confirmation (scenario
+  16); estimated value resolves from the order line's own approved
+  price and is never invented; and the reporting summary's aggregated
+  figures reflect what was actually recorded (scenario 18). Role
+  restriction (scenario 17) is **not** independently tested at the route
+  level — documented as the same accepted, pre-existing scope boundary
+  `authorizePickingSession` itself has used since Milestone 3A (no route
+  handler anywhere in this codebase has its own dedicated unit test);
+  `confirmLostSale()` itself is role-agnostic by design, with the gate
+  enforced only in `app/api/lost-sales/[id]/confirm-lost/route.ts`.
+
+### Honest verification results
+
+- `npm run lint` — **clean**, zero errors/warnings across every new and
+  changed file, confirmed both on the new/changed subset and the whole
+  project.
+- `npx tsc --noEmit` — **158 errors** (up from the prior round's 130;
+  **+28** total across the two rounds this schema change was built and
+  tested in, **+4** from this final round's new DB-integration test
+  file specifically). Every single one of these is a pre-existing error
+  *category* this project has documented since early milestones —
+  `TS7006` (implicit `any` on a Prisma-callback/`.find()`/`.map()`
+  parameter), `TS2339`/`TS2694`/`TS2305` ("Property/member does not
+  exist on type `Prisma`"), `TS18046`, and one unrelated pre-existing
+  `TS2322` — confirmed via `grep -oE "error TS[0-9]+" | sort | uniq -c`
+  (101×TS7006, 20×TS2339, 15×TS2694, 18×TS2305, 3×TS18046, 1×TS2322 =
+  158 exactly) and by checking that every new occurrence falls inside a
+  file touched by this milestone, in one of those same buckets. **Root
+  cause, confirmed by direct reproduction, not assumption**: `npx prisma
+  generate`/`validate`/`format`/`migrate` cannot run in this sandbox at
+  all. Setting a dummy `DATABASE_URL` gets past the "missing
+  `DATABASE_URL`" symptom documented in earlier rounds, but the command
+  then fails with `Error: Failed to fetch the engine file at
+  https://binaries.prisma.sh/.../schema-engine.gz - 403 Forbidden` —
+  this sandbox's network allowlist does not include `binaries.prisma.sh`,
+  and no engine binary is cached from any prior session
+  (`~/.cache/prisma/master/<hash>/debian-openssl-3.0.x/` exists but is
+  empty). **This means the installed `@prisma/client` is permanently
+  stale relative to this round's schema and cannot be regenerated here
+  under any circumstance** — it has no knowledge of `UnfulfilledDemand`,
+  `CustomerDecisionEvent`, `LostSaleRecord`, or their 5 new enums, which
+  is the direct and complete explanation for every new `tsc` error this
+  round. **Run `npx prisma generate` on your own machine** (see
+  SETUP-WINDOWS.md §20) and these errors resolve the same way every
+  prior round's schema-driven `tsc` errors have.
+- `npx vitest run` — **268 passed, 36 skipped** (up from 232 passed/28
+  skipped at the end of the prior round): +36 unconditional (the new
+  `lost-sales-validation.test.ts`), and the new 8-test gated file
+  skips cleanly with no import error (`Test Files 1 skipped (1)`,
+  `Tests 8 skipped (8)`) since `RUN_DB_INTEGRATION_TESTS` is unset here.
+  Zero failures, zero regressions anywhere in the pre-existing suite.
+- `npm run build` — same result as every prior round: Turbopack's
+  bundling stage runs, then the build hits this sandbox's pre-existing
+  Google Fonts network block (`app/layout.tsx`, untouched by this
+  milestone, confirmed unrelated).
+- **The one thing this sandbox genuinely cannot confirm**: that the new
+  8-test gated file actually passes against a real, regenerated Prisma
+  client and a seeded database. It is written, it follows this
+  project's own established DB-integration-test conventions exactly,
+  and every function/field/signature it calls was independently
+  re-checked line-by-line against the actual `lib/lost-sales/*` source
+  and `prisma/schema.prisma` this round (not merely assumed carried over
+  from before this session's context was compacted) — but **run `npx
+  prisma generate` and then `RUN_DB_INTEGRATION_TESTS=1 npm test` for
+  real** before treating this as verified, same as every gated test in
+  this project.
+
+### Acceptance-criterion confirmation
+
+The spec's own closing requirement, quoted directly: *"The system must
+be able to follow this complete chain: Customer PO → Warehouse
+Availability Findings → Verification → Authorization → SAP Invoice
+Handover → Customer Decision on Unavailable Quantities → Outstanding
+Demand / Partial Cancellation / Substitution / Confirmed Lost Sale."*
+
+**Implemented: yes, all nine steps.** The first five (PO through SAP
+Invoice Handover) were already built and shipped in Milestones 0–3;
+this milestone adds the remaining four as one continuous, traceable
+chain: authorization automatically creates the `UnfulfilledDemand`
+anchor (never skippable, never manual); every customer decision is
+recorded against that same anchor, append-only; outstanding demand,
+partial cancellation, and substitution are three of the possible
+outcomes of that decision, all three representable simultaneously on
+the same record via the quantity-bucket partition; and a confirmed lost
+sale is always its own separate, explicit, role-gated action layered on
+top — never implied by any of the other three.
+
+**Tested: yes, with the one honest caveat already stated above.** The
+36 unconditional tests cover every piece of pure logic directly; the 8
+gated DB tests walk the full chain end to end against a real database,
+including the exact "customer accepts partial / waits for the rest"
+scenario from section 4.3's own worked example — but, as with every
+gated test in this project, they have not been run against a real
+database from inside this sandbox, and that run is the one remaining
+step before this milestone can be called verified rather than merely
+written and type-consistent.
+
+**Do not start Milestone 5 until this is reviewed** — per the spec's
+own explicit instruction, unchanged.
