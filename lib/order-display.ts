@@ -4,10 +4,15 @@
  * Single source of truth for mapping the real Prisma enums -- OrderStatus,
  * OrderSource, VerificationStatus, DocumentType, all defined in
  * prisma/schema.prisma -- to UI labels and styles, so the three order
- * pages can't drift out of sync with each other or with the schema. In
- * particular: OrderStatus has no "Picking" / "Dispatched" / "Delivered"
- * value (those were only ever in the old mock data) -- add a status here
- * only after it exists in the schema.
+ * pages can't drift out of sync with each other or with the schema.
+ *
+ * Milestone 3A (SAP Invoice Handover Specification -- warehouse picking):
+ * PICKING and READY_TO_INVOICE are now real OrderStatus values (added in
+ * prisma/migrations/20261110060000_add_picking_sessions) -- this is the
+ * "add a status here only after it exists in the schema" moment this
+ * file's comment used to point at. "Dispatched"/"Delivered" still don't
+ * exist in the schema (a separate, still-deferred future milestone --
+ * see docs/milestones/ROADMAP.md) and still aren't added here.
  *
  * Client-safe: no server-only imports and no @prisma/client import (only
  * string-literal unions that mirror the schema's enums), so this can be
@@ -20,6 +25,8 @@ export const ORDER_STATUSES = [
   "PENDING_VERIFICATION",
   "READY_FOR_APPROVAL",
   "APPROVED",
+  "PICKING",
+  "READY_TO_INVOICE",
   "REJECTED",
   "CANCELLED",
   "DRAFT",
@@ -31,6 +38,8 @@ export const ORDER_STATUS_LABELS: Record<OrderStatusValue, string> = {
   PENDING_VERIFICATION: "Pending Verification",
   READY_FOR_APPROVAL: "Ready for Approval",
   APPROVED: "Approved",
+  PICKING: "Picking",
+  READY_TO_INVOICE: "Ready to Invoice",
   REJECTED: "Rejected",
   CANCELLED: "Cancelled",
   DRAFT: "Draft",
@@ -41,6 +50,8 @@ export const ORDER_STATUS_STYLES: Record<OrderStatusValue, string> = {
   PENDING_VERIFICATION: "bg-amber-50 text-amber-700",
   READY_FOR_APPROVAL: "bg-purple-50 text-purple-700",
   APPROVED: "bg-green-50 text-green-700",
+  PICKING: "bg-cyan-50 text-cyan-700",
+  READY_TO_INVOICE: "bg-emerald-50 text-emerald-700",
   REJECTED: "bg-red-50 text-red-700",
   CANCELLED: "bg-gray-100 text-gray-500",
   DRAFT: "bg-gray-100 text-gray-500",

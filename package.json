@@ -15,7 +15,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.6.0",
+    "@anthropic-ai/sdk": "^1.7.0",
     "@prisma/client": "^6.19.0",
     "bcryptjs": "^3.0.3",
     "exceljs": "^4.4.0",

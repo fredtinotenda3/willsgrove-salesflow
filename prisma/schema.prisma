@@ -42,6 +42,19 @@ enum OrderStatus {
   PENDING_VERIFICATION
   READY_FOR_APPROVAL
   APPROVED
+  // Milestone 3A. Set once a PickingSession is started for this order
+  // (lib/picking/start-picking.ts) and held until that session is
+  // authorized. Deliberately NOT part of the READY_FOR_APPROVAL/APPROVED
+  // sequence above -- that sequence belongs to the separate, still-unbuilt
+  // SAP-catalogue/price-verification and discount-approval workflow
+  // (VerificationStatus/PriceDecisionStatus/OrderApproval below), which is
+  // not the same thing as warehouse picking. See docs/milestones/
+  // ROADMAP.md's "Things to never conflate" section.
+  PICKING
+  // Milestone 3A. Set once picking is both COMPLETED and AUTHORIZED (see
+  // PickingSessionStatus below) -- the gate lib/handover/generate-handover.ts
+  // (Milestone 3C) checks before it will produce an SAP Invoice Handover.
+  READY_TO_INVOICE
   REJECTED
   CANCELLED
 }
@@ -64,6 +77,29 @@ enum ApprovalStatus {
   PENDING
   APPROVED
   REJECTED
+}
+
+// Milestone 3A. A PickingSession's own lifecycle -- deliberately separate
+// from OrderStatus (which only tracks PICKING at the order level) so a
+// session mid-flight has fine-grained state independent of whatever else
+// might be true of the order.
+//
+// IN_PROGRESS  -- created by lib/picking/start-picking.ts; lines can still
+//                 be recorded/edited (lib/picking/record-picked-line.ts).
+// COMPLETED    -- every line has a found/unavailable split that accounts
+//                 for its full requestedQuantity (lib/picking/
+//                 complete-picking.ts); lines are now locked. Per the
+//                 user's confirmed design (two steps, same roles: any
+//                 authenticated user can pick and complete), this alone
+//                 does NOT yet make the order invoice-ready.
+// AUTHORIZED   -- a SALES_MANAGER or ADMINISTRATOR has signed off
+//                 (lib/picking/authorize-picking.ts), which is what moves
+//                 the order to OrderStatus.READY_TO_INVOICE and is the one
+//                 state generateHandover (Milestone 3C) will accept.
+enum PickingSessionStatus {
+  IN_PROGRESS
+  COMPLETED
+  AUTHORIZED
 }
 
 enum DocumentType {
@@ -186,6 +222,15 @@ model User {
   createdProductAliases  ProductAlias[]       @relation("ProductAliasCreator")
   createdCustomerAliases CustomerAlias[]      @relation("CustomerAliasCreator")
   generatedHandovers     OrderHandover[]      @relation("HandoverGenerator")
+
+  // Milestone 3A. Picking has no dedicated role (per the user's confirmed
+  // design): any authenticated user can start/complete a picking session;
+  // only SALES_MANAGER/ADMINISTRATOR can authorize one (enforced in the
+  // API route, not the schema -- see app/api/orders/[id]/picking/*).
+  startedPickingSessions    PickingSession[] @relation("PickingSessionStarter")
+  completedPickingSessions  PickingSession[] @relation("PickingSessionCompleter")
+  authorizedPickingSessions PickingSession[] @relation("PickingSessionAuthorizer")
+  pickedLines               PickingLine[]    @relation("PickingLinePicker")
 
   @@index([isDemo])
 }
@@ -499,11 +544,12 @@ model CustomerOrder {
   customerLocation CustomerLocation? @relation(fields: [customerLocationId], references: [id], onDelete: SetNull)
   createdBy        User              @relation("OrderCreator", fields: [createdById], references: [id], onDelete: Restrict)
 
-  lines         OrderLine[]
-  documents     OrderDocument[]
-  approvals     OrderApproval[]
-  statusHistory OrderStatusHistory[]
-  handovers     OrderHandover[]
+  lines          OrderLine[]
+  documents      OrderDocument[]
+  approvals      OrderApproval[]
+  statusHistory  OrderStatusHistory[]
+  handovers      OrderHandover[]
+  pickingSessions PickingSession[]
 
   @@index([customerId])
   @@index([status])
@@ -543,6 +589,7 @@ model OrderLine {
   product        Product?              @relation(fields: [productId], references: [id], onDelete: SetNull)
   verifications  ProductVerification[]
   priceDecisions PriceDecision[]
+  pickingLines   PickingLine[]
 
   // Milestone 2B. Set once this line is created FROM a reviewed/confirmed
   // ExtractedOrderLine (see lib/review/confirm-review.ts) -- null for any
@@ -944,6 +991,100 @@ enum HandoverFormat {
   CLIPBOARD
 }
 
+// Milestone 3A (SAP Invoice Handover Specification -- warehouse picking).
+// One row per picking attempt on an order. Unlike OrderHandover/
+// ExtractionRun's pure append-only convention, a session's OWN row is
+// mutated as picking progresses (IN_PROGRESS -> COMPLETED -> AUTHORIZED) --
+// but once a session reaches AUTHORIZED it is never mutated again, and a
+// correction after that point starts a brand-new session rather than
+// reopening the old one, so the full history of every picking attempt
+// (who, when, what was found/unavailable) is always preserved. See
+// PickingSessionStatus's comment above for the state machine, and
+// lib/picking/*.ts for the one function per transition.
+//
+// Deliberately one row per ORDER PER ATTEMPT, not one per OrderLine --
+// PickingLine (below) holds the per-line detail. An order may have more
+// than one PickingSession across its lifetime (a re-pick after a
+// correction), but at most one that is IN_PROGRESS or COMPLETED-but-not-
+// yet-authorized at any given time (enforced in
+// lib/picking/start-picking.ts, not the schema, the same way other
+// cross-row business rules in this project are enforced in lib/ rather
+// than with a DB constraint that can't express "unless the latest one is
+// AUTHORIZED").
+model PickingSession {
+  id      String               @id @default(cuid())
+  orderId String
+  status  PickingSessionStatus @default(IN_PROGRESS)
+
+  startedById String
+  startedAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  completedById String?
+  completedAt   DateTime? @db.Timestamptz(6)
+
+  authorizedById String?
+  authorizedAt   DateTime? @db.Timestamptz(6)
+
+  notes String?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  order       CustomerOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  startedBy   User          @relation("PickingSessionStarter", fields: [startedById], references: [id], onDelete: Restrict)
+  completedBy User?         @relation("PickingSessionCompleter", fields: [completedById], references: [id], onDelete: Restrict)
+  authorizedBy User?        @relation("PickingSessionAuthorizer", fields: [authorizedById], references: [id], onDelete: Restrict)
+
+  lines     PickingLine[]
+  handovers OrderHandover[]
+
+  @@index([orderId])
+  @@index([status])
+  @@index([isDemo])
+}
+
+// Milestone 3A. One row per OrderLine being picked in a given session --
+// created (one per order line, requestedQuantity snapshotted at that
+// moment) the instant the session starts, then filled in as picking
+// happens. requestedQuantity is a SNAPSHOT (not read live off OrderLine at
+// handover time) so this row stays an honest record of what was being
+// picked against even if OrderLine data could ever change later -- same
+// "preserve what was actually true at the time" principle as
+// OrderLine.sapItemCodeSnapshot.
+//
+// foundQuantity + unavailableQuantity must equal requestedQuantity before
+// the owning session can be marked COMPLETED (enforced in
+// lib/picking/complete-picking.ts) -- the spec's point 3 worked example
+// (20 requested / 20 found / 0 unavailable; 15 / 10 / 5; 30 / 25 / 5).
+// Both are nullable because a line can be saved mid-entry, before that
+// full accounting is in.
+model PickingLine {
+  id               String @id @default(cuid())
+  pickingSessionId String
+  orderLineId      String
+
+  requestedQuantity   Decimal  @db.Decimal(18, 4)
+  foundQuantity       Decimal? @db.Decimal(18, 4)
+  unavailableQuantity Decimal? @db.Decimal(18, 4)
+
+  notes String?
+
+  pickedById String?
+  pickedAt   DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  pickingSession PickingSession @relation(fields: [pickingSessionId], references: [id], onDelete: Cascade)
+  orderLine      OrderLine      @relation(fields: [orderLineId], references: [id], onDelete: Restrict)
+  pickedBy       User?          @relation("PickingLinePicker", fields: [pickedById], references: [id], onDelete: Restrict)
+
+  @@unique([pickingSessionId, orderLineId])
+  @@index([orderLineId])
+}
+
 // Milestone 2C. One append-only row per handover generated for an order --
 // never overwritten or deduplicated, the same "every attempt is its own
 // row" convention ExtractionRun (Milestone 2A) already established, and
@@ -958,11 +1099,21 @@ enum HandoverFormat {
 // always reflects the order as it actually is right now. This table only
 // records that a handover happened, in what format, by whom, and (for a
 // stored file) where to download it again.
+//
+// Milestone 3A/3C additions: `reference` is the spec's "Handover
+// Reference" header field (nullable because handovers generated before
+// this field existed have none -- never backfilled). `pickingSessionId`
+// records exactly which AUTHORIZED PickingSession this handover's
+// quantities were sourced from (lib/handover/generate-handover.ts,
+// Milestone 3C), so the traceability chain (spec section 6) is never
+// ambiguous even after a later re-pick.
 model OrderHandover {
-  id            String         @id @default(cuid())
-  orderId       String
-  format        HandoverFormat
-  generatedById String
+  id               String          @id @default(cuid())
+  orderId          String
+  pickingSessionId String?
+  reference        String?
+  format           HandoverFormat
+  generatedById    String
 
   // Rebuilt and recorded at generation time, not inferred later, so this
   // row stays an honest record of what was actually generated even if
@@ -983,9 +1134,11 @@ model OrderHandover {
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
-  order       CustomerOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  generatedBy User          @relation("HandoverGenerator", fields: [generatedById], references: [id], onDelete: Restrict)
+  order          CustomerOrder   @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  generatedBy    User            @relation("HandoverGenerator", fields: [generatedById], references: [id], onDelete: Restrict)
+  pickingSession PickingSession? @relation(fields: [pickingSessionId], references: [id], onDelete: SetNull)
 
   @@index([orderId])
   @@index([isDemo])
+  @@index([pickingSessionId])
 }

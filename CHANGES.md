@@ -1602,3 +1602,59 @@ every file and the reason for it.
   Milestone 2B), zero failures. `npm run build` reaches the same
   pre-existing Google Fonts network block as every previous milestone's
   build attempt — unrelated to any 2C code.
+
+# Milestone 3A — Changes (warehouse picking, SAP Invoice Handover Specification stage 1 of 4)
+
+Every file added or modified to build stage 3A. No files were deleted.
+See `docs/milestones/PROGRESS.md`'s Milestone 3A section for the full
+design rationale and honest verification results, and
+`docs/milestones/ROADMAP.md` for the master 0–3D status table.
+
+## Database / Prisma
+
+| File | Change | Reason |
+|---|---|---|
+| `prisma/schema.prisma` | Modified | Added `OrderStatus.PICKING`/`READY_TO_INVOICE`; added `PickingSessionStatus` enum; added `PickingSession`/`PickingLine` models; added `OrderHandover.pickingSessionId`/`reference` (both nullable); added the matching inverse relation fields on `User`, `CustomerOrder`, and `OrderLine`. All additive — see PROGRESS.md for exactly why each piece exists. |
+| `prisma/migrations/20261110060000_add_picking_sessions/migration.sql` | Added | The migration for the schema change above. Purely additive: `ALTER TYPE ... ADD VALUE`, two `CREATE TABLE`s, two nullable `ADD COLUMN`s on `OrderHandover`, new indexes/FKs. No column drops, renames, or type changes — safe to run against a database that already has real data (see SETUP-WINDOWS.md §15's rollback warning about the enum values specifically, though). |
+
+## `lib/picking/` (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/picking/validation.ts` | Added | Zod schema for the record-line request body; pure, exact (`BigInt`-based, not floating-point) decimal arithmetic — `exceedsRequested`/`fullyAccountsFor`. Zero `@prisma/client` dependency, so unconditionally unit-testable. |
+| `lib/picking/start-picking.ts` | Added | `startPickingSession(orderId, actorId)` — creates a `PickingSession` + one `PickingLine` per order line (snapshotting `requestedQuantity`), moves the order to `PICKING`. Refuses a cancelled/rejected/lineless order and a second concurrent session. |
+| `lib/picking/record-picked-line.ts` | Added | `recordPickedLine(...)` — records a line's found/unavailable split while its session is `IN_PROGRESS`; rejects overcounting immediately, allows partial entry. |
+| `lib/picking/complete-picking.ts` | Added | `completePickingSession(...)` — marks a session `COMPLETED` once every line fully accounts for its requested quantity; names which lines don't yet, if any. |
+| `lib/picking/authorize-picking.ts` | Added | `authorizePickingSession(...)` — marks a `COMPLETED` session `AUTHORIZED`, moves the order to `READY_TO_INVOICE`. Role-agnostic by design — the route restricts this to `SALES_MANAGER`/`ADMINISTRATOR`. |
+| `lib/picking/queries.ts` | Added | `getLatestPickingSessionForOrder`/`getPickingSessionDetail` — read-only session+lines lookups for the new `GET` routes and the future 3B UI. |
+
+## API routes (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/api/orders/[id]/picking/route.ts` | Added | `GET` (latest session for this order) / `POST` (start a new one). |
+| `app/api/orders/[id]/picking/[sessionId]/lines/[lineId]/route.ts` | Added | `PATCH` — record one line's found/unavailable split. |
+| `app/api/orders/[id]/picking/[sessionId]/complete/route.ts` | Added | `POST` — complete a session. |
+| `app/api/orders/[id]/picking/[sessionId]/authorize/route.ts` | Added | `POST` — authorize a session; restricted to `SALES_MANAGER`/`ADMINISTRATOR`. |
+
+## Display helpers
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/order-display.ts` | Modified | Added `PICKING`/`READY_TO_INVOICE` to `ORDER_STATUSES`/`ORDER_STATUS_LABELS`/`ORDER_STATUS_STYLES` — the existing order list/detail pages now show a correct badge and filter tab for these statuses with no further code change. |
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/picking-validation.test.ts` | Added | 14 unconditional unit tests for `lib/picking/validation.ts`'s schemas and exact decimal arithmetic. |
+| `tests/picking-db.integration.test.ts` | Added | 6 tests, gated behind `RUN_DB_INTEGRATION_TESTS=1`: the full start → record → complete → authorize lifecycle against the spec's worked example, every refusal path, and the re-pick-after-authorization case. |
+
+## Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/ROADMAP.md` | Added | The single master cross-milestone roadmap you asked for — status of every milestone 0 through the proposed 3D, known pre-existing placeholders, and an explicit "things to never conflate" section (picking vs. the separate pricing-verification workflow; `StockSnapshot` vs. a picking session). Updated after every milestone from here on. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the Milestone 3A section (design rationale, what was built, honest verification results, open items). |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §15 (apply migration, regenerate client, run the new DB-integration tests, a curl-based manual test script since there's no UI yet, and the rollback procedure). |

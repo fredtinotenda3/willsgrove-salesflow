@@ -1514,3 +1514,246 @@ and is fixed with the exact same narrowly-scoped, commented
 - The fuzzy-matching confidence threshold/ambiguity gap and the
   alias-review-UI gap, both called out in Milestone 2B's own Open items,
   remain exactly as they were — untouched by this round.
+
+## Milestone 3A (warehouse picking — SAP Invoice Handover Specification, stage 1 of 4)
+
+You provided a detailed specification ("WILLSGROVE SALESFLOW — SAP
+INVOICE HANDOVER SPECIFICATION") whose point 7 explicitly asked for a
+report on proposed database/workflow changes and conflicts with the
+existing Milestone 2C handover, before building, and to implement in
+stages 3A–3D. That report was given in chat first; this section records
+what was actually agreed and built for stage 3A. See
+`docs/milestones/ROADMAP.md` for the full 0–3D status table.
+
+### What the spec requires that didn't exist yet
+
+The spec's SAP Invoice Handover `Quantity` column must be "the final
+verified and authorized quantity found by the warehouse," never the
+original customer-requested quantity, and generation must be blocked (or
+clearly marked not-ready) "if an order has not completed picking
+verification, or the quantities have not been authorized." Nothing in
+this project tracked warehouse picking at all before this round —
+`VerificationStatus`/`PriceDecisionStatus`/`ProductVerification`/
+`PriceDecision`/`OrderApproval` are a different, still-unbuilt workflow
+(SAP-catalogue/price verification and discount approval on an
+`OrderLine` — see that section of the schema), and `StockSnapshot`/
+`StockSnapshotLine` (Milestone 1) is a point-in-time SAP inventory
+import, not an order-specific picking record. Conflating either with
+warehouse picking would have been the wrong call, so 3A adds a genuinely
+new, separate subsystem instead.
+
+Two prior pieces of scaffolding pointed straight at this: `lib/order-
+display.ts` had an explicit comment saying to add a `Picking` `OrderStatus`
+display case "only after it exists in the schema," and the sidebar
+already linked a dead `/fulfilment` nav entry (built out in 3B).
+
+### Decisions you confirmed before this stage was built
+
+Two genuinely ambiguous, expensive-to-redo design questions were put to
+you directly (not guessed):
+
+1. **Authorization: "same roles, two steps."** No new `UserRole` —
+   picking itself (start a session, record found/unavailable per line,
+   mark it complete) has no dedicated role and any authenticated user
+   can do it. Authorization is a **separate, later action**, restricted
+   to `SALES_MANAGER`/`ADMINISTRATOR` — enforced at the API route
+   (`requireUserOrResponse(["SALES_MANAGER", "ADMINISTRATOR"])`), not in
+   the `lib/picking/` function itself, the same lib-vs-route split every
+   other role-gated action in this project already follows.
+2. **A line that's 100% unavailable: omit it entirely.** Decided in 3C's
+   favor already (so 3C doesn't have to revisit it): a fully-unavailable
+   line has nothing to invoice, so it won't appear as a row at all in
+   the eventual SAP Invoice Handover — recorded in full in `PickingLine`
+   either way, just not SAP-facing.
+
+### Schema (additive only — `prisma/schema.prisma`)
+
+- **`OrderStatus`** gains exactly two new values: `PICKING` (a session
+  has been started, not yet authorized) and `READY_TO_INVOICE` (picking
+  completed **and** authorized — the gate the eventual reworked
+  `generateHandover`, in 3C, will require). Deliberately **not** part of
+  the `READY_FOR_APPROVAL`/`APPROVED` sequence — that belongs to the
+  separate pricing-verification workflow named above.
+- **New `PickingSessionStatus` enum**: `IN_PROGRESS` → `COMPLETED` →
+  `AUTHORIZED`. A session's own state, independent of `OrderStatus`.
+- **New `PickingSession` model**: one row per picking *attempt* on an
+  order (`orderId`, `status`, `startedById`/`startedAt`,
+  `completedById`/`completedAt`, `authorizedById`/`authorizedAt`,
+  `notes`, `isDemo`). Unlike `OrderHandover`/`ExtractionRun`'s pure
+  append-only convention, a session's own row **is** mutated as picking
+  progresses — but once it reaches `AUTHORIZED` it's never mutated
+  again; a correction after that point starts a **brand-new** session,
+  so the full history of every picking attempt is always preserved. At
+  most one session per order may be `IN_PROGRESS` or `COMPLETED`-but-
+  not-yet-`AUTHORIZED` at a time (enforced in `lib/picking/start-
+  picking.ts`, not a DB constraint — the same kind of cross-row business
+  rule this project always enforces in `lib/`).
+- **New `PickingLine` model**: one row per `OrderLine` being picked in a
+  given session — `requestedQuantity` **snapshotted** at the moment
+  picking starts (same "preserve what was actually true at the time"
+  principle as `OrderLine.sapItemCodeSnapshot`), plus nullable
+  `foundQuantity`/`unavailableQuantity`/`notes`/`pickedById`/`pickedAt`.
+  `foundQuantity + unavailableQuantity` must exactly equal
+  `requestedQuantity` before the owning session can be `COMPLETED` —
+  matches the spec's worked example exactly (20/20/0, 15/10/5, 30/25/5).
+- **`OrderHandover` gains two nullable columns** (no change to any
+  existing column): `pickingSessionId` (FK, `SetNull` — which authorized
+  session a handover's quantities came from, for 3C) and `reference`
+  (the spec's "Handover Reference" header field — generated starting in
+  3C; existing handover rows simply have `null` here, never backfilled).
+- Migration: `prisma/migrations/20261110060000_add_picking_sessions/migration.sql`.
+
+### `lib/picking/` — the core workflow
+
+- **`validation.ts`** — zod schema for the record-line request body, and
+  pure decimal arithmetic (`exceedsRequested`/`fullyAccountsFor`) using
+  exact fixed-point `BigInt` comparison (quantities scaled by 10,000 —
+  this project's `Decimal(18,4)` precision) rather than floating point,
+  so e.g. `0.1 + 0.2` can never drift away from `0.3`. Zero
+  `@prisma/client` dependency anywhere in its import graph, so (like
+  `lib/handover/format-rows.ts` before it) it's unconditionally unit-
+  testable.
+- **`start-picking.ts`** — `startPickingSession(orderId, actorId)`.
+  Refuses a `CANCELLED`/`REJECTED` order or one with no lines (409/400);
+  refuses a second concurrent session (409, see schema note above);
+  otherwise creates the session + one `PickingLine` per order line, and
+  moves the order to `PICKING` (with an `OrderStatusHistory` row and an
+  audit event, same pattern as every other status transition in this
+  project).
+- **`record-picked-line.ts`** — `recordPickedLine(...)`. Can be called
+  any number of times while the session is `IN_PROGRESS` (a line can be
+  saved mid-entry); refuses once the session is no longer `IN_PROGRESS`
+  (409); immediately refuses `found + unavailable` exceeding
+  `requestedQuantity` in either direction (400) — overcounting is never
+  legitimate, but a *partial* entry (not yet summing to the full
+  requested quantity) is allowed here and only checked for completeness
+  at the next step.
+- **`complete-picking.ts`** — `completePickingSession(sessionId, actorId)`.
+  Refuses unless every line's `found + unavailable` exactly accounts for
+  its `requestedQuantity`, naming exactly which line numbers are still
+  incomplete (400) rather than a generic refusal. Does **not** advance
+  `OrderStatus` beyond `PICKING` — completion alone is not authorization.
+- **`authorize-picking.ts`** — `authorizePickingSession(sessionId, actorId)`.
+  Refuses unless the session is `COMPLETED` (409). Moves the order to
+  `READY_TO_INVOICE`, with an `OrderStatusHistory` row and an audit
+  event. Role-agnostic by design (see decision #1 above) — the route
+  enforces `SALES_MANAGER`/`ADMINISTRATOR`.
+- **`queries.ts`** — `getLatestPickingSessionForOrder`/
+  `getPickingSessionDetail`, read-only, used by the new `GET` routes and
+  reusable by the 3B UI.
+
+### API routes (all under `app/api/orders/[id]/picking/`)
+
+- `route.ts` — `GET` (latest session for this order, or `null`), `POST`
+  (start a new one).
+- `[sessionId]/lines/[lineId]/route.ts` — `PATCH` (record a line;
+  `lineId` is the `OrderLine` id).
+- `[sessionId]/complete/route.ts` — `POST`.
+- `[sessionId]/authorize/route.ts` — `POST`, restricted to
+  `SALES_MANAGER`/`ADMINISTRATOR`.
+
+All follow this project's existing route conventions exactly: CSRF
+origin check on every mutating call, `requireUserOrResponse()`,
+`isValidId()` on every path segment, `Cache-Control: no-store` on every
+response.
+
+### `lib/order-display.ts`
+
+Added `PICKING`/`READY_TO_INVOICE` to `ORDER_STATUSES`/
+`ORDER_STATUS_LABELS`/`ORDER_STATUS_STYLES` — this is the exact "add a
+status here only after it exists in the schema" moment that file's own
+comment was pointing at. This alone means the existing order list/detail
+pages (no other change needed) immediately show a **Picking** or
+**Ready to Invoice** badge, and the order list gets two new filter tabs,
+the moment an order actually moves through those statuses via the new
+API — even though the dedicated `/fulfilment` picking UI itself is 3B's
+job, not this round's.
+
+### Tests
+
+- `tests/picking-validation.test.ts` — 14 unconditional unit tests (no
+  `@prisma/client` dependency): `decimalStringSchema`/
+  `recordPickedLineSchema` shape validation, `parseScaledDecimal`'s
+  exact-precision scaling, and `exceedsRequested`/`fullyAccountsFor`
+  against the spec's own worked example plus overcounting/partial/sub-
+  unit-precision edge cases.
+- `tests/picking-db.integration.test.ts` — 6 tests, gated behind
+  `RUN_DB_INTEGRATION_TESTS=1`: full lifecycle (start → record → complete
+  → authorize) against the spec's worked example; refusing a second
+  concurrent session; refusing to start picking for a cancelled order or
+  an order with no lines; refusing to complete an incomplete pick (and
+  naming which line); refusing to authorize before completion; a
+  brand-new session being allowed after the previous one was authorized,
+  with both sessions' history preserved. (Role gating itself —
+  `SALES_MANAGER`/`ADMINISTRATOR`-only authorization — lives in the
+  route, not the lib function, so this DB test intentionally does not
+  exercise that 403; see that test file's own module comment.)
+
+### Build / lint / typecheck / test results — reported honestly
+
+- `npm run lint` — **clean**, zero errors/warnings, including every new
+  3A file.
+- `npx tsc --noEmit` — **116 errors** (up from the 2C-end baseline of
+  105; **+11**). Confirmed, line by line, that all 11 new errors are in
+  the exact same pre-existing sandbox-stub categories documented in
+  every previous milestone: 9× `TS7006` "implicitly has an `any` type"
+  on a `tx`/collection-callback parameter (the stub types
+  `PrismaClient`/`Prisma.TransactionClient` as `any`, so TypeScript
+  can't infer these without an explicit annotation this codebase doesn't
+  use elsewhere either — see e.g. the pre-existing `lib/orders.ts(237,10)`,
+  `lib/review/confirm-review.ts(340,55)`) and 2×
+  `TS2339: Property 'Decimal' does not exist on type 'typeof Prisma'`
+  (same pre-existing category as `lib/orders.ts(111,41)`,
+  `lib/review/build-review-session.ts(135,78)`). **No new error
+  category anywhere.** One real, new-category error this round's own
+  code *did* trigger during development — `TS2737: BigInt literals are
+  not available when targeting lower than ES2020` (this project's
+  `tsconfig.json` targets `ES2017`) — was an actual bug in
+  `lib/picking/validation.ts`'s first draft (`10_000n` literal syntax)
+  and is fixed: every `BigInt` value here is now constructed with
+  `BigInt(10_000)` (a function call, which works at any target) rather
+  than literal suffix syntax, matching how `lib/handover/generate-
+  handover.ts` already constructs `BigInt(fileSize)` elsewhere in this
+  codebase.
+- `npx vitest run` — **221 passed, 20 skipped** (up from 207 passed/14
+  skipped at the end of Milestone 2C). Zero failures. The 14 new passing
+  tests are `tests/picking-validation.test.ts` (unconditional); the 6
+  new skipped tests are `tests/picking-db.integration.test.ts` (gated —
+  **this is the one you need to run for real coverage of this stage's
+  actual deliverable**, since a no-DB test can't prove a real
+  `PickingSession`/`PickingLine` lifecycle).
+- `npm run build` — Turbopack's bundling stage completes; the build then
+  hits this sandbox's pre-existing Google Fonts network block (unchanged
+  since Milestone 1 fix round 2), unrelated to any 3A code.
+- `npx prisma validate`/`prisma generate` could not be run in this
+  sandbox at all for this round (not even the stub-generation that
+  usually succeeds) — the sandbox's network allowlist refused
+  `binaries.prisma.sh` outright (`403 Forbidden` / `connect_rejected`),
+  so neither the schema engine nor the query engine binary could be
+  fetched. The new schema was therefore checked by hand instead: every
+  `@relation(...)` name was confirmed to appear exactly twice (once on
+  each side of the relation) and the file's brace-nesting was confirmed
+  balanced by script, both reported above. **Run `npx prisma validate`
+  yourself before applying the migration** — this is the one verification
+  step this round genuinely could not perform at all, not merely with
+  stubbed types.
+
+### Open / explicitly not done in this sub-build (by design — see the roadmap)
+
+- **No `/fulfilment` UI yet.** 3A is API-only, by design — exercised via
+  curl in `SETUP-WINDOWS.md` §15's manual test script. Building it is
+  3B.
+- **`lib/handover/` is untouched.** `generateHandover` still produces the
+  old 7-column layout sourced from `requestedQuantity`, and is **not**
+  yet gated on `OrderStatus.READY_TO_INVOICE` — none of that is correct
+  yet, and isn't meant to be until 3C.
+- **No endpoint to list orders currently awaiting/in picking** (the
+  3B UI's landing list will need one — a `GET /api/orders?status=PICKING`-
+  style query, or a dedicated picking-queue endpoint). Deliberately left
+  for 3B, since its exact shape depends on what that UI actually needs.
+- **A session that's `IN_PROGRESS` or `COMPLETED` can't be cancelled or
+  abandoned** — only progressed forward. If a pick genuinely needs to be
+  thrown away (wrong order, data-entry disaster) there's currently no
+  "abandon this session" action; not raised by the spec, so not built
+  speculatively, but worth a decision before 3B's UI ships if you want
+  one.

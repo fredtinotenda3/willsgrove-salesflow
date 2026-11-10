@@ -980,3 +980,145 @@ generate` again. Also tell Prisma's migration history about the rollback:
 ```powershell
 npx prisma migrate resolve --rolled-back 20261109150000_add_order_handover
 ```
+
+## 15. Milestone 3A: warehouse picking (SAP Invoice Handover Specification, stage 1 of 4)
+
+This is the first of four stages (3A–3D) implementing the SAP Invoice
+Handover Specification you provided. 3A is schema + core workflow only —
+no UI yet (that's 3B), and the handover itself is not reworked yet
+(that's 3C). This migration is purely additive: two new `OrderStatus`
+enum values appended, one new enum, two new tables, two new nullable
+columns on `OrderHandover`. No existing column's type or nullability
+changes, no existing table is dropped or renamed. As with every previous
+milestone's migration, it cannot be validated or generated in the build
+sandbox — run these for real on your machine.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_picking_sessions
+
+# 2. Regenerate the Prisma client so it knows about the new
+#    PickingSession/PickingLine models, PickingSessionStatus enum, the
+#    two new OrderStatus values (PICKING, READY_TO_INVOICE), and
+#    OrderHandover's new pickingSessionId/reference columns
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+```
+
+If `prisma migrate dev` reports schema drift because you've been running
+against the hand-written SQL already, use `migrate deploy` instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the new `tests/picking-db.integration.test.ts` (start → record
+→ complete → authorize, every refusal path, and the re-pick-after-
+authorization case) alongside every pre-existing gated integration test.
+Everything it creates is marked `isDemo: true` and cleaned up afterward.
+
+### Manual test script (no UI yet — via curl or any HTTP client)
+
+There's no `/fulfilment` page in this stage, so exercise the new API
+directly. Replace `<ORDER_ID>` with a real order id (e.g. from
+`npm run db:seed`'s demo data) and `<SESSION_COOKIE>` with a logged-in
+session cookie value copied from your browser's dev tools after signing
+in at `/login`.
+
+```powershell
+# Start picking
+curl -X POST http://localhost:3000/api/orders/<ORDER_ID>/picking `
+  -H "Cookie: salesflow_session=<SESSION_COOKIE>" `
+  -H "Origin: http://localhost:3000"
+# -> 201, { success: true, session: { id, status: "IN_PROGRESS", lines: [...] } }
+# Copy the session id and each line's orderLineId from the response.
+
+# Record a found/unavailable split for one line
+curl -X PATCH http://localhost:3000/api/orders/<ORDER_ID>/picking/<SESSION_ID>/lines/<ORDER_LINE_ID> `
+  -H "Content-Type: application/json" `
+  -H "Cookie: salesflow_session=<SESSION_COOKIE>" `
+  -H "Origin: http://localhost:3000" `
+  -d '{"foundQuantity": "10.0000", "unavailableQuantity": "5.0000", "notes": "5 damaged in transit"}'
+
+# Once every line has a found/unavailable split that sums to its requested quantity, complete:
+curl -X POST http://localhost:3000/api/orders/<ORDER_ID>/picking/<SESSION_ID>/complete `
+  -H "Cookie: salesflow_session=<SESSION_COOKIE>" `
+  -H "Origin: http://localhost:3000"
+
+# Authorize (must be signed in as a SALES_MANAGER or ADMINISTRATOR -- a
+# SALESPERSON session gets a 403 here):
+curl -X POST http://localhost:3000/api/orders/<ORDER_ID>/picking/<SESSION_ID>/authorize `
+  -H "Cookie: salesflow_session=<SESSION_COOKIE>" `
+  -H "Origin: http://localhost:3000"
+
+# Confirm the order moved to READY_TO_INVOICE
+curl http://localhost:3000/api/orders/<ORDER_ID> `
+  -H "Cookie: salesflow_session=<SESSION_COOKIE>"
+```
+
+Also confirm in the existing **Orders** list/detail pages (no code change
+needed to see this): an order you've started picking for now shows a
+**Picking** badge, and one you've authorized shows **Ready to Invoice** —
+both are new filter tabs on the order list too.
+
+### 15a. Undoing this migration
+
+**This is destructive** — it drops the new tables, removes the two new
+`OrderHandover` columns, and (for the enum) requires recreating
+`OrderStatus` without the two new values, which **fails if any row is
+currently using them** (so cancel/complete past any `PICKING`/
+`READY_TO_INVOICE` orders first, or accept losing that distinction).
+Back up first:
+
+```powershell
+pg_dump -Fc -d <your-database-name> -f backup-before-undo-milestone-3a.dump
+```
+
+```sql
+ALTER TABLE "OrderHandover" DROP CONSTRAINT "OrderHandover_pickingSessionId_fkey";
+ALTER TABLE "PickingLine" DROP CONSTRAINT "PickingLine_pickingSessionId_fkey";
+ALTER TABLE "PickingLine" DROP CONSTRAINT "PickingLine_orderLineId_fkey";
+ALTER TABLE "PickingLine" DROP CONSTRAINT "PickingLine_pickedById_fkey";
+ALTER TABLE "PickingSession" DROP CONSTRAINT "PickingSession_orderId_fkey";
+ALTER TABLE "PickingSession" DROP CONSTRAINT "PickingSession_startedById_fkey";
+ALTER TABLE "PickingSession" DROP CONSTRAINT "PickingSession_completedById_fkey";
+ALTER TABLE "PickingSession" DROP CONSTRAINT "PickingSession_authorizedById_fkey";
+
+DROP TABLE "PickingLine";
+DROP TABLE "PickingSession";
+DROP TYPE "PickingSessionStatus";
+
+ALTER TABLE "OrderHandover" DROP COLUMN "pickingSessionId";
+ALTER TABLE "OrderHandover" DROP COLUMN "reference";
+
+-- Only if nothing uses these two values (see warning above) --
+-- Postgres has no simple "remove enum value"; recreating the type is the
+-- standard approach:
+ALTER TYPE "OrderStatus" RENAME TO "OrderStatus_old";
+CREATE TYPE "OrderStatus" AS ENUM ('DRAFT', 'RECEIVED', 'PENDING_VERIFICATION', 'READY_FOR_APPROVAL', 'APPROVED', 'REJECTED', 'CANCELLED');
+ALTER TABLE "CustomerOrder" ALTER COLUMN "status" TYPE "OrderStatus" USING ("status"::text::"OrderStatus");
+DROP TYPE "OrderStatus_old";
+```
+
+Apply the reversible part the same way as previous rollbacks (`psql`, a
+GUI client, or `npx prisma db execute --file
+.\rollback-milestone-3a.sql --schema prisma/schema.prisma`), then revert
+`prisma/schema.prisma` to remove the same changes and run `npx prisma
+generate` again. Also tell Prisma's migration history about the rollback:
+
+```powershell
+npx prisma migrate resolve --rolled-back 20261110060000_add_picking_sessions
+```
