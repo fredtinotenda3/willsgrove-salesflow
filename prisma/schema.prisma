@@ -239,6 +239,16 @@ model User {
   recordedDecisionEvents CustomerDecisionEvent[] @relation("DecisionRecorder")
   confirmedLostSales     LostSaleRecord[]        @relation("LostSaleConfirmer")
 
+  // Milestone 5 (SAP Invoice Reconciliation). Importing an SAP invoice
+  // export has no dedicated role (same convention as Milestone 1's other
+  // master-data imports -- any authenticated user can import); manually
+  // matching/rejecting a line is restricted to SALES_MANAGER/
+  // ADMINISTRATOR, since it overrides the matcher's own conservative
+  // "do not silently guess" safety net -- enforced at the API route, see
+  // app/api/invoice-reconciliation/*.
+  uploadedInvoiceImportBatches SapInvoiceImportBatch[] @relation("InvoiceImportUploader")
+  matchedInvoiceLines          SapInvoiceLine[]        @relation("InvoiceLineMatcher")
+
   @@index([isDemo])
 }
 
@@ -313,6 +323,9 @@ model Customer {
 
   // Milestone 4 (Lost-Sales Management).
   unfulfilledDemands UnfulfilledDemand[]
+
+  // Milestone 5 (SAP Invoice Reconciliation).
+  sapInvoices SapInvoice[]
 
   @@index([name])
   @@index([status])
@@ -568,6 +581,14 @@ model CustomerOrder {
   // Milestone 4 (Lost-Sales Management).
   unfulfilledDemands UnfulfilledDemand[]
 
+  // Milestone 5 (SAP Invoice Reconciliation). An order's own
+  // matchedSapInvoices is header-level convenience only (set when every
+  // line of that invoice agreed on this one order) -- matchedSapInvoiceLines
+  // is the authoritative, line-level link; one order can span several SAP
+  // invoices and vice versa (spec section 4).
+  matchedSapInvoices     SapInvoice[]
+  matchedSapInvoiceLines SapInvoiceLine[]
+
   @@index([customerId])
   @@index([status])
   @@index([orderDate])
@@ -613,6 +634,11 @@ model OrderLine {
   // own comment for why this is keyed off PickingLine, not directly off
   // this relation's cardinality.
   unfulfilledDemands UnfulfilledDemand[]
+
+  // Milestone 5 (SAP Invoice Reconciliation). The matched SAP invoice
+  // line(s) actually invoicing this order line -- zero, one, or (a
+  // partial shipment invoiced across more than one SAP document) several.
+  matchedSapInvoiceLines SapInvoiceLine[]
 
   // Milestone 2B. Set once this line is created FROM a reviewed/confirmed
   // ExtractedOrderLine (see lib/review/confirm-review.ts) -- null for any
@@ -1477,4 +1503,214 @@ model LostSaleRecord {
   @@index([unfulfilledDemandId])
   @@index([reason])
   @@index([confirmedById])
+}
+
+// Milestone 5 (SAP Invoice Reconciliation).
+//
+// Connects authorized SalesFlow quantities (Milestone 3) and SAP Invoice
+// Handovers (Milestone 2C/3C) to what SAP Business One actually invoiced,
+// imported from an SAP export (section 3) -- SAP itself remains the sole
+// system of record for invoice numbers, prices, VAT and totals (section
+// 2). "Authorized quantity" for reconciliation purposes is never a new
+// stored number here -- it is read live from the order's most recently
+// AUTHORIZED PickingSession's PickingLine.foundQuantity, the exact same
+// source lib/handover/build-handover-rows.ts already uses, so there is
+// no second copy of that figure anywhere to drift out of sync (spec
+// section 5's reconciliation-integrity requirement, enforced structurally
+// rather than by convention, the same approach Milestone 4's quantity
+// buckets took). "Invoiced quantity" is the SUM of quantityInvoiced
+// across every SapInvoiceLine matched to that OrderLine whose parent
+// SapInvoice is not cancelled/reversed -- see
+// lib/invoice-reconciliation/reconcile.ts.
+
+enum InvoiceLineMatchStatus {
+  UNMATCHED // not yet looked at, or the matcher found nothing it was confident enough to set automatically
+  AUTO_MATCHED // matched by lib/invoice-reconciliation/matching.ts's conservative, SAP-item-code-based rule
+  MANUALLY_MATCHED // a human (SALES_MANAGER/ADMINISTRATOR) linked this line to an order line by hand
+  CANNOT_LINK // a human explicitly decided this line has nothing to do with SalesFlow (e.g. a walk-in/cash sale) -- a resolved, terminal outcome, not an open exception
+}
+
+enum InvoiceLineMatchMethod {
+  AUTOMATIC
+  MANUAL
+}
+
+// Invoice-HEADER-level status. Deliberately a separate enum from any
+// order-line-level concept (spec section 6: "ensure invoice-level status
+// and order-line status are not confused") -- order-line reconciliation
+// (NOT_YET_INVOICED/PARTIALLY_INVOICED/FULLY_INVOICED/OVER_INVOICED) is
+// never stored at all; it's computed fresh by
+// lib/invoice-reconciliation/reconcile.ts from authorized vs. invoiced
+// quantities, the same "derive, don't store a second truth" choice
+// Milestone 4 made for UnfulfilledDemandStatus.
+enum InvoiceReconciliationStatus {
+  UNMATCHED // not cancelled, and not one line has been matched or resolved yet -- "UNMATCHED SAP INVOICE" (section 6)
+  PARTIALLY_MATCHED // some lines resolved (matched or explicitly CANNOT_LINK), at least one still plain UNMATCHED -- an open item in the queue
+  RECONCILIATION_REQUIRED // every line has been looked at, but something about this invoice still needs a human decision (an ambiguous header match, a line matched to an order line that is already over-invoiced, etc.) -- see lib/invoice-reconciliation/matching.ts
+  MATCHED // every line resolved (matched or explicitly CANNOT_LINK) with nothing flagged for investigation
+  CANCELLED_REVERSED // isCancelledOrReversed is true -- always wins over the line-based states above; its matches (if any) never count toward valid invoiced quantities (section 6)
+}
+
+// One row per confirmed invoice-export upload (section 10.A's "View
+// import history"). Preview is stateless (mirrors every Milestone 1
+// master-data importer -- the file is re-sent and re-parsed at confirm
+// time, nothing is written until the operator actually confirms), so
+// unlike Milestone 4's append-only event tables, there is no
+// PENDING_REVIEW row for an import that was only previewed, never
+// confirmed.
+model SapInvoiceImportBatch {
+  id               String @id @default(cuid())
+  originalFileName String
+  uploadedById     String
+
+  // The operator's confirmed source-column -> target-field mapping,
+  // preserved verbatim -- spec section 3's "preserve import audit
+  // history" and "make the import adaptable to the actual SAP Business
+  // One export structure" both land here: this is the proof of exactly
+  // how an adaptable mapping was interpreted for this file.
+  columnMapping Json
+
+  totalRows            Int
+  importedInvoiceCount Int
+  importedLineCount    Int
+  duplicateRowCount Int // rows skipped: same DocEntry/DocNum as an invoice already in this database
+  invalidRowCount   Int // rows skipped: missing a required field (DocNum, a parseable Quantity)
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  uploadedBy User         @relation("InvoiceImportUploader", fields: [uploadedById], references: [id], onDelete: Restrict)
+  invoices   SapInvoice[]
+
+  @@index([uploadedById])
+  @@index([isDemo])
+}
+
+// One row per distinct SAP invoice document (grouped, at import time, by
+// DocEntry when the source provides one, else DocNum -- section 11's
+// "use stable SAP document identifiers where available... do not rely
+// solely on invoice numbers if the SAP source provides a more reliable
+// unique identifier").
+model SapInvoice {
+  id            String @id @default(cuid())
+  importBatchId String
+
+  // Dedupe/stable-identity fields. sapDocEntry is the SAP internal
+  // DocEntry (preferred, unique when present -- Postgres's unique index
+  // permits any number of NULLs, so this is "unique only when provided");
+  // sapDocNum is the human-facing invoice number, always required, but
+  // deliberately NOT given its own DB-level unique constraint -- the
+  // import planner (lib/invoice-reconciliation/plan-import.ts) checks
+  // both against existing rows and within the same file BEFORE writing
+  // anything, exactly mirroring lib/customer-master-import.ts's own
+  // seenCodes/duplicateCodes planning step, so a genuine duplicate is
+  // surfaced to the operator during preview rather than crashing on
+  // insert or silently double-counting invoiced quantity.
+  sapDocEntry String? @unique
+  sapDocNum   String
+
+  customerSapCode   String?
+  customerName      String?
+  matchedCustomerId String? // resolved automatically at import time via Customer.sapCustomerCode; never guessed when absent or ambiguous
+
+  invoiceDate      DateTime? @db.Date
+  currencyCode     String?
+  documentStatusRaw String? // preserved verbatim from SAP, never normalized away
+
+  // Derived once, at import time, from documentStatusRaw via a small,
+  // explicit keyword rule (lib/invoice-reconciliation/csv.ts) -- never
+  // silently inferred anywhere else. Always shown next to the raw value
+  // in the UI so a misclassification is correctable by re-importing with
+  // a clearer source value, not by editing this flag directly.
+  isCancelledOrReversed Boolean @default(false)
+
+  sapOrderReference String? // raw "reference to the originating order," where SAP provides one -- a strong matching signal, never the only one considered
+
+  // Convenience denormalization: set only when every one of this
+  // invoice's lines agreed on the same single order. An invoice spanning
+  // several SalesFlow orders (section 4, explicitly supported) leaves
+  // this null -- the line-level matches remain the only authoritative
+  // record; never used for quantity math, only for quick list display.
+  matchedOrderId String?
+
+  // Captured as actual SAP-sourced values, never computed from handover
+  // or lost-sale data (section 8's explicit prohibition).
+  subtotal Decimal? @db.Decimal(18, 4)
+  taxTotal Decimal? @db.Decimal(18, 4)
+  total    Decimal? @db.Decimal(18, 4)
+
+  reconciliationStatus InvoiceReconciliationStatus @default(UNMATCHED)
+
+  // Free-text operator note on this invoice's exceptions as a whole
+  // (section 7's "record explanations for discrepancies"). Every change
+  // to it is itself audited via AuditEvent (before/after), same as every
+  // other milestone's "record an explanation" action -- this field only
+  // ever holds the CURRENT note; the full history lives in AuditEvent.
+  reconciliationNotes String?
+
+  // The complete original row(s) for this invoice's header fields, exactly
+  // as uploaded (section 3's "preserve the raw source values for audit
+  // and investigation... do not invent missing SAP fields").
+  rawSourceData Json
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  importBatch     SapInvoiceImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Restrict)
+  matchedCustomer Customer?             @relation(fields: [matchedCustomerId], references: [id], onDelete: SetNull)
+  matchedOrder    CustomerOrder?        @relation(fields: [matchedOrderId], references: [id], onDelete: SetNull)
+  lines           SapInvoiceLine[]
+
+  @@index([importBatchId])
+  @@index([matchedCustomerId])
+  @@index([matchedOrderId])
+  @@index([reconciliationStatus])
+  @@index([sapDocNum])
+  @@index([isDemo])
+}
+
+model SapInvoiceLine {
+  id           String @id @default(cuid())
+  sapInvoiceId String
+  lineNumber   Int // SAP's own line number where provided, else assigned sequentially at import time
+
+  sapItemCode        String? // the primary product identity for matching (spec section 4) -- never description similarity
+  sapItemDescription String?
+
+  quantityInvoiced Decimal @db.Decimal(18, 4)
+  unitOfMeasure    String?
+  unitPrice        Decimal? @db.Decimal(18, 4)
+  discount         Decimal? @db.Decimal(18, 4)
+  taxCode          String?
+  lineTotal        Decimal? @db.Decimal(18, 4)
+  sapDocLineNum    String?
+
+  rawSourceData Json
+
+  matchedOrderId     String?
+  matchedOrderLineId String?
+
+  matchStatus InvoiceLineMatchStatus  @default(UNMATCHED)
+  matchMethod InvoiceLineMatchMethod?
+  matchNote   String? // for AUTO_MATCHED, a short machine-written explanation of why; for MANUALLY_MATCHED/CANNOT_LINK, the operator's own note
+  matchedById String?
+  matchedAt   DateTime?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  sapInvoice       SapInvoice     @relation(fields: [sapInvoiceId], references: [id], onDelete: Restrict)
+  matchedOrder     CustomerOrder? @relation(fields: [matchedOrderId], references: [id], onDelete: Restrict)
+  matchedOrderLine OrderLine?     @relation(fields: [matchedOrderLineId], references: [id], onDelete: Restrict)
+  matchedBy        User?          @relation("InvoiceLineMatcher", fields: [matchedById], references: [id], onDelete: Restrict)
+
+  @@index([sapInvoiceId])
+  @@index([matchedOrderId])
+  @@index([matchedOrderLineId])
+  @@index([matchStatus])
+  @@index([sapItemCode])
+  @@index([isDemo])
 }

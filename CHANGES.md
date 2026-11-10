@@ -1885,3 +1885,84 @@ generate` cannot run here).
 | `docs/milestones/PROGRESS.md` | Modified | Added the full Milestone 4 section: architecture assessment, design rationale for the quantity-bucket model and every decision this milestone made, what was built, what was deliberately not touched, tests, honest verification results, and the explicit nine-step acceptance-criterion confirmation the spec's closing section asks for. |
 | `CHANGES.md` | Modified | This section. |
 | `SETUP-WINDOWS.md` | Modified | Added §20 — apply the new migration, regenerate the Prisma client, run the new gated test file, and a manual test script walking through recording decisions and confirming a lost sale via the UI. |
+
+# Milestone 5 — Changes (SAP Invoice Reconciliation)
+
+New feature built on top of Milestones 0–4: importing real SAP Business
+One invoice exports (CSV), matching them to SalesFlow orders by exact
+SAP item code, reconciling authorized vs. invoiced quantity per order
+line (never clamped, never guessed), and a manual reconciliation
+workspace for every ambiguous or exceptional case, fully audited. SAP
+remains the sole system of record for invoice numbers, prices, VAT, and
+totals — SalesFlow never computes or overrides any of them, only
+reconciles quantities. No existing file's behavior changes except the
+one real, unrelated bug fixed in the import wizard's own JSX gating
+(see PROGRESS.md). See `docs/milestones/PROGRESS.md`'s Milestone 5
+section for the full architecture assessment, design rationale, and
+honest verification results.
+
+## Schema / migration
+
+| File | Change | Reason |
+|---|---|---|
+| `prisma/schema.prisma` | Modified | 3 new enums (`InvoiceLineMatchStatus`, `InvoiceLineMatchMethod`, `InvoiceReconciliationStatus`) and 3 new models (`SapInvoiceImportBatch`, `SapInvoice`, `SapInvoiceLine`). Purely additive inverse-relation fields added to `User`/`Customer`/`CustomerOrder`/`OrderLine` — no new column on any existing table. |
+| `prisma/migrations/20261110190000_add_invoice_reconciliation/migration.sql` | Added | Hand-authored (this sandbox cannot run `prisma migrate dev`), matching the schema exactly: 3 `CREATE TYPE`, 3 `CREATE TABLE`, 15 indexes, 8 foreign keys. No existing table/column/enum value touched. |
+
+## `lib/invoice-reconciliation/` (new module)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/invoice-reconciliation/csv.ts` | Added | Pure: target-field lists, column-mapping suggestion/validation, CSV parsing for preview and for the real apply pass, cancelled/reversed detection by keyword, grouping rows into invoices by `DocEntry` (preferred) or `DocNum`. |
+| `lib/invoice-reconciliation/reconcile.ts` | Added | Pure: `computeOrderLineReconciliation()` (the four worked examples exactly, signed remainder, never clamped) and `deriveInvoiceReconciliationStatus()` (header-level status from a cancelled flag plus every line's match/over-invoicing state). |
+| `lib/invoice-reconciliation/matching.ts` | Added | Pure: `matchInvoiceLineToOrder()` — exact SAP item code only, returns `null` on zero or multiple qualifying candidates rather than guessing; flags `causesOverInvoicing` when a match's quantity exceeds the candidate's remaining capacity. |
+| `lib/invoice-reconciliation/match-invoice.ts` | Added | DB: batched candidate-order gathering, `runAutoMatchForInvoice()` (threads a running per-invoice quantity delta), `getAuthorizedQuantity()`/`getInvoicedQuantity()` (always read live, never stored), `recomputeInvoiceHeaderStatus()` (rebuilds the header status and `matchedOrderId` convenience field from scratch after every line-state change). |
+| `lib/invoice-reconciliation/plan-import.ts` | Added | DB-querying, zero-write: `planSapInvoiceImport()` (duplicate detection against existing rows and within the same file, customer-code resolution) and `readSapInvoiceCsvUpload()` (CSV-only upload validation, documented as a deliberate scope decision). |
+| `lib/invoice-reconciliation/execute-import.ts` | Added | DB, single transaction (120s/15s timeout): creates the import batch, every new invoice and its lines, then a second pass runs matching + header-status recomputation for every newly-created invoice, then one `AuditEvent` for the whole batch. |
+| `lib/invoice-reconciliation/manual-actions.ts` | Added | DB: `manuallyMatchInvoiceLine`, `markInvoiceLineCannotLink`, `reopenInvoiceLineMatch`, `rerunAutoMatchForInvoice`, `setInvoiceReconciliationNote` — every one snapshots before-state, updates, recomputes the header status, and writes a full before/after `AuditEvent`. Role-agnostic by design; gated only at the route. |
+| `lib/invoice-reconciliation/queries.ts` | Added | Read-only: list/detail/candidate-order-lines/import-history/reports, mirroring `lib/lost-sales/queries.ts`'s structure. `getInvoiceReconciliationReports()` buckets order lines into fully/partially/awaiting/over-invoiced plus unmatched-invoice and reconciliation-exception lists. |
+| `lib/invoice-reconciliation/display.ts` | Added | Pure label/style maps for the UI, no `@prisma/client` import — safe for Client Components. |
+
+## API routes (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/api/invoice-reconciliation/import/preview/route.ts` | Added | `POST` — two-stage stateless preview (headers+suggested mapping, or full plan with a confirmed mapping). Any authenticated user. |
+| `app/api/invoice-reconciliation/import/confirm/route.ts` | Added | `POST` — CSRF-checked, double-submit guarded (`409` on a changed file), writes via `executeSapInvoiceImport`. Any authenticated user. |
+| `app/api/invoice-reconciliation/route.ts` | Added | `GET` — reconciliation queue list. |
+| `app/api/invoice-reconciliation/[id]/route.ts` | Added | `GET` — invoice detail with live authorized/invoiced/remaining per line. |
+| `app/api/invoice-reconciliation/[id]/candidate-orders/route.ts` | Added | `GET` — outstanding authorized order lines for the invoice's matched customer, for the manual-match picker. |
+| `app/api/invoice-reconciliation/[id]/note/route.ts` | Added | `POST` — invoice-level reconciliation note. `SALES_MANAGER`/`ADMINISTRATOR` only. |
+| `app/api/invoice-reconciliation/[id]/rerun-match/route.ts` | Added | `POST` — re-run automatic matching for an invoice's unmatched lines. `SALES_MANAGER`/`ADMINISTRATOR` only. |
+| `app/api/invoice-reconciliation/lines/[id]/match/route.ts` | Added | `POST` — manually match one line to a chosen order/order line, with a required explanation. `SALES_MANAGER`/`ADMINISTRATOR` only. |
+| `app/api/invoice-reconciliation/lines/[id]/cannot-link/route.ts` | Added | `POST` — mark a line as having nothing to do with SalesFlow, with a required explanation. `SALES_MANAGER`/`ADMINISTRATOR` only. |
+| `app/api/invoice-reconciliation/lines/[id]/reopen/route.ts` | Added | `POST` — reopen a previous match/cannot-link decision, with a required reason. `SALES_MANAGER`/`ADMINISTRATOR` only. |
+| `app/api/invoice-reconciliation/reports/route.ts` | Added | `GET` — the reconciliation reports summary. |
+| `app/api/invoice-reconciliation/import-history/route.ts` | Added | `GET` — list of past import batches. |
+
+## UI (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/invoice-reconciliation/page.tsx` | Added | Reconciliation queue list: status filter chips, table, pagination, links to import and reports. |
+| `app/invoice-reconciliation/import/page.tsx` | Added | 3-stage import wizard: read columns → confirm mapping → review plan → confirm. Fixed this round: the plan-review section (including the "Confirm and import" button) was gated so that it disappeared the instant the import started — see PROGRESS.md's "real bug found and fixed." |
+| `app/invoice-reconciliation/[id]/page.tsx` | Added | Invoice detail: header fields, lines table with authorized/invoiced/remaining/status, the `ReconciliationPanel` per line (only for `SALES_MANAGER`/`ADMINISTRATOR`), and the reconciliation-note form. |
+| `app/invoice-reconciliation/[id]/reconciliation-panel.tsx` | Added | Client island — per-line match/cannot-link/reopen actions, fetching candidate order lines on demand. `router.refresh()` on success, no optimistic local state. |
+| `app/invoice-reconciliation/[id]/reconciliation-note-form.tsx` | Added | Client island — invoice-level note textarea + save. |
+| `app/invoice-reconciliation/reports/page.tsx` | Added | Reports page: stat tiles, the four order-line buckets, unmatched-invoice and reconciliation-exception tables. |
+| `app/components/sidebar.tsx` | Modified | New "Invoice Reconciliation" entry under Operations (`Receipt` icon) linking to `/invoice-reconciliation` — added fresh, since there was no pre-existing dead placeholder for it. |
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/invoice-reconciliation.test.ts` | Added | 28 unconditional tests covering every pure function in `csv.ts`/`reconcile.ts`/`matching.ts` directly. All passing. One self-found test bug (header/data-row column mismatch) fixed by actually running the suite. |
+| `tests/invoice-reconciliation-db.integration.test.ts` | Added | 12 gated tests against a real database, covering the full lifecycle end to end (import, matching by SAP item code, the four quantity-reconciliation worked examples, over-invoicing, ambiguous-match manual resolution with full audit history, cancelled-invoice exclusion, multi-currency, multi-order invoices, original-record immutability, reports). Follows this project's established DB-integration-test conventions exactly; not yet run against a real database from this sandbox — see PROGRESS.md's honest verification results. |
+
+## Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/ROADMAP.md` | Modified | Added the Milestone 5 row (renumbered the previously-"5+" deferred rows to "6+"), its "never conflate" entries, and its change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the full Milestone 5 section: architecture assessment, design rationale for every decision (derive-don't-store, running-tally matching, cancelled-invoice exclusion, CSV-only scope, date-parsing conservatism), what was built, what was deliberately not touched, the one real bug found and fixed, tests, honest verification results, and the explicit nine-step acceptance-criterion confirmation. |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §21 — apply the new migration, regenerate the Prisma client, run the new gated test file, and a manual test script walking through importing a sample invoice CSV and resolving an ambiguous match via the UI. |

@@ -25,6 +25,7 @@ import {
   Activity,
   Inbox,
   TrendingDown,
+  Receipt,
 } from "lucide-react";
 
 const navigation = [
@@ -93,6 +94,13 @@ const navigation = [
         name: "Lost Sales",
         href: "/lost-sales",
         icon: TrendingDown,
+      },
+      // Milestone 5 (SAP Invoice Reconciliation). Same "no pre-existing
+      // dead placeholder link" situation as Lost Sales above.
+      {
+        name: "Invoice Reconciliation",
+        href: "/invoice-reconciliation",
+        icon: Receipt,
       },
     ],
   },

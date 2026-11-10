@@ -2835,3 +2835,447 @@ written and type-consistent.
 
 **Do not start Milestone 5 until this is reviewed** — per the spec's
 own explicit instruction, unchanged.
+
+
+## Milestone 5 — SAP Invoice Reconciliation
+
+Built on top of Milestones 0–4 per the full "WILLGROVE SALESFLOW —
+MILESTONE 5: SAP INVOICE RECONCILIATION" specification. As with
+Milestone 4, the architecture assessment below was done before any
+schema or code was written, per the spec's own instruction to inspect
+the existing repo first.
+
+### Architecture assessment (done before implementation)
+
+**Reusable, unmodified:** the source of truth for "how much of this
+order line was actually authorized to go out" already exists and is
+exactly right for this milestone's needs — `PickingLine.foundQuantity`
+on the most recent `AUTHORIZED` `PickingSession` for an order line (the
+same field `lib/handover/build-handover-rows.ts` already reads). This
+milestone never stores a second "authorized quantity" column anywhere;
+it is always read live from that same source. `lib/picking/validation.ts`'s
+scaled-BigInt decimal-string arithmetic (`parseScaledDecimal`,
+4-decimal-place strings) is imported directly, not copied, for the same
+reason it was reused in Milestone 4 — it is byte-for-byte the arithmetic
+this milestone needs for quantities and money. The existing generic
+`AuditEvent` model (actor/action/entityType/entityId/before/after) is
+reused for every import and every manual reconciliation action, exactly
+as Milestone 4 reused it for decisions and lost-sale confirmations — no
+bespoke audit table.
+
+**Schema additions identified as required:** three new tables, matching
+the spec's own three-stage shape (an import run, an invoice header, an
+invoice line) — `SapInvoiceImportBatch`, `SapInvoice`, `SapInvoiceLine`.
+No "authorized quantity" or "invoiced quantity" column was added to
+`OrderLine` itself: both are always computed live (see "derive, don't
+store a second truth" below), so they can never drift out of sync with
+the picking/invoice data they summarize.
+
+**Conflicts with Milestones 0–4: none found.** `CustomerOrder`/`OrderLine`/
+`PickingSession`/`PickingLine` are read-only from this milestone's
+perspective — nothing in `lib/invoice-reconciliation/*` ever writes to
+them. The only two-way relationship is a nullable `matchedOrderId`/
+`matchedOrderLineId` *on the new tables*, pointing *at* the existing
+order data, never the reverse. `UnfulfilledDemand`/`CustomerDecisionEvent`/
+`LostSaleRecord` (Milestone 4) and `SapInvoice`/`SapInvoiceLine`
+(this milestone) are two genuinely separate concepts that happen to both
+ultimately originate from the same `PickingLine` — a warehouse shortfall
+is not the same fact as an actual SAP invoice quantity, and nothing here
+conflates the two or reads one as a proxy for the other.
+
+### The central rules this milestone exists to enforce
+
+Three of the spec's own instructions, implemented structurally rather
+than by convention alone:
+
+- *"SAP Business One remains the sole system of record for invoice
+  numbers, prices, VAT, and totals."* SalesFlow never computes or
+  overrides any of these — every one of `SapInvoice.subtotal`/`taxTotal`/
+  `total` and every `SapInvoiceLine.unitPrice`/`discount`/`lineTotal` is
+  copied verbatim from the imported file (`rawSourceData` preserves the
+  original row alongside, always). No function anywhere in
+  `lib/invoice-reconciliation/` computes a price, a tax amount, or an
+  invoice total from SalesFlow's own data — only *quantities* are
+  reconciled against SalesFlow's own authorized-quantity figures.
+- *"Matching must use SAP item code as primary identity, never
+  description similarity; ambiguous matches must go to a manual
+  reconciliation queue, never guessed."* `matchInvoiceLineToOrder()`
+  (`lib/invoice-reconciliation/matching.ts`) filters candidates by exact
+  SAP item code equality only — there is no fuzzy-matching, token-overlap,
+  or description-similarity code path anywhere in this module. It returns
+  `null` (meaning: leave `UNMATCHED`, for a human to resolve) whenever
+  zero or more than one candidate order line qualifies; it never picks
+  the "closest" or "most likely" one.
+- *"Never silently change authorized quantities or clamp over-invoicing
+  to zero."* `computeOrderLineReconciliation()` (`reconcile.ts`) returns
+  a signed remainder (`authorized - invoiced`), using a local
+  `formatSignedScaled` specifically because the shared decimal helpers
+  are non-negative-only. An over-invoiced line's remaining quantity is
+  reported as e.g. `"-3.0000"`, never `"0.0000"`, and the invoice is
+  flagged `causesOverInvoicing: true` → invoice-level status
+  `RECONCILIATION_REQUIRED` — a human must look at it; nothing recovers
+  or "fixes" it automatically.
+
+### Design rationale for the data model
+
+- **"Derive, don't store a second truth."** Neither authorized quantity
+  nor invoiced quantity is ever a stored column on `OrderLine`.
+  `getAuthorizedQuantity()` always re-reads the live
+  `PickingLine.foundQuantity` from the order line's most recent
+  `AUTHORIZED` session; `getInvoicedQuantity()` always re-computes a
+  live `SUM` over matched (`AUTO_MATCHED`/`MANUALLY_MATCHED`),
+  non-cancelled `SapInvoiceLine` rows. This makes "the invoice-header
+  status and the order-line status must never be confused" (spec section
+  6) structurally true, not just a naming convention: they are computed
+  by two entirely different functions, from two entirely different
+  queries, over two entirely different value sets
+  (`InvoiceReconciliationStatus` is a property of one `SapInvoice` and
+  its lines; `OrderLineInvoiceStatusValue` is a property of one
+  `OrderLine` and every invoice line ever matched to it).
+- **Invoice-header status is always recomputed from first principles,
+  never incrementally patched.** `recomputeInvoiceHeaderStatus()` is
+  called after every single line-state change (an import, a manual
+  match, a cannot-link, a reopen, a rerun) and rebuilds the header's
+  `reconciliationStatus` and `matchedOrderId` convenience field from the
+  current state of every one of the invoice's lines, every time. This
+  guarantees the header can never drift out of sync with its lines — the
+  alternative (patch the header's status incrementally on each action)
+  would eventually diverge from the lines it's meant to summarize.
+- **The `matchedOrderId` convenience field on `SapInvoice` is set only
+  when every line (including any `CANNOT_LINK` line) agreed on the exact
+  same single order** — a partial or mixed result leaves it `null`
+  rather than guessing which order "mostly" matches. The per-line
+  `matchedOrderId`/`matchedOrderLineId` fields remain the authoritative
+  record either way; the header field exists purely so a list view can
+  show "Order SF-00123" without joining through every line. One invoice
+  can legitimately have lines belonging to different SalesFlow orders
+  (the DB-integration test for this exact case is below) — the header
+  field is a convenience, never a constraint.
+- **Running-tally matching within one invoice.** `runAutoMatchForInvoice()`
+  threads an in-memory `runningDelta` Map across an invoice's own
+  UNMATCHED lines as it matches them one at a time, so if two lines on
+  the same invoice both target the same order line (e.g. two separate
+  SAP document lines that both reduce the same order line's remaining
+  quantity), the second line correctly sees the first line's consumption
+  before it decides whether it fits. Across *separate* invoices/import
+  batches, the same effect is achieved by `getInvoicedQuantity()`'s own
+  live aggregate query, which always reflects every previously-matched
+  line regardless of which invoice or import batch it came from.
+- **Cancelled/reversed invoices stay visible and matched, but excluded
+  from every "already invoiced" baseline.** `isCancelledOrReversed` is
+  derived once, at import time, from a short, documented keyword list
+  against the raw `DocStatus`/`documentStatusRaw` column
+  (`"cancel"`/`"cancelled"`/`"canceled"`/`"void"`/`"voided"`/
+  `"reversed"`/`"reversal"`, case-insensitive substring match) — the raw
+  status string is always preserved alongside it. A cancelled invoice is
+  still auto-matched (so a human can see what it *would* have been) and
+  its header status becomes `CANCELLED_REVERSED`, but
+  `getInvoicedQuantity()`'s aggregate explicitly filters out
+  `sapInvoice.isCancelledOrReversed: true` rows — so a cancelled
+  invoice's quantity never continues to count as "already invoiced"
+  against the order line it was matched to. Nothing is ever deleted.
+- **No reversal-reference field was built, deliberately** (e.g. "this
+  invoice reverses invoice X"). The flat CSV export this milestone
+  imports has no column that reliably carries this relationship without
+  direct SAP API access (Milestone 9's scope, not this one's) — inventing
+  a field the export doesn't provide would violate the spec's own "never
+  invent missing fields" instruction. The boolean `isCancelledOrReversed`
+  plus the preserved raw status string is judged sufficient to satisfy
+  the spec's *substantive* requirement (a cancelled invoice's quantity
+  must not keep contributing to a valid invoiced total) without
+  fabricating a relationship the source data doesn't carry. **Recorded
+  here as a known, deliberate limitation**, not a silent gap. For the
+  same reason, no manual override route exists for this flag — the
+  schema's own comment states it is "correctable by re-importing with a
+  clearer source value, not by editing this flag directly."
+- **CSV-only import, no native `.xlsx` parsing.** The spec's section 3
+  phrase "Excel/CSV export only this milestone" is read as contrasting
+  with Milestone 9's direct-API integration, not as a hard requirement to
+  parse native Excel binary format. Every other importer already in this
+  project (customer-master, item-master, tax-codes, price-lists) is
+  CSV-only, so this keeps the same, already-reviewed scope rather than
+  adding a new parsing dependency mid-milestone. **Recorded as a known
+  limitation**: an operator exporting directly to `.xlsx` must save as
+  CSV first.
+- **Date-parsing conservatism.** `parseSapDate()` accepts only
+  unambiguous formats — ISO `YYYY-MM-DD` or SAP's compact `YYYYMMDD` —
+  and deliberately never a slash-separated date, because `DD/MM` vs.
+  `MM/DD` cannot be told apart without knowing the exporting locale. The
+  raw string is always preserved in `rawSourceData` regardless of whether
+  it parses, so nothing is lost even when the date itself can't be
+  interpreted.
+- **Two-stage, stateless-preview import**, extending the pattern already
+  established by Milestone 1's master-data importers and reused in
+  Milestone 4's own confirm-lost-sale flow: stage 1 (no `mapping` in the
+  request) returns the file's raw headers, a suggested column mapping,
+  and sample rows, with zero database writes; stage 2 (`mapping` present)
+  applies it, groups rows into invoices, and runs the full duplicate/
+  customer-match plan — still zero writes. Only the final confirm step
+  writes, inside one transaction with a raised timeout (120s/15s
+  `maxWait`, vs. Prisma's 5s default, since imports run rarely and
+  writes must stay sequential rather than parallel against one
+  interactive-transaction client — the same documented limitation
+  `scripts/remove-demo-data.ts` already notes). The confirm route
+  compares the client's `expectedNewInvoiceCount`/
+  `expectedDuplicateInvoiceCount` against what it re-plans itself and
+  refuses with `409` on any mismatch, so a file that changed between
+  preview and confirm (or a second concurrent import of the same file)
+  is caught rather than silently imported differently than previewed.
+- **Deduplication at planning time, not a DB-level unique constraint
+  alone.** `SapInvoice.sapDocEntry` is a nullable-unique column, but
+  `sapDocNum` deliberately has none — not every SAP export reliably
+  provides `DocEntry`, so duplicate detection happens explicitly in
+  `plan-import.ts` (checking both existing DB rows and within the same
+  uploaded file), mirroring `lib/customer-master-import.ts`'s own
+  `seenCodes`/`duplicateCodes` pattern.
+- **Role-gating convention, unchanged from Milestones 1 and 4: enforced
+  only at the route layer, never duplicated into a lib function.**
+  Import (upload/preview/confirm) is open to any authenticated user,
+  mirroring Milestone 1's importers; every manual reconciliation action
+  (match, cannot-link, reopen, rerun-match, note) is restricted to
+  `SALES_MANAGER`/`ADMINISTRATOR` via `requireUserOrResponse([...])` at
+  the route, mirroring Milestone 4's confirm-lost-sale gate. The lib
+  functions themselves (`manual-actions.ts`) are role-agnostic by design.
+
+### What was built
+
+- **Schema** (`prisma/schema.prisma`): 3 new enums
+  (`InvoiceLineMatchStatus`, `InvoiceLineMatchMethod`,
+  `InvoiceReconciliationStatus`) and 3 new models
+  (`SapInvoiceImportBatch`, `SapInvoice`, `SapInvoiceLine`). Entirely
+  additive — the "new relation fields" on `User`/`Customer`/
+  `CustomerOrder`/`OrderLine` are pure Prisma inverse-relation sides with
+  no new column on any existing table; every actual new column lives on
+  the 3 new tables only.
+- **Migration** (`prisma/migrations/20261110190000_add_invoice_reconciliation/
+  migration.sql`): hand-authored (this sandbox cannot run `prisma migrate
+  dev`), matching the schema exactly — 3 `CREATE TYPE`, 3 `CREATE TABLE`,
+  15 indexes, 8 foreign keys. No existing table/column/enum value
+  touched.
+- **`lib/invoice-reconciliation/`** (new module): `csv.ts` (pure —
+  column-mapping suggestion/validation, CSV parsing, cancelled-status
+  detection, grouping rows into invoices), `reconcile.ts` (pure —
+  order-line quantity math, invoice-header status derivation),
+  `matching.ts` (pure — the conservative, exact-item-code,
+  never-guess matcher), `match-invoice.ts` (DB — matching orchestration,
+  live authorized/invoiced lookups, header-status recomputation),
+  `plan-import.ts` (DB-querying, zero-write — duplicate detection,
+  customer-code resolution, CSV-upload validation),
+  `execute-import.ts` (DB — the single-transaction writer, two-pass so a
+  later invoice in a batch sees an earlier one's consumption),
+  `manual-actions.ts` (DB — match/cannot-link/reopen/rerun/note, every
+  one audited), `queries.ts` (DB, read-only — list/detail/candidate-
+  orders/import-history/reports), `display.ts` (pure label/style maps,
+  no `@prisma/client` import, safe for Client Components).
+- **API routes** (11, all under `app/api/invoice-reconciliation/`):
+  `import/preview` (two-stage preview, any authenticated user),
+  `import/confirm` (CSRF + double-submit guard, any authenticated user),
+  the list/detail/candidate-orders GET routes, `[id]/note` and
+  `[id]/rerun-match` (role-gated), the three per-line manual actions
+  under `lines/[id]/*` (role-gated), `reports`, and `import-history`.
+- **UI**: `/invoice-reconciliation` (reconciliation queue list),
+  `/invoice-reconciliation/import` (3-stage import wizard: read columns →
+  confirm mapping → review plan → confirm), `/invoice-reconciliation/[id]`
+  (detail page with the per-line `ReconciliationPanel` client island,
+  shown only to `SALES_MANAGER`/`ADMINISTRATOR`), and
+  `/invoice-reconciliation/reports` (the four order-line buckets plus
+  unmatched-invoice and reconciliation-exception lists). A new "Invoice
+  Reconciliation" sidebar entry under Operations (`Receipt` icon) — like
+  Lost Sales before it, there was no pre-existing dead placeholder link
+  for this one.
+- **`test-data/sap-business-partners-list.csv`** (pre-existing, reused
+  unchanged) is the customer-master fixture for seeding/testing this
+  milestone's customer-code resolution; `npm run db:remove-demo` already
+  handles cleanup of all 3 new tables (added to
+  `scripts/remove-demo-data.ts` earlier in this build, in FK-safe order
+  before `orderLines`/`orders`).
+
+### Explicitly not touched, and why (section 11 boundaries)
+
+No direct SAP Business One API integration, no automatic SAP invoice
+creation, no SAP stock updates, no Invoice Claims Management (6A), no
+Returns/Credit Notes (6B), no advanced predictive BI, and no automated
+WhatsApp/email notifications — none were built, per the spec's own
+exclusion list. `lib/picking/*`, `lib/lost-sales/*`, `lib/handover/*`,
+and every existing UI page outside the new `/invoice-reconciliation`
+routes are unmodified, with the single exception of the import's own
+fix below.
+
+### A real bug found and fixed during this round's verification (not a sandbox artifact)
+
+While re-running `tsc` this round, one genuine logic error was found and
+fixed (distinct from the pre-existing sandbox-only Prisma-stub bucket
+below): in `app/invoice-reconciliation/import/page.tsx`, the entire
+plan-review section — including the "Confirm and import" button — was
+gated on `{plan && stage === "planned" && (...)}`. Because
+`setStage("importing")` runs synchronously when the button is clicked,
+the very next render has `stage === "importing"`, which made that whole
+condition false and the entire section (checkbox, button, and its
+`"Importing..."` label) disappear the instant the import started,
+rather than showing a busy/disabled state while the request was in
+flight. Fixed by widening the gate to
+`{plan && (stage === "planned" || stage === "importing") && (...)}`, so
+the panel now stays visible and the button correctly reads
+`"Importing..."` while the confirm request is pending. Caught by `tsc`
+itself (`TS2367`, "comparison appears to be unintentional" — a real
+signal, not noise, once traced to its cause) and confirmed fixed by
+re-running `tsc` and seeing that exact error disappear with no other
+change in the error bucket (see below).
+
+### Tests added
+
+- `tests/invoice-reconciliation.test.ts` (new, unconditional, 28 tests)
+  — pure logic only (`csv.ts`/`reconcile.ts`/`matching.ts`), covering
+  spec scenarios 2, 7, 8, 9, 10, 11, 15, 17, 19 directly plus edge cases
+  (mapping validation, grouping by `DocEntry` vs. `DocNum`, a line with
+  no item code, a similar-but-different item code). One test bug was
+  found and fixed by actually running the suite (a header/data-row
+  column-order mismatch in the "groups by DocNum when DocEntry is
+  absent" test) — not assumed correct without execution. **All 28
+  passing** (`npx vitest run tests/invoice-reconciliation.test.ts`).
+- `tests/invoice-reconciliation-db.integration.test.ts` (new, gated, 12
+  tests) — against a real database, following this project's
+  established DB-integration-test conventions exactly
+  (`RUN_DB_INTEGRATION_TESTS=1`/`DATABASE_URL` gate, `isDemo: true` on
+  every created row, FK-safe `beforeAll`/`afterAll`, dynamic
+  `await import(...)` of every lib function inside test bodies since a
+  static import would crash this sandbox's Prisma stub at module load).
+  A local fixture helper creates real `CustomerOrder`/`OrderLine` rows
+  (with `sapItemCodeSnapshot` set directly — no `Product` row needed,
+  since matching only ever needs the SAP item code string) and runs the
+  real `startPickingSession`/`recordPickedLine`/`completePickingSession`/
+  `authorizePickingSession` functions to produce a genuinely `AUTHORIZED`
+  session with known found quantities, so every test matches against a
+  real, authorized order line rather than a hand-built fixture row.
+  Covers: a valid import resolving customer/order/item-code match and a
+  decimal-quantity full reconciliation with an audit event (scenarios 1,
+  5, 6, 8, 16, 19); duplicate detection and prevention on a re-import of
+  the same file (3, 4); an order line moving from awaiting-invoicing to
+  partially- to fully-invoiced across two separate invoices (9, 10, 13);
+  over-invoicing recorded (not refused) with a negative remaining
+  quantity and a `RECONCILIATION_REQUIRED` flag (11); an unrecognized
+  customer code leaving an invoice `UNMATCHED` rather than guessed (12);
+  one invoice's two lines both matching two different lines of the
+  *same* order, and, separately, one invoice's two lines matching two
+  *different* orders — the header's `matchedOrderId` convenience field
+  correctly staying `null` in the second case (14); an ambiguous match
+  (two qualifying order lines sharing one SAP item code) left
+  `UNMATCHED` even after an explicit re-run, then manually matched,
+  reopened, and marked cannot-link, with every step's full audit history
+  (`beforeData`/`afterData`) asserted exactly (15, 16); a cancelled
+  invoice flagged `CANCELLED_REVERSED` whose quantity is proven excluded
+  from the baseline a second, active invoice for the same quantity is
+  matched against (17); two invoices in different currencies for the
+  same customer never summed together (18); the original `CustomerOrder`/
+  `OrderLine`/`PickingLine` rows byte-identical before and after a full
+  import-and-manual-match sequence (20); and the reconciliation reports
+  correctly bucketing an awaiting-invoicing line, an over-invoiced line,
+  an unmatched invoice, and a reconciliation-exception invoice (22).
+  **Role restriction (scenario 21) is not independently exercised** —
+  the same accepted, documented, pre-existing scope boundary as every
+  other role-gated action in this project (no route handler anywhere in
+  this codebase has its own dedicated unit test); every manual-action lib
+  function is role-agnostic by design, with the gate enforced only in its
+  route handler's `requireUserOrResponse([...])` call. Together, 21 of
+  the spec's 22 named scenarios are exercised by an actual passing or
+  correctly-skipping test; the 22nd (21) is documented rather than
+  silently skipped.
+
+### Honest verification results
+
+- `npm run lint` (ESLint) — **clean**, zero errors/warnings, confirmed
+  on the full set of new/changed files (`lib/invoice-reconciliation/`,
+  `app/invoice-reconciliation/`, `app/api/invoice-reconciliation/`,
+  `app/components/sidebar.tsx`, both new test files,
+  `scripts/remove-demo-data.ts`). Two warnings were found and fixed
+  during this check: an unused `randomUUID` import in
+  `execute-import.ts`, and an unused `orderB` binding in the DB test
+  file (the order's existence, not its id, is what makes that test's
+  match ambiguous — commented and left unbound instead).
+- `npx tsc --noEmit` — **197 errors** (up from Milestone 4's 158; **+39**
+  for this milestone's own new files). Breakdown, confirmed via
+  `grep -oE "error TS[0-9]+" | sort | uniq -c`: 129×`TS7006` (+28),
+  25×`TS2339` (+5), 18×`TS2694` (+3), 18×`TS2305` (+0), 3×`TS2345`
+  (new category, +3), 3×`TS18046` (unchanged), 1×`TS2322` (unchanged,
+  pre-existing, unrelated to this milestone). **Every single new or
+  increased bucket was individually traced to a specific file in this
+  milestone and confirmed to be the same root cause documented since
+  Milestone 4**: `npx prisma generate` cannot run in this sandbox at all
+  (`binaries.prisma.sh` returns `403` through this sandbox's network
+  allowlist, and no engine binary is cached), so the installed
+  `@prisma/client` has zero knowledge of `SapInvoiceImportBatch`/
+  `SapInvoice`/`SapInvoiceLine`/their 3 new enums. The new `TS2345`
+  bucket (3×, "Argument of type 'unknown' is not assignable to parameter
+  of type 'string'" in `match-invoice.ts`) was individually inspected
+  rather than assumed: it occurs exactly where a type-guarded filter
+  (`.filter((id): id is string => id !== null)`) runs over a field read
+  from the stale client's degraded typing of the brand-new
+  `SapInvoiceLine.matchedOrderLineId`/`matchedOrderId` columns — the same
+  underlying cause, one new surface of it. **Confirmed this is the
+  complete explanation, not a guess**: every one of the 197 errors falls
+  in a file this milestone (or an earlier one) touched, in one of these
+  exact documented buckets, with zero unexplained errors. **Run `npx
+  prisma generate` on your own machine** (SETUP-WINDOWS.md §21) and
+  these resolve the same way every prior milestone's schema-driven `tsc`
+  errors have. **One real, unrelated bug was found and fixed this
+  round** — see "A real bug found and fixed" above; re-running `tsc`
+  after the fix confirmed that exact error (`TS2367`) disappeared with
+  no other change to the error bucket.
+- `npx vitest run` (full project suite) — **296 passed, 48 skipped, 0
+  failed** (up from 268 passed/36 skipped at the end of Milestone 4):
+  +28 unconditional (the new pure test file) and the new 12-test gated
+  file skips cleanly (`1 skipped`, `12 skipped`) since
+  `RUN_DB_INTEGRATION_TESTS` is unset here. Zero regressions anywhere in
+  the pre-existing suite, confirmed by an actual full-suite run, not
+  file-by-file assumption.
+- `npm run build` — same result as every prior round: Turbopack's
+  bundling stage runs (confirming the build pipeline itself tolerates
+  every new file), then the build hits this sandbox's pre-existing
+  Google Fonts network block in `app/layout.tsx` (untouched by this
+  milestone, confirmed unrelated — the same two-font 403 every prior
+  round's build has hit).
+- **The one thing this sandbox genuinely cannot confirm**: that the new
+  12-test gated file actually passes against a real, regenerated Prisma
+  client and a seeded database. It is written, it follows this
+  project's own established DB-integration-test conventions exactly, and
+  every function/field/signature it calls was independently checked
+  against the real `lib/invoice-reconciliation/*` source and
+  `prisma/schema.prisma` (not assumed) — but **run `npx prisma generate`
+  and then `RUN_DB_INTEGRATION_TESTS=1 npm test` for real**
+  (SETUP-WINDOWS.md §21) before treating this as verified, same as every
+  gated test in this project.
+
+### Acceptance-criterion confirmation
+
+The spec's own closing requirement, quoted directly: *"The system must
+be able to trace: Customer PO → Warehouse Availability → Picking
+Verification → Authorization → SAP Invoice Handover → Actual SAP
+Invoice Import → Invoice Matching → Quantity Reconciliation → Exception
+Resolution."*
+
+**Implemented: yes, all nine steps.** The first five (PO through SAP
+Invoice Handover) were already built and shipped in Milestones 0–3; this
+milestone adds the remaining four as one continuous, traceable chain: a
+real SAP invoice CSV export is imported with an operator-confirmed
+column mapping and zero invented fields (Actual SAP Invoice Import);
+every imported line is matched to a specific order line by exact SAP
+item code only, or left `UNMATCHED` for a human (Invoice Matching);
+authorized vs. invoiced quantity is always read live and reported as
+`NOT_YET_INVOICED`/`PARTIALLY_INVOICED`/`FULLY_INVOICED`/`OVER_INVOICED`,
+never clamped (Quantity Reconciliation); and every ambiguous, over-
+invoiced, or cannot-link case surfaces in the reconciliation queue/
+reports for a `SALES_MANAGER`/`ADMINISTRATOR` to resolve by hand, fully
+audited (Exception Resolution).
+
+**Tested: yes, with the one honest caveat already stated above.** The 28
+unconditional tests cover every piece of pure logic directly; the 12
+gated DB tests walk the full chain end to end against a real database,
+including the four worked examples from the spec's own quantity-
+reconciliation section (20/20, 20/12, 20/0, 20/23) and the cancelled-
+invoice exclusion case — but, as with every gated test in this project,
+they have not been run against a real database from inside this
+sandbox, and that run is the one remaining step before this milestone
+can be called verified rather than merely written and type-consistent.
+
+**Do not start Milestone 6A until this is reviewed** — per the spec's
+own explicit instruction.

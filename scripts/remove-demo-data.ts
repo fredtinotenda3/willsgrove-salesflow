@@ -85,6 +85,24 @@ async function main() {
         where: { order: { isDemo: true } },
       });
 
+      // Milestone 5 (SAP Invoice Reconciliation). Lines before their
+      // invoice (Restrict), invoices before their import batch (Restrict),
+      // and all three before orderLines/orders below -- SapInvoiceLine's
+      // matchedOrderId/matchedOrderLineId FKs are Restrict, not SetNull,
+      // the same "never silently lose traceability" choice this schema
+      // makes everywhere else.
+      const sapInvoiceLines = await tx.sapInvoiceLine.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const sapInvoices = await tx.sapInvoice.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const sapInvoiceImportBatches = await tx.sapInvoiceImportBatch.deleteMany({
+        where: { isDemo: true },
+      });
+
       const orderLines = await tx.orderLine.deleteMany({
         where: { isDemo: true },
       });
@@ -158,6 +176,9 @@ async function main() {
             priceLists: priceLists.count,
             taxCodes: taxCodes.count,
             users: users.count,
+            sapInvoiceLines: sapInvoiceLines.count,
+            sapInvoices: sapInvoices.count,
+            sapInvoiceImportBatches: sapInvoiceImportBatches.count,
           },
         },
       });
@@ -173,6 +194,9 @@ async function main() {
         priceLists: priceLists.count,
         taxCodes: taxCodes.count,
         users: users.count,
+        sapInvoiceLines: sapInvoiceLines.count,
+        sapInvoices: sapInvoices.count,
+        sapInvoiceImportBatches: sapInvoiceImportBatches.count,
       };
     },
     {
@@ -192,6 +216,9 @@ async function main() {
   console.log(`  Price lists:      ${result.priceLists}`);
   console.log(`  Tax codes:        ${result.taxCodes}`);
   console.log(`  Users:            ${result.users}`);
+  console.log(`  SAP invoice lines: ${result.sapInvoiceLines}`);
+  console.log(`  SAP invoices:     ${result.sapInvoices}`);
+  console.log(`  SAP invoice import batches: ${result.sapInvoiceImportBatches}`);
 }
 
 main()

@@ -1479,3 +1479,161 @@ generate` again. Also tell Prisma's migration history about the rollback:
 ```powershell
 npx prisma migrate resolve --rolled-back 20261110180000_add_lost_sales_management
 ```
+
+## 21. Milestone 5: SAP Invoice Reconciliation
+
+This migration is purely additive: 3 new enums and 3 new tables only. No
+existing table, column, or enum value is touched — every "new field"
+you'll see on `User`/`Customer`/`CustomerOrder`/`OrderLine` in
+`prisma/schema.prisma` is a pure Prisma inverse-relation side with no new
+column of its own. As with every previous milestone's migration, it
+cannot be validated or generated in the build sandbox — run these for
+real on your machine.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_invoice_reconciliation
+
+# 2. Regenerate the Prisma client so it knows about SapInvoiceImportBatch,
+#    SapInvoice, SapInvoiceLine, and their 3 new enums
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+```
+
+If `prisma migrate dev` reports schema drift because you've been running
+against the hand-written SQL already, use `migrate deploy` instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the new `tests/invoice-reconciliation-db.integration.test.ts`
+(CSV import, matching by exact SAP item code, the four quantity-
+reconciliation worked examples, over-invoicing, ambiguous-match manual
+resolution with full audit history, cancelled-invoice exclusion,
+multi-currency, multi-order invoices, original-record immutability,
+reports) alongside every pre-existing gated integration test. Everything
+it creates is marked `isDemo: true`; cleanup happens in `afterAll` in an
+order that respects every new foreign key (`SapInvoiceLine` →
+`SapInvoice` → `SapInvoiceImportBatch`, then the pre-existing picking/
+order/order-line cleanup). It needs an admin user and the `DEMO-CUST-001`
+customer already seeded — if you're missing either, run `npm run
+db:seed` first.
+
+### Manual test script (via the UI)
+
+1. Pick (or create) an order for **TM Supermarket Borrowdale (Demo)**
+   (`DEMO-CUST-001`) with at least one line for a known SAP item code
+   (e.g. item `8104` from `test-data/sap-items-list.csv`), then on
+   `/fulfilment/<ORDER_ID>` start picking, record that line as fully
+   available (requested 20, found 20), then complete and authorize the
+   session (SALES_MANAGER or ADMINISTRATOR). Note the order's reference
+   (e.g. `SF-00123`).
+2. Save the following as `test-invoice.csv` (header-level columns
+   repeated on every line, the shape a real SAP B1 "flattened document
+   rows" export uses):
+
+   ```csv
+   DocEntry,DocNum,CardCode,CardName,DocDate,DocCur,DocStatus,NumAtCard,DocTotalBeforeDisc,VatSum,DocTotal,LineNum,ItemCode,Dscription,Quantity,UomCode,Price,DiscPrcnt,VatGroup,LineTotal
+   50001,INV-90001,DEMO-CUST-001,TM Supermarket Borrowdale (Demo),2026-11-10,USD,Open,SF-00123,0,0,0,0,8104,Apples,12.0000,EA,0,0,0,0
+   50002,INV-90002,DEMO-CUST-001,TM Supermarket Borrowdale (Demo),2026-11-11,USD,Open,SF-00123,0,0,0,0,8104,Apples,8.0000,EA,0,0,0,0
+   ```
+
+   This splits the 20 authorized units across two separate invoices (12
+   then 8), so you can watch the order line move from "awaiting
+   invoicing" to "partially invoiced" to "fully invoiced" one import at a
+   time.
+3. Open **Invoice Reconciliation** in the sidebar
+   (`/invoice-reconciliation`), then **Import**. Upload `test-invoice.csv`
+   and click "Read columns" — confirm the suggested mapping already
+   matches every column correctly (the header names above are chosen to
+   match the built-in suggestion patterns), then "Validate mapping".
+4. Confirm the preview shows **1 new invoice** (only `INV-90001` is in
+   the file at this point if you import it first with only that row —
+   or, importing both at once, **2 new invoices**, 0 duplicates, 0
+   invalid rows, 0 unmatched customer codes), then tick the confirmation
+   checkbox and click "Confirm and import". Confirm the panel stays
+   visible with an "Importing..." label while the request is in flight
+   (this is the bug fixed this round — if it instead disappears
+   entirely, something has regressed).
+5. Open the resulting invoice(s) from the queue. Confirm `INV-90001`
+   shows **Authorized 20.0000 / Invoiced 12.0000 / Remaining 8.0000**,
+   order-line status **"Partially invoiced"**, match status **"Auto-
+   matched"** — and, once `INV-90002` is also imported, confirm its
+   detail page shows **Invoiced 20.0000 / Remaining 0.0000**, status
+   **"Fully invoiced"** (cumulative across both invoices, matching the
+   spec's own 20/12 then 20/8 worked examples).
+6. Re-import the same `test-invoice.csv` a second time. Confirm the
+   preview shows **0 new invoices, 2 duplicate invoices** and that
+   "Confirm and import" either shows "Nothing to import" or, if
+   submitted anyway, creates nothing new (check `/invoice-reconciliation`
+   — invoice count is unchanged).
+7. Create a second authorized order line for the **same** item code
+   `8104` and the same customer, then import a third invoice for a
+   partial quantity against it. Confirm it is **not** auto-matched (two
+   qualifying order lines now exist for that item code) — it should sit
+   `UNMATCHED` in the queue. Open it, use the **Match** action to choose
+   the correct order line by hand with a written explanation, confirm
+   it updates to "Manually matched," then use **Reopen** and confirm it
+   returns to `UNMATCHED`. Finally use **Cannot link** with an
+   explanation and confirm it resolves without ever auto-guessing.
+8. If signed in as a plain SALESPERSON, confirm none of the Match/
+   Cannot-link/Reopen/note controls appear on the detail page, and that
+   a direct `POST` to `/api/invoice-reconciliation/lines/<id>/match`
+   with that session's cookie returns `403`.
+9. Open **Reports** (`/invoice-reconciliation/reports`) and confirm the
+   stat tiles and the order-line/invoice tables reflect what you just
+   did.
+
+### 21a. Undoing this migration
+
+**This is destructive** — it drops the 3 new tables and the 3 new enum
+types. No existing enum was modified, so there's no "recreate the enum
+type" step needed. Back up first:
+
+```powershell
+pg_dump -Fc -d <your-database-name> -f backup-before-undo-milestone-5.dump
+```
+
+```sql
+ALTER TABLE "SapInvoiceLine" DROP CONSTRAINT "SapInvoiceLine_sapInvoiceId_fkey";
+ALTER TABLE "SapInvoiceLine" DROP CONSTRAINT "SapInvoiceLine_matchedOrderId_fkey";
+ALTER TABLE "SapInvoiceLine" DROP CONSTRAINT "SapInvoiceLine_matchedOrderLineId_fkey";
+ALTER TABLE "SapInvoiceLine" DROP CONSTRAINT "SapInvoiceLine_matchedById_fkey";
+ALTER TABLE "SapInvoice" DROP CONSTRAINT "SapInvoice_importBatchId_fkey";
+ALTER TABLE "SapInvoice" DROP CONSTRAINT "SapInvoice_matchedCustomerId_fkey";
+ALTER TABLE "SapInvoice" DROP CONSTRAINT "SapInvoice_matchedOrderId_fkey";
+ALTER TABLE "SapInvoiceImportBatch" DROP CONSTRAINT "SapInvoiceImportBatch_uploadedById_fkey";
+
+DROP TABLE "SapInvoiceLine";
+DROP TABLE "SapInvoice";
+DROP TABLE "SapInvoiceImportBatch";
+
+DROP TYPE "InvoiceReconciliationStatus";
+DROP TYPE "InvoiceLineMatchMethod";
+DROP TYPE "InvoiceLineMatchStatus";
+```
+
+Apply the reversible part the same way as previous rollbacks (`psql`, a
+GUI client, or `npx prisma db execute --file
+.\rollback-milestone-5.sql --schema prisma/schema.prisma`), then revert
+`prisma/schema.prisma` to remove the same changes and run `npx prisma
+generate` again. Also tell Prisma's migration history about the
+rollback:
+
+```powershell
+npx prisma migrate resolve --rolled-back 20261110190000_add_invoice_reconciliation
+```
