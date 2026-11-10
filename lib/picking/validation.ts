@@ -77,3 +77,47 @@ export function fullyAccountsFor(foundRaw: string, unavailableRaw: string, reque
   if (found === null || unavailable === null || requested === null) return false;
   return found + unavailable === requested;
 }
+
+/**
+ * Milestone 3 completion (Warehouse Assembly Form & Partial Availability).
+ *
+ * The one place "fully available / partially available / completely
+ * unavailable / not yet recorded" is decided, from a line's found
+ * quantity relative to its requested quantity -- the three outcomes the
+ * spec's section 3 requires every order line to be classifiable into,
+ * reused by both the /fulfilment review UI (picking-panel.tsx, so a
+ * salesperson can tell the three apart at a glance before authorizing)
+ * and anywhere else that ever needs the same classification, so there is
+ * exactly one definition of each term in this codebase.
+ *
+ * PENDING is deliberately a fourth, explicit case (not folded into one of
+ * the other three) for a line that hasn't been recorded yet at all --
+ * found/unavailable are nullable on PickingLine for exactly that reason
+ * (see that model's schema comment), and showing "Completely Unavailable"
+ * for a line nobody has looked at yet would be actively misleading.
+ *
+ * Classifies by the FOUND quantity alone (found === requested / found ===
+ * 0 / otherwise), not by also checking unavailable -- complete-picking.ts
+ * already guarantees found + unavailable === requested for every line of
+ * a COMPLETED session via fullyAccountsFor, so found alone is a complete
+ * and sufficient signal once a line has both quantities recorded; a line
+ * recorded only in IN_PROGRESS (not yet necessarily balanced) still gets
+ * an honest, literal classification of whatever found currently says.
+ */
+export type AvailabilityStatus = "FULLY_AVAILABLE" | "PARTIALLY_AVAILABLE" | "COMPLETELY_UNAVAILABLE" | "PENDING";
+
+export function classifyAvailability(
+  foundRaw: string | null,
+  unavailableRaw: string | null,
+  requestedRaw: string
+): AvailabilityStatus {
+  if (foundRaw === null || unavailableRaw === null) return "PENDING";
+
+  const found = parseScaledDecimal(foundRaw);
+  const requested = parseScaledDecimal(requestedRaw);
+  if (found === null || requested === null) return "PENDING";
+
+  if (found === requested) return "FULLY_AVAILABLE";
+  if (found === BigInt(0)) return "COMPLETELY_UNAVAILABLE";
+  return "PARTIALLY_AVAILABLE";
+}

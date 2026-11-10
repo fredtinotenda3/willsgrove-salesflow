@@ -34,8 +34,17 @@ import {
   Clock3,
   AlertTriangle,
   RotateCcw,
+  Printer,
 } from "lucide-react";
 import HandoverPanel from "./handover-panel";
+
+// Milestone 3 completion (Warehouse Assembly Form & Partial Availability).
+// Hidden only for a dead order -- nothing to assemble for one that's
+// cancelled or rejected. The assembly-form route itself also hard-404s
+// on these (and on DRAFT, which createOrder() never actually produces --
+// see lib/orders.ts), so a stale link can't bypass this either; this set
+// just controls whether the button appears at all.
+const NOT_ASSEMBLABLE_STATUSES = new Set(["CANCELLED", "REJECTED"]);
 
 // Same Cache Components escape hatch already used on the dashboard
 // (app/page.tsx) and for the same reason: this page reads the current
@@ -114,6 +123,25 @@ export default async function OrderDetailPage({ params }: RouteParams) {
             </div>
 
             <div className="flex items-start gap-3">
+              {/* Milestone 3 completion (Warehouse Assembly Form). Opens
+                  in a new tab -- a printable document, not a navigation
+                  away from the order. Visible once the order has lines
+                  and isn't cancelled/rejected; printing itself is never
+                  role-restricted (picking has no dedicated role either --
+                  see lib/picking/start-picking.ts's module comment) and
+                  has no side effect for any role to be restricted from. */}
+              {order.lines.length > 0 && !NOT_ASSEMBLABLE_STATUSES.has(order.status) && (
+                <Link
+                  href={`/orders/${order.id}/assembly-form`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-xs font-semibold text-gray-600 transition hover:bg-gray-50"
+                >
+                  <Printer size={14} />
+                  Print Warehouse Assembly Form
+                </Link>
+              )}
+
               {/* Milestone 2C: one-click re-order -- pre-fills a NEW
                   manual order with this order's lines/quantities for a
                   human to review and submit; nothing is created yet. */}

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Loader2, PlayCircle, CheckCircle2, ShieldCheck } from "lucide-react";
+import { classifyAvailability, type AvailabilityStatus } from "@/lib/picking/validation";
 
 /**
  * Milestone 3B (SAP Invoice Handover Specification -- warehouse
@@ -81,6 +82,22 @@ function formatDateTime(iso: string | null): string {
 function emptyInput(): LineInput {
   return { found: "", unavailable: "", notes: "" };
 }
+
+// Milestone 3 completion (Warehouse Assembly Form & Partial Availability).
+// The spec's section 5 requires every line to be clearly identifiable as
+// fully available, partially available, or completely unavailable once
+// findings are recorded -- this maps classifyAvailability's one shared
+// classification (lib/picking/validation.ts) to a label and color, read
+// directly off the SAVED session data (line.foundQuantity/
+// unavailableQuantity), never off an unsaved/in-progress input value, so
+// the badge never claims a status the server hasn't actually recorded
+// yet.
+const AVAILABILITY_BADGE: Record<AvailabilityStatus, { label: string; style: string }> = {
+  FULLY_AVAILABLE: { label: "Fully Available", style: "bg-emerald-50 text-emerald-700" },
+  PARTIALLY_AVAILABLE: { label: "Partially Available", style: "bg-amber-50 text-amber-700" },
+  COMPLETELY_UNAVAILABLE: { label: "Unavailable", style: "bg-red-50 text-red-700" },
+  PENDING: { label: "Not yet recorded", style: "bg-gray-100 text-gray-400" },
+};
 
 export default function PickingPanel({
   orderId,
@@ -355,6 +372,9 @@ export default function PickingPanel({
                 <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Found</th>
                 <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Unavailable</th>
                 <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Notes</th>
+                <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                  Availability
+                </th>
                 <th className="px-6 py-3" />
               </tr>
             </thead>
@@ -362,6 +382,12 @@ export default function PickingPanel({
               {session.lines.map((line) => {
                 const input = inputs[line.orderLineId] ?? emptyInput();
                 const error = lineErrors[line.orderLineId];
+                const availability = classifyAvailability(
+                  line.foundQuantity,
+                  line.unavailableQuantity,
+                  line.requestedQuantity
+                );
+                const badge = AVAILABILITY_BADGE[availability];
                 return (
                   <tr key={line.id} className="border-b border-gray-50">
                     <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-400">{line.lineNumber}</td>
@@ -398,6 +424,11 @@ export default function PickingPanel({
                         className="w-40 rounded-lg border border-gray-200 px-2 py-1.5 text-xs disabled:bg-gray-50 disabled:text-gray-400"
                         placeholder="Optional"
                       />
+                    </td>
+                    <td className="whitespace-nowrap px-6 py-4">
+                      <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${badge.style}`}>
+                        {badge.label}
+                      </span>
                     </td>
                     <td className="whitespace-nowrap px-6 py-4">
                       {!locked && (

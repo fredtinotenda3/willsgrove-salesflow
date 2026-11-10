@@ -176,6 +176,20 @@ export async function getOrderById(id: string) {
           lineTotal: true,
           verificationStatus: true,
           salesNotes: true,
+          // Milestone 3 completion (Warehouse Assembly Form). The
+          // assembly form (app/orders/[id]/assembly-form/page.tsx) needs
+          // the CURRENT live SAP item code/description, same three-way
+          // preference (live product > sapItemCodeSnapshot > neither) as
+          // lib/handover/build-handover-rows.ts already uses for the
+          // invoice handover -- see lib/assembly-form/resolve-line.ts.
+          // Added here, to the one existing order-detail query, rather
+          // than a second near-duplicate query against CustomerOrder,
+          // per the "reuse existing functionality" instruction: additive
+          // only (new fields, nothing removed/renamed), so the two other
+          // callers of getOrderById (app/orders/[id]/page.tsx,
+          // app/fulfilment/[id]/page.tsx, app/api/orders/[id]/route.ts)
+          // are unaffected.
+          product: { select: { sapItemCode: true, itemName: true } },
         },
       },
       documents: {
@@ -249,6 +263,13 @@ export async function getOrderById(id: string) {
       lineTotal: line.lineTotal?.toString() ?? null,
       verificationStatus: line.verificationStatus,
       salesNotes: line.salesNotes,
+      // Milestone 3 completion. Null when this line's product has since
+      // been removed from the catalogue (onDelete: SetNull) or never
+      // matched one at all -- lib/assembly-form/resolve-line.ts falls
+      // back to sapItemCodeSnapshot/originalProductDescription for
+      // those cases, same as the handover already does.
+      productSapItemCode: line.product?.sapItemCode ?? null,
+      officialProductDescription: line.product?.itemName ?? null,
     })),
     documents: order.documents.map((doc) => ({
       id: doc.id,

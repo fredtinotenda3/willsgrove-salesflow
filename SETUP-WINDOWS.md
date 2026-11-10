@@ -1280,3 +1280,66 @@ further rounds, so it was never built (per this project's "don't build
 speculatively" rule) and is now formally recorded as a known limitation
 rather than a bug. If you want it, it's a small, isolated addition --
 just ask for it in a future round.
+
+## 19. Milestone 3 completion: Warehouse Assembly Form & Partial Availability
+
+No schema change this round, so nothing to migrate. Just run the full
+suite, which now also covers the two new pure modules and the new
+assembly-form data path:
+
+```powershell
+npx tsc --noEmit
+npm run lint
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+npm run build
+```
+
+New/changed test files this round: `tests/picking-validation.test.ts`
+(6 new tests), `tests/assembly-form-resolve-line.test.ts` (new, 4
+tests), `tests/assembly-form-db.integration.test.ts` (new, 2 gated
+tests), `tests/handover-db.integration.test.ts` (1 test added). All
+DB-gated tests only run with `RUN_DB_INTEGRATION_TESTS=1` set and a
+seeded database, same as every prior round.
+
+### Manual test script (via the UI)
+
+1. Open any confirmed order on `/orders/[id]` (any status other than
+   Cancelled/Rejected) and confirm a **"Print Warehouse Assembly Form"**
+   button appears near "Repeat this order."
+2. Click it -- it opens `/orders/<ORDER_ID>/assembly-form` in a new tab.
+   Confirm the page shows:
+   - Willsgrove's name and address at the top, with "Warehouse Assembly
+     Form" and "Not an invoice or SAP handover document" clearly
+     labelled -- it should look nothing like the Excel handover.
+   - Customer name, Customer PO Number, the order's own SalesFlow
+     reference, and order date.
+   - One table row per order line, with an SAP item code and official
+     description where one resolves, and the customer's requested
+     quantity and unit.
+   - The **Qty Found** and **Qty Unavailable** columns are completely
+     blank -- not pre-filled with anything, even if this order already
+     has picking history.
+   - Assembler Name / Date / Signature blanks and a Remarks box at the
+     bottom.
+3. Click **Print** (top right) and confirm, in the print preview, that
+   the Print/Back buttons disappear from the page (`print:hidden`) and
+   the layout fits cleanly on an A4 page.
+4. Confirm printing/viewing this page did **not** start picking: go to
+   `/fulfilment/<ORDER_ID>` immediately after and confirm it still shows
+   "Start picking" (no session exists), not an in-progress one. Reload
+   `/orders/[id]` and confirm its status badge hasn't changed either.
+5. Now actually start picking on `/fulfilment/<ORDER_ID>` and record a
+   **mixed** set of findings across at least three lines: one fully
+   available (found = requested), one partially available (found some
+   but not all), one completely unavailable (found = 0). Confirm the new
+   **Availability** column shows "Fully Available" (green), "Partially
+   Available" (amber), and "Unavailable" (red) respectively for those
+   three lines, and "Not yet recorded" (gray) for any line you haven't
+   saved a value for yet.
+6. Complete and authorize picking, then generate an SAP Invoice Handover
+   on `/orders/[id]` as in §17's script -- confirm the completely-
+   unavailable line from step 5 does not appear anywhere in the
+   generated Excel/CSV, and the partially-available line shows only the
+   quantity actually found, not what was originally requested.

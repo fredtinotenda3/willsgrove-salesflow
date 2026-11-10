@@ -2231,3 +2231,264 @@ status table, which this round also updates. The one open design
 question (session abandon/cancel) is formally recorded above as a known,
 accepted limitation of this milestone as shipped, not a loose end that
 silently vanished.
+
+## Milestone 3 completion — Warehouse Assembly Form & Partial Availability
+
+A follow-on completion/correction stage for Milestone 3, requested after
+3D, against a fuller written specification than this session had in
+context when 3A–3D were built (that spec's literal text wasn't available
+either, same honesty note as 3C's — see that section). Per that
+specification's own "Implementation Boundaries": inspected 3A–3D
+together first, identified what was already correct, and built only
+what was genuinely missing. That audit's conclusion, in short: **the
+hardest part — partial availability itself — was already fully and
+correctly built in 3A/3C.** What was actually missing was (1) the
+physical Warehouse Assembly Form print action, and (2) making the
+three-way availability classification visible, in so many words, in the
+`/fulfilment` review UI. Nothing here is a new architecture; it's one
+new printable page and one new column.
+
+### What this round found was already correct (not rebuilt)
+
+- **Partial availability itself** — `PickingLine.foundQuantity` /
+  `unavailableQuantity` (Milestone 3A) already supports any split, not a
+  binary available/unavailable flag. Nothing to change.
+- **Quantity validation rules** (the spec's section 4, verbatim) — all
+  already enforced, before this round touched anything:
+  - Found/unavailable cannot be negative: `decimalStringSchema`'s regex
+    (`^\d+(\.\d{1,4})?$`) accepts no sign at all.
+  - Neither can exceed requested: `exceedsRequested()`, checked on every
+    `recordPickedLine` call.
+  - Found + unavailable must exactly equal requested before completion:
+    `fullyAccountsFor()`, checked by `completePickingSession`.
+  - Decimal support, no silent rounding: everything is `Decimal(18,4)`
+    end to end, compared as exact scaled integers
+    (`parseScaledDecimal`), never as floating-point.
+  - Original requested quantity preserved permanently: `PickingLine.
+    requestedQuantity` is a snapshot column; nothing in the picking
+    lifecycle ever writes back to `OrderLine.requestedQuantity`. (This
+    round adds an explicit test asserting this directly — see below —
+    rather than leaving it as an architectural inference.)
+- **SAP Invoice Handover with partial availability** (the spec's section
+  6, verbatim, including its own worked example) — `build-handover-
+  rows.ts` (3C) already sources the *found* quantity only, already
+  excludes a 100%-unavailable line entirely (counted in
+  `omittedLineCount`, never silently dropped), and already preserves the
+  original requested/unavailable quantities on the `PickingLine` row the
+  handover was sourced from. Re-verified against the spec's own "Example
+  D" table line by line (see the new test below) rather than taken on
+  faith.
+- **Verification/authorization as separate, role-gated steps** — already
+  exactly two steps (`completePickingSession` / `authorizePickingSession`),
+  already role-gated to `SALES_MANAGER`/`ADMINISTRATOR` for authorization
+  only, at the API route (not duplicated here).
+- **Audit trail & re-picking** — already captures who recorded findings,
+  who authorized, and when, on every transition; re-picking already
+  starts a brand-new `PickingSession` rather than mutating an authorized
+  one, preserving full history. Already tested (`tests/picking-
+  db.integration.test.ts`'s "allows starting a brand-new session...
+  preserving its history").
+
+### What this round actually built
+
+1. **`classifyAvailability()`** (`lib/picking/validation.ts`) — the one
+   place "Fully Available / Partially Available / Completely
+   Unavailable / not yet recorded" is decided, from `foundQuantity`
+   relative to `requestedQuantity`. A pure function (no `@prisma/client`
+   import, same convention as this file's existing `exceedsRequested`/
+   `fullyAccountsFor`), so it's safe to import from both a Server
+   Component and (as done here) a Client Component directly, and is
+   unit-tested exactly like its neighbors. `PENDING` is a deliberate
+   fourth case for a line that hasn't been recorded yet at all (`found`/
+   `unavailable` are nullable for exactly that reason) — showing
+   "Completely Unavailable" for an un-picked line would be actively
+   misleading.
+2. **An "Availability" column on `/fulfilment/[id]`'s picking table**
+   (`picking-panel.tsx`) — a colored badge per line (green/amber/red/
+   gray) computed from the session's own saved `foundQuantity`/
+   `unavailableQuantity` (never from an unsaved, in-progress input
+   value), satisfying the spec's section 5 requirement that a
+   salesperson can "clearly identify fully available, partially
+   available and completely unavailable lines" before authorizing.
+3. **The Warehouse Assembly Form** — the genuinely new feature:
+   - **"Print Warehouse Assembly Form"** button on `/orders/[id]`
+     (`app/orders/[id]/page.tsx`), opening `/orders/[id]/assembly-form`
+     in a new tab. Visible once the order has at least one line and
+     isn't `CANCELLED`/`REJECTED`; never role-restricted (same "no
+     dedicated role" convention picking itself already follows — see
+     `start-picking.ts`'s module comment — and printing has no side
+     effect for any role to be restricted from in the first place).
+   - **`app/orders/[id]/assembly-form/page.tsx`** — a clean, printer-
+     friendly, server-rendered page containing exactly the spec's
+     required fields: company identification (`lib/company-info.ts`,
+     mirroring the business identity already shown in Settings — not
+     invented fresh), customer name, customer PO number, SalesFlow order
+     reference, order date, and a table of SAP item code / official SAP
+     product description / customer-requested quantity / unit, with
+     **blank** Found and Unavailable columns for the assembler to fill
+     in by hand, plus assembler name/date/signature fields and a remarks
+     box. Deliberately distinct from the SAP Invoice Handover in look
+     and content (no Handover Reference, no pricing, a title that says
+     plainly "Not an invoice or SAP handover document") so the two can
+     never be confused, per the spec's explicit requirement.
+   - **Zero writes, structurally, not just by convention** — this page
+     never queries `PickingSession` at all, never calls any
+     `lib/picking/*` function, and never touches `OrderStatusHistory`/
+     `AuditEvent`. Reusing the exact `getOrderById` query the order
+     detail page itself already uses (extended additively, see below)
+     makes "printing cannot start or complete picking, authorize
+     anything, or create a picking session" a structural guarantee: the
+     only database read this route performs is one that was already
+     proven, by three other pages, to have no side effects. A `/orders/
+     [id]/assembly-form` link also hard-404s for a `CANCELLED`/
+     `REJECTED` order or a non-existent one, so a stale/old link can't
+     be used to print a dead order's form after the button itself is
+     hidden.
+   - **`lib/order-queries.ts`'s `getOrderById`** — extended additively
+     (new fields only; nothing removed or renamed) with each line's live
+     `product.sapItemCode`/`itemName`, the same official-SAP-description
+     data the handover already resolves, rather than writing a second,
+     near-duplicate order query just for this one new page. All three
+     existing callers (`app/orders/[id]/page.tsx`, `app/fulfilment/[id]/
+     page.tsx`, `app/api/orders/[id]/route.ts`) are unaffected, since
+     none of them reference the new fields.
+   - **`lib/assembly-form/resolve-line.ts`** — a small, pure, unit-
+     tested function resolving each line's SAP item code/description
+     with the same three-way priority (live product → order-time
+     snapshot → the customer's own original wording) `build-handover-
+     rows.ts` already established for the invoice handover. Written as
+     its own function rather than extracted out of `build-handover-
+     rows.ts` into a shared one: deliberately, to avoid touching an
+     already-shipped, already-tested 3C file whose behavior this
+     sandbox cannot re-verify end-to-end against a real database this
+     round — same "mirror the convention, don't force a shared
+     abstraction across two genuinely different call sites" choice
+     `picking-panel.tsx`'s own `DECIMAL_PATTERN` comment already made for
+     an analogous situation.
+
+### Explicitly not touched, and why
+
+- **No schema change, no new migration.** Every field this round needed
+  (`PickingLine.foundQuantity`/`unavailableQuantity`, `Product.sapItemCode`/
+  `itemName`) already existed. Adding a "this form was printed" audit
+  row was considered and deliberately rejected: the spec doesn't ask for
+  one, this project's other read-only pages (e.g. `/orders/[id]` itself)
+  don't write an audit event just for being viewed either, and a
+  page-render is only a weak proxy for "a human actually printed this"
+  in the first place.
+- **No new role.** The spec explicitly says not to introduce a warehouse
+  user role, and nothing here needed one — assemblers never log into
+  SalesFlow at all, exactly as the spec's section 2 states; printing and
+  recording findings both stay with the salesperson, as already built.
+- **`lib/handover/build-handover-rows.ts` is untouched.** Re-verified
+  (not re-built) against the spec's own worked example — see the new
+  Example D test below.
+
+### Tests added
+
+- `tests/picking-validation.test.ts` — 6 new unconditional tests for
+  `classifyAvailability`, directly against the spec's own Examples A/B/C,
+  the `PENDING` case, sub-unit decimal precision, and malformed input.
+- `tests/assembly-form-resolve-line.test.ts` (new) — 4 unconditional
+  tests for `resolveAssemblyFormLine`'s three-way fallback (live match /
+  snapshot-only / no match at all) and pass-through fields.
+- `tests/assembly-form-db.integration.test.ts` (new, 2 gated tests) —
+  against a real database: `getOrderById`'s new fields resolve correctly
+  for all three match states, **and** — the spec's explicit requirement
+  — calling the exact read the assembly-form page performs, repeatedly,
+  creates zero `PickingSession` rows and leaves the order's status
+  untouched.
+- `tests/handover-db.integration.test.ts` — 1 new gated test
+  reproducing the spec's own "Example D" (five cake products, mixed
+  fully/partially/completely-unavailable outcomes) verbatim, asserting:
+  the three-way classification matches the spec's own "Result" column
+  for all five lines; the handover's rows match the spec's section 6
+  expected table exactly (`10`, `5`, `8` — the two zero-found lines
+  excluded); and, explicitly, that `OrderLine.requestedQuantity` for
+  every line is byte-identical before and after the full pick/authorize
+  cycle.
+
+This directly covers requirement items 1–5, 11–13 (mixed availability,
+decimal precision, negative/exceeds/mismatch rejection — all already
+covered by this file's pre-existing tests, re-confirmed above rather
+than re-tested) and 14–15 (assembly form data correctness, zero side
+effects) from the completion spec's required-testing list. Items 7–10
+and 16 (negative/exceeds rejection, found+unavailable mismatch,
+role restriction, audit/re-pick history) were already covered before
+this round and are unchanged; role restriction specifically remains
+tested only at the documented boundary this project has used since 3A
+— enforced at the API route, and route handlers aren't unit-tested
+anywhere in this codebase (a pre-existing, documented scope boundary,
+not something this round introduced or widened).
+
+### Build / lint / typecheck / test results — reported honestly
+
+- `npm run lint` — **clean**, zero errors/warnings across every new and
+  changed file.
+- `npx tsc --noEmit` — **130 errors** (up from 3D's 125; **+5** as
+  measured in this sandbox). Verified file by file rather than taken on
+  faith: the two brand-new pure modules (`lib/company-info.ts`,
+  `lib/assembly-form/resolve-line.ts`) and the changed `picking-
+  panel.tsx`/`lib/picking/validation.ts` contribute **zero** errors
+  between them. Exactly 3 errors are genuinely new occurrences — 2 in
+  the new `app/orders/[id]/assembly-form/page.tsx`, 1 in the new
+  `tests/assembly-form-db.integration.test.ts` — and all 3 are the same
+  pre-existing `TS7006` "implicitly has an `any` type" bucket on a
+  `.map()` callback whose array comes from `getOrderById`'s Prisma-
+  stub-degraded inferred type, documented since Milestone 2B. The
+  remaining apparent "new" errors (4 in `app/orders/[id]/page.tsx`, at
+  lines 225/314/364/364; several in `lib/order-queries.ts`) are the
+  *same* pre-existing errors at **shifted line numbers** — confirmed by
+  checking that every one of my edits to those two files only ever
+  inserts code *above* the lines now reported, and that the exact
+  `.map()` calls now flagged already existed, unedited by this round, at
+  their original locations. **No new error category anywhere.**
+- `npx vitest run` — **232 passed, 28 skipped** (up from 222 passed/25
+  skipped at the end of 3D). +10 unconditional (6 `classifyAvailability`
+  + 4 `resolveAssemblyFormLine` tests, all passing), +3 gated (1 added to
+  `handover-db.integration.test.ts`, 2 in the new `assembly-form-
+  db.integration.test.ts`). Zero failures, zero regressions.
+- `npm run build` — same result as every prior round: Turbopack's
+  bundling stage completes, then the build hits this sandbox's
+  pre-existing Google Fonts network block (confirmed unrelated to this
+  round's code — the font import lives in `app/layout.tsx`, untouched).
+- `npx prisma validate` — attempted; fails in this sandbox for the same
+  pre-existing reason as every prior attempt (no `DATABASE_URL`
+  configured here). No schema change this round means nothing new was
+  actually at risk from skipping it.
+- **The one thing this sandbox genuinely cannot confirm**: that the 3
+  new gated tests (1 Example D test, 2 assembly-form tests) actually
+  pass against a real database. They're written, they type-check, lint
+  is clean, and they follow this project's own established DB-
+  integration-test conventions exactly — but **run
+  `RUN_DB_INTEGRATION_TESTS=1 npm test` for real** before treating this
+  as verified, same as every gated test in this project.
+
+### Workflow confirmation
+
+The complete workflow the completion spec asks about, end to end:
+
+**Customer PO Creation → Open Customer PO → Print Warehouse Assembly
+Form → Physical Warehouse Assembly → Assemblers Return Form →
+Salesperson Records Findings in Fulfilment → Verification → Authorization
+→ SAP Invoice Handover.**
+
+**Implemented: yes, all eight steps.** PO creation and opening the order
+detail page predate this round (Milestone 0/2); printing the assembly
+form is this round's new work; the physical assembly and the assemblers
+returning the form are, by the spec's own design, outside SalesFlow
+entirely (no software step to build); recording findings, verification,
+authorization, and the SAP Invoice Handover were already built in 3A/3C
+and re-verified, not rebuilt, this round.
+
+**Tested: the software steps, yes — with the one honest caveat already
+stated above.** Every step that is software (recording findings through
+to the handover) has direct, passing test coverage, re-confirmed against
+the spec's own worked example this round. The two steps that are
+printing a physical document and a human assembler checking stock
+against it cannot be "tested" by an automated suite in the way the other
+steps can; what this round verified instead is that printing is side-
+effect-free (by test, against a real database) and that the printed
+form's data is correct (by test, against a real database) — the
+strongest form of verification available for a feature whose actual
+output is a piece of paper.

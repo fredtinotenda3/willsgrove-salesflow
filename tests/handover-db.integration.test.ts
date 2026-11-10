@@ -496,4 +496,109 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 3C: handover generation (a
     // No file is ever stored for CLIPBOARD -- no download link either.
     expect(clipboardEntry!.downloadUrl).toBeNull();
   });
+
+  /**
+   * Milestone 3 completion (Warehouse Assembly Form & Partial
+   * Availability). Reproduces the spec's own section 3 "Example D"
+   * worked example verbatim -- five cake products, mixed fully/
+   * partially/completely-unavailable outcomes on the same order -- and
+   * asserts the exact invoiceable-quantity table the spec's section 6
+   * gives for it. This is the one test that exercises mixed availability
+   * (requirement 4), the handover's found-quantity-only sourcing
+   * (requirement 11), exclusion of fully-unavailable lines (requirement
+   * 12), AND -- new here -- an explicit assertion that the original
+   * OrderLine.requestedQuantity rows are never touched by picking at all
+   * (requirement 13: "preserve the original customer-requested
+   * quantities"), all in one place, matching the spec literally rather
+   * than via five separate ad hoc tests.
+   */
+  it("Example D (spec section 3/6): five lines, mixed availability, matches the spec's exact expected invoice table and preserves original requested quantities", async () => {
+    if (skipAll) return;
+    const { prisma } = await import("@/lib/prisma");
+    const { generateOrderReference } = await import("@/lib/orders");
+    const { buildHandoverRows } = await import("@/lib/handover/build-handover-rows");
+    const { classifyAvailability } = await import("@/lib/picking/validation");
+
+    const exampleDOrder = await prisma.customerOrder.create({
+      data: {
+        reference: generateOrderReference(),
+        customerId,
+        createdById: adminId,
+        source: "MANUAL",
+        status: "RECEIVED",
+        orderDate: new Date("2026-11-01T00:00:00.000Z"),
+        currency: "USD",
+        receivedAt: new Date(),
+        isDemo: true,
+        lines: {
+          create: [
+            { lineNumber: 1, originalProductDescription: `10 Inch Blackforest Cake ${uniqueSuffix}`, productId: productAId, requestedQuantity: "10.0000", requestedUnitCode: "EA", isDemo: true },
+            { lineNumber: 2, originalProductDescription: `10 Inch Chocolate Cake ${uniqueSuffix}`, productId: productAId, requestedQuantity: "15.0000", requestedUnitCode: "EA", isDemo: true },
+            { lineNumber: 3, originalProductDescription: `10 Inch Strawberry Cake ${uniqueSuffix}`, productId: productAId, requestedQuantity: "12.0000", requestedUnitCode: "EA", isDemo: true },
+            { lineNumber: 4, originalProductDescription: `10 Inch Vanilla Cake ${uniqueSuffix}`, productId: productAId, requestedQuantity: "8.0000", requestedUnitCode: "EA", isDemo: true },
+            { lineNumber: 5, originalProductDescription: `12 Inch Blackforest Cake ${uniqueSuffix}`, productId: productAId, requestedQuantity: "6.0000", requestedUnitCode: "EA", isDemo: true },
+          ],
+        },
+      },
+      select: { id: true },
+    });
+    createdOrderIds.push(exampleDOrder.id);
+    const orderId = exampleDOrder.id;
+
+    const originalRequestedQuantities = await prisma.orderLine.findMany({
+      where: { orderId },
+      orderBy: { lineNumber: "asc" },
+      select: { lineNumber: true, requestedQuantity: true },
+    });
+
+    // The spec's exact warehouse report for Example D.
+    const EXAMPLE_D_PICKS = {
+      1: { found: "10.0000", unavailable: "0.0000" }, // fully available
+      2: { found: "0.0000", unavailable: "15.0000" }, // unavailable
+      3: { found: "5.0000", unavailable: "7.0000" }, // partially available
+      4: { found: "8.0000", unavailable: "0.0000" }, // fully available
+      5: { found: "0.0000", unavailable: "6.0000" }, // unavailable
+    };
+
+    await pickAndAuthorizeFully(orderId, EXAMPLE_D_PICKS);
+
+    // Requirement 13: original OrderLine.requestedQuantity rows must be
+    // byte-identical to what was submitted -- picking records its own
+    // found/unavailable split on a separate PickingLine row entirely
+    // (see that model's schema comment); it never writes back to
+    // OrderLine at all.
+    const afterPickingRequestedQuantities = await prisma.orderLine.findMany({
+      where: { orderId },
+      orderBy: { lineNumber: "asc" },
+      select: { lineNumber: true, requestedQuantity: true },
+    });
+    expect(afterPickingRequestedQuantities.map((l) => l.requestedQuantity.toString())).toEqual(
+      originalRequestedQuantities.map((l) => l.requestedQuantity.toString())
+    );
+
+    // Requirement 5: the three-way classification matches the spec's
+    // own "Result" column exactly for every one of the five lines.
+    expect(classifyAvailability("10.0000", "0.0000", "10.0000")).toBe("FULLY_AVAILABLE"); // Blackforest 10"
+    expect(classifyAvailability("0.0000", "15.0000", "15.0000")).toBe("COMPLETELY_UNAVAILABLE"); // Chocolate
+    expect(classifyAvailability("5.0000", "7.0000", "12.0000")).toBe("PARTIALLY_AVAILABLE"); // Strawberry
+    expect(classifyAvailability("8.0000", "0.0000", "8.0000")).toBe("FULLY_AVAILABLE"); // Vanilla
+    expect(classifyAvailability("0.0000", "6.0000", "6.0000")).toBe("COMPLETELY_UNAVAILABLE"); // Blackforest 12"
+
+    // Requirements 4/11/12: the spec's section 6 expected handover --
+    // Blackforest 10" (10), Strawberry (5, partial -- found only, not the
+    // requested 12), Vanilla (8); Chocolate and 12" Blackforest excluded
+    // entirely because their found quantity is zero.
+    const built = await buildHandoverRows(orderId);
+    expect(built.ok).toBe(true);
+    if (!built.ok) throw new Error(built.message);
+
+    expect(built.omittedLineCount).toBe(2);
+    expect(built.rows.map((row) => ({ lineNumber: row.lineNumber, quantity: row.quantity }))).toEqual([
+      { lineNumber: 1, quantity: "10.0000" },
+      { lineNumber: 3, quantity: "5.0000" },
+      { lineNumber: 4, quantity: "8.0000" },
+    ]);
+    expect(built.rows.some((row) => row.lineNumber === 2)).toBe(false);
+    expect(built.rows.some((row) => row.lineNumber === 5)).toBe(false);
+  });
 });

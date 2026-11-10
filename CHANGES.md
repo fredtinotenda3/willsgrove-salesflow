@@ -1765,3 +1765,49 @@ master 0-3D status table, now fully ✅ for Milestone 3.
 | `docs/milestones/PROGRESS.md` | Modified | Added the Milestone 3D section: the coverage gap found and closed, the doc-consistency re-check (no drift found), honest verification results, and the formal write-up of session abandon/cancel as a known limitation rather than a silently-dropped item. |
 | `CHANGES.md` | Modified | This section. |
 | `SETUP-WINDOWS.md` | Modified | Added §18 -- how to run the two new/changed test files, and a short note consolidating "what Milestone 3 actually ships with" (and what it deliberately doesn't -- session abandon/cancel). |
+
+# Milestone 3 completion — Changes (Warehouse Assembly Form & Partial Availability)
+
+A follow-on completion/correction stage for Milestone 3, against a
+fuller written specification. Audited 3A–3D first per that spec's own
+instruction; partial availability, quantity validation, and handover
+sourcing were already fully correct (nothing listed here touches them).
+No files were deleted, no schema change, no new migration. See
+`docs/milestones/PROGRESS.md`'s "Milestone 3 completion" section for the
+full audit findings, design rationale, and honest verification results.
+
+## `lib/` (new + modified)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/picking/validation.ts` | Modified | Added `classifyAvailability()` and its `AvailabilityStatus` type -- the one shared definition of Fully/Partially/Completely-Unavailable/Pending, reused by the `/fulfilment` UI. Still a pure function, no `@prisma/client` import. |
+| `lib/order-queries.ts` | Modified | `getOrderById`'s per-line select gains `product.sapItemCode`/`itemName`; the returned line objects gain `productSapItemCode`/`officialProductDescription`. Purely additive -- the three existing callers are unaffected. |
+| `lib/company-info.ts` | Added | Willsgrove's name/address/tagline for a document meant to be printed on paper, mirroring `app/settings/page.tsx`'s existing (mocked) workspace identity rather than inventing new values. |
+| `lib/assembly-form/resolve-line.ts` | Added | Pure three-way SAP item code/description fallback for the printed form (live product → order-time snapshot → customer's own wording) -- mirrors, rather than shares, `build-handover-rows.ts`'s equivalent logic, since that file reads from a `PickingLine`, not a plain `OrderLine`, and this round didn't want to risk modifying an already-shipped, already-tested 3C file this sandbox can't re-verify end to end. |
+
+## UI
+
+| File | Change | Reason |
+|---|---|---|
+| `app/orders/[id]/assembly-form/page.tsx` | Added | The printable Warehouse Assembly Form itself -- company ID, customer/PO/order-reference/date, a 7-column product table (SAP code, official description, requested qty, unit, blank Found, blank Unavailable) built from `getOrderById` + `resolveAssemblyFormLine`, assembler name/date/signature fields, a remarks box. Performs zero writes of any kind -- no `PickingSession` query, no mutation -- so "printing can't start picking" is structural, not just a convention. 404s for a non-existent, cancelled, or rejected order, or one with no lines. |
+| `app/orders/[id]/assembly-form/print-button.tsx` | Added | The one Client Component the printable page needs -- `window.print()` has no server equivalent. `print:hidden` so the Print/Back bar never appears in the printed output itself. |
+| `app/orders/[id]/page.tsx` | Modified | Adds a "Print Warehouse Assembly Form" link (opens the new route in a new tab), visible once the order has lines and isn't cancelled/rejected. |
+| `app/fulfilment/[id]/picking-panel.tsx` | Modified | Adds an "Availability" column -- a colored badge per line from `classifyAvailability()`, computed off the session's own saved quantities (never an unsaved input value). |
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/picking-validation.test.ts` | Modified | +6 unconditional tests for `classifyAvailability` -- the spec's own Examples A/B/C, the `PENDING` case, decimal precision, malformed input. |
+| `tests/assembly-form-resolve-line.test.ts` | Added | 4 unconditional tests for `resolveAssemblyFormLine`'s three-way fallback. |
+| `tests/assembly-form-db.integration.test.ts` | Added | 2 gated tests: `getOrderById`'s new fields resolve correctly against a real DB for all three match states; reading the assembly-form data repeatedly creates zero `PickingSession` rows and never changes the order's status. |
+| `tests/handover-db.integration.test.ts` | Modified | +1 gated test reproducing the spec's "Example D" verbatim (five lines, mixed availability) -- classification, handover's exact expected quantities (`10`/`5`/`8`, two lines excluded), and an explicit assertion that `OrderLine.requestedQuantity` is unchanged by picking. |
+
+## Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/ROADMAP.md` | Modified | Added the "3+" completion row and its change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the "Milestone 3 completion" section: what was audited and found already correct, what was actually built and why, what was deliberately not touched, honest verification results, and the explicit end-to-end workflow confirmation the completion spec asks for. |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §19 -- how to run the new/changed test files, and a manual browser script for printing the assembly form and confirming the new Availability badges on `/fulfilment`. |

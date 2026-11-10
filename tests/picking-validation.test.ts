@@ -5,6 +5,7 @@ import {
   parseScaledDecimal,
   exceedsRequested,
   fullyAccountsFor,
+  classifyAvailability,
 } from "@/lib/picking/validation";
 
 /**
@@ -101,5 +102,42 @@ describe("fullyAccountsFor", () => {
   it("holds exactly at sub-unit precision with no rounding error", () => {
     expect(fullyAccountsFor("0.1", "0.2", "0.3")).toBe(true);
     expect(fullyAccountsFor("0.1", "0.2", "0.3001")).toBe(false);
+  });
+});
+
+/**
+ * Milestone 3 completion (Warehouse Assembly Form & Partial Availability).
+ * Exercises the spec's three outcomes with its own worked examples
+ * (section 3, Examples A/B/C) plus the fourth, explicit "not recorded
+ * yet" case this codebase's PickingLine.foundQuantity/unavailableQuantity
+ * nullability requires.
+ */
+describe("classifyAvailability", () => {
+  it("Example A -- fully available: requested 20, found 20, unavailable 0", () => {
+    expect(classifyAvailability("20", "0", "20")).toBe("FULLY_AVAILABLE");
+  });
+
+  it("Example B -- partially available: requested 20, found 12, unavailable 8", () => {
+    expect(classifyAvailability("12", "8", "20")).toBe("PARTIALLY_AVAILABLE");
+  });
+
+  it("Example C -- completely unavailable: requested 20, found 0, unavailable 20", () => {
+    expect(classifyAvailability("0", "20", "20")).toBe("COMPLETELY_UNAVAILABLE");
+  });
+
+  it("is PENDING when either quantity hasn't been recorded yet", () => {
+    expect(classifyAvailability(null, null, "20")).toBe("PENDING");
+    expect(classifyAvailability("5", null, "20")).toBe("PENDING");
+    expect(classifyAvailability(null, "5", "20")).toBe("PENDING");
+  });
+
+  it("holds at sub-unit decimal precision, matching fullyAccountsFor's own precision guarantee", () => {
+    expect(classifyAvailability("0.3", "0", "0.3")).toBe("FULLY_AVAILABLE");
+    expect(classifyAvailability("0.1", "0.2", "0.3")).toBe("PARTIALLY_AVAILABLE");
+    expect(classifyAvailability("0", "0.3", "0.3")).toBe("COMPLETELY_UNAVAILABLE");
+  });
+
+  it("is PENDING (never a false classification) for malformed input", () => {
+    expect(classifyAvailability("not-a-number", "0", "20")).toBe("PENDING");
   });
 });
