@@ -2300,3 +2300,97 @@ the full design rationale and honest verification results.
 | `CHANGES.md` | Modified | This section. |
 | `SETUP-WINDOWS.md` | Modified | Added §25 — apply the new migration, regenerate the Prisma client, run the new gated test file, and a manual test script walking through policy creation, a quotation-discount approval request, decision, and the notification bell. |
 | `MILESTONE-8-DELIVERY-REPORT.md` | Added | The spec-structured delivery report: architecture, models/migrations, policy/default rules, workflows affected, role/permission matrix, API routes, UI pages, audit/notification behaviour, tests + results, known limitations (including the Customer-PO/order non-enforcement decision), exact Windows PowerShell commands. |
+
+## Milestone 9 — SAP Business One Integration
+
+Built from your attached full specification (25 numbered sections) in
+one pass, delivered silently per your "return only a zip" instruction.
+Only quotation-converted orders are SAP-submission-eligible — by
+explicit, documented scope decision, not an oversight. No real SAP
+credentials, endpoint, or company database were ever guessed or used.
+See `docs/milestones/PROGRESS.md`'s Milestone 9 section for the full
+design rationale and honest verification results.
+
+## Schema / migration
+
+| File | Change | Reason |
+|---|---|---|
+| `prisma/schema.prisma` | Modified | 7 new enums (`IntegrationProvider`, `IntegrationMode`, `IntegrationSyncJobType`, `IntegrationSyncJobStatus`, `IntegrationTrigger`, `IntegrationOperationType`, `IntegrationOperationStatus`, `IntegrationErrorCategory`), 3 new models (`IntegrationConnection`, `IntegrationSyncJob`, `IntegrationOperation`), and new inverse-relation fields on `User`/`CustomerOrder`. No existing column changed type or became non-nullable. |
+| `prisma/migrations/20261111200000_add_sap_integration/migration.sql` | Added | Hand-authored (this sandbox cannot run `prisma migrate dev`), matching the schema exactly: 8 enum types, 3 `CREATE TABLE`s, their indexes and foreign keys (`Restrict` on `IntegrationOperation.syncJobId`/`customerOrderId` and `IntegrationConnection.updatedById`/`IntegrationSyncJob.triggeredById`). No existing table/column/enum value removed or changed. |
+
+## `lib/integrations/sap/` (new module)
+
+| File | Change | Reason |
+|---|---|---|
+| `types.ts` | Added | The `SapAdapter` contract every business module depends on exclusively; `SapAdapterError` with per-category default retryability. No `@prisma/client` import. |
+| `config.ts` | Added | `server-only`. The three-gate deployment-mode/credential resolution (`getSapDeploymentMode`, `resolveSapLiveCredentials`, `canUseLiveSapAdapter`), `sanitizeSapErrorMessage` (credential/Authorization-header/Bearer-token redaction before any error is stored or shown). |
+| `connection.ts` | Added | `server-only`, DB: singleton-per-provider `IntegrationConnection` CRUD (`getOrCreateConnection`, `updateConnection` — audited, `recordConnectionTestResult`, `recordConnectionHealthCheck`). |
+| `idempotency.ts` | Added | Pure: `buildSapSalesOrderIdempotencyKey`, mirroring `lib/quotations/convert-to-order.ts`'s own deterministic-key convention. |
+| `mock-adapter.ts` | Added | Deterministic `MockSapAdapter` — fixed fixture catalogue, idempotent `createSalesOrder`, three documented simulation sentinels for the NETWORK_UNAVAILABLE / lost-response-TIMEOUT / never-reached-SAP-TIMEOUT paths, `resetMockSapAdapterState` for test isolation. No `@prisma/client` import. |
+| `real-adapter.ts` | Added | `server-only`. `ServiceLayerAdapter` against SAP B1's public Service Layer object model — session/cookie management, single 401-retry, 30s `AbortController` timeout correctly categorized as `TIMEOUT`. Extensively marked **unverified against a real tenant** throughout. |
+| `get-adapter.ts` | Added | `server-only`, DB. `getSapAdapter()` — the single choke point every caller uses; `isSapRunningInMockMode()`. |
+| `sync-job.ts` | Added | `server-only`, DB. `runIntegrationSyncJob` — the shared `IntegrationSyncJob` lifecycle wrapper (PENDING→RUNNING→COMPLETED/FAILED/PARTIAL) every sync type below uses. |
+| `product-sync.ts` / `customer-sync.ts` | Added | `server-only`, DB. Each: fetch from the adapter, hand the result to the existing `lib/product-import.ts`/`lib/customer-master-import.ts` plan/execute functions verbatim. Scheduled-compatible (`triggeredById` may be `null`). |
+| `invoice-sync.ts` / `credit-note-sync.ts` | Added | `server-only`, DB. Each: fetch from the adapter, hand the result to the existing `lib/invoice-reconciliation/*`/`lib/returns-credits/*` plan/execute functions verbatim. MANUAL-only — `uploadedById` is required. |
+| `order-eligibility.ts` | Added | `server-only`, DB. `checkOrderEligibility` — the central scope decision: only quotation-converted orders with a mapped customer/products and a resolved price are eligible; every blocker reason is explicit and named. |
+| `order-outbox.ts` | Added | `server-only`, DB. `submitOrderToSap`/`retrySubmission`/`reconcileUncertainOperation`/`resolveUncertainOperation` — the full PENDING→PROCESSING→SUCCEEDED/FAILED/UNCERTAIN state machine, always resubmitting the same immutable `submittedSnapshot`. |
+| `queries.ts` | Added | `server-only`, DB, read-only. `getSapDashboardSummary`, `listIntegrationOperations`, `getIntegrationOperationById`, `getOrderIntegrationStatus` — all computed live, never cached. |
+| `display.ts` | Added | Pure label/formatting helpers. No `@prisma/client` import — safe for Client Components. |
+| `validation.ts` | Added | zod schemas: `updateSapConnectionSchema`, sync-job-slug validation, `sinceQuerySchema`, `resolveUncertainOperationSchema`. |
+
+## API routes (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/api/integrations/sap/connection/route.ts` | Added | `GET` (ADMINISTRATOR/SALES_MANAGER) + `PATCH` (ADMINISTRATOR) — connection configuration, never reads or returns the password. |
+| `app/api/integrations/sap/connection/test/route.ts` | Added | `POST` (ADMINISTRATOR) — tests the connection, records the result. |
+| `app/api/integrations/sap/sync/[jobType]/route.ts` | Added | `POST` (ADMINISTRATOR) — manual `products`/`customers`/`invoices`/`credit-notes` sync, always `trigger: "MANUAL"`. |
+| `app/api/integrations/sap/dashboard/route.ts` | Added | `GET` (ADMINISTRATOR/SALES_MANAGER) — the dashboard summary. |
+| `app/api/integrations/sap/operations/route.ts` | Added | `GET` (ADMINISTRATOR/SALES_MANAGER) — filtered operations list. |
+| `app/api/integrations/sap/operations/[id]/retry/route.ts` | Added | `POST` (ADMINISTRATOR/SALES_MANAGER) — resubmits a FAILED row's immutable snapshot. |
+| `app/api/integrations/sap/operations/[id]/reconcile/route.ts` | Added | `POST` (ADMINISTRATOR/SALES_MANAGER) — read-only lookup-by-external-reference on an UNCERTAIN row. |
+| `app/api/integrations/sap/operations/[id]/resolve/route.ts` | Added | `POST` (ADMINISTRATOR) — the authorised human decision on an UNCERTAIN row reconciliation alone couldn't settle. |
+| `app/api/orders/[id]/sap-submit/route.ts` | Added | `POST` (ADMINISTRATOR/SALES_MANAGER) — submits one order; `checkOrderEligibility`'s own business rules are the real authorization-relevant gate. |
+| `app/api/orders/[id]/sap-status/route.ts` | Added | `GET` (any authenticated role) — live integration status for one order. |
+| Every route above | — | `requireUserOrResponse()` with the role array noted; `verifyCsrfOrigin` on every mutating route; `isValidId` on every path param; body parsing via the project's own `readJsonObject` convention. |
+
+## UI (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/integrations/sap/page.tsx` | Added | Dashboard Server Component: connection health, per-job-type last-sync summaries, manual sync triggers. |
+| `app/integrations/sap/sap-operations-panel.tsx` | Added | Client island: operations table with retry/reconcile/resolve actions, client-gated and server-re-enforced. |
+| `app/integrations/sap/settings/page.tsx` | Added | ADMINISTRATOR-only connection-configuration page. |
+| `app/integrations/sap/settings/sap-connection-form.tsx` | Added | Client form — never displays or accepts a password field. |
+| `app/orders/[id]/sap-integration-panel.tsx` | Added | Self-fetching client island: integration status + a "Submit to SAP" button, visible only when eligible and the viewer's role permits. |
+| `app/components/sidebar.tsx` | Modified | New "SAP Integration" entry in the existing "SAP MASTER DATA" section. |
+| `app/orders/[id]/page.tsx` | Modified | Renders `SapIntegrationPanel` immediately after the existing handover panel. |
+
+## Other changes
+
+| File | Change | Reason |
+|---|---|---|
+| `scripts/remove-demo-data.ts` | Modified | New `integrationOperations`/`integrationSyncJobs` deletion (expected 0-row no-ops today — no demo-seeding path creates either), added to the audit event and summary output, for forward-compatibility. |
+| `scripts/sap-sync.ts` | Added | Standalone scheduled-sync script (`npm run sap:sync`, mirrors `scripts/expire-quotations.ts`'s own convention) — product + customer sync only. |
+| `package.json` | Modified | New `sap:sync` script entry. |
+| `.env.example` | Modified | Documents `SAP_B1_PROVIDER` and `SAP_B1_PASSWORD`. |
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/sap-mock-adapter.test.ts` | Added | 16 unconditional tests: fixture catalogue, idempotent resubmission, validation rejections, all three simulation sentinels (including the critical lost-response TIMEOUT case), `SapAdapterError` default-retryable mapping. All passing. |
+| `tests/sap-config.test.ts` | Added | 13 unconditional tests: deployment-mode resolution, live-credential resolution, `canUseLiveSapAdapter`, `sanitizeSapErrorMessage` (caught and drove the fix for a real redaction bug — see PROGRESS.md). All passing. |
+| `tests/sap-idempotency.test.ts` | Added | 3 unconditional tests: deterministic idempotency-key shape. All passing. |
+| `tests/sap-order-outbox-db.integration.test.ts` | Added | 5 gated tests against a real database (mock adapter): `checkOrderEligibility`'s blocker/eligible-submission paths, `submitOrderToSap`'s happy path + idempotent resubmission, the TIMEOUT→UNCERTAIN→reconciliation→SUCCEEDED path, and the UNCERTAIN→not-found→human-resolve→FAILED path with its `AuditEvent`. Follows this project's established DB-integration-test conventions exactly; not yet run against a real database from this sandbox — see PROGRESS.md's honest verification results. |
+
+## Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/sap-integration/discovery-checklist.md` | Added | The Bulawayo-HQ-facing checklist of exactly what must be confirmed/granted (Service Layer access, service-account permissions, data-mapping confirmation, idempotency support, volumes/rate limits, go-live sequencing) before `SAP_B1_PROVIDER=live` is ever set anywhere but a test environment. |
+| `docs/milestones/ROADMAP.md` | Modified | Milestone 9's row moved from "⏳ Deferred" to "✅ Done"; two new "never conflate" entries; change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the full Milestone 9 section: design rationale, what was built, known/documented limitations, the one real bug found and fixed, and honest verification results. |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §26 — apply the new migration, regenerate the Prisma client, run the new gated test file, and a manual test script walking through connection configuration, a mock sync, and a quotation-converted order's SAP submission. |
+| `MILESTONE-9-DELIVERY-REPORT.md` | Added | The spec-structured delivery report with the 15 required disclosures: architecture, adapter contract, security/config model, sync behaviour, outbox/idempotency design, RBAC matrix, API routes, UI, tests + results, known limitations (including the SAP-submission-eligibility scope boundary and the never-verified-against-real-SAP caveat), the discovery checklist, and exact Windows PowerShell commands. |

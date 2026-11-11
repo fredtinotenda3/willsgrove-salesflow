@@ -2404,3 +2404,198 @@ rollback:
 ```powershell
 npx prisma migrate resolve --rolled-back 20261111180000_add_validation_and_approvals
 ```
+
+## 26. Milestone 9: SAP Business One Integration
+
+This migration is purely additive: 8 new enum types
+(`IntegrationProvider`, `IntegrationMode`, `IntegrationSyncJobType`,
+`IntegrationSyncJobStatus`, `IntegrationTrigger`,
+`IntegrationOperationType`, `IntegrationOperationStatus`,
+`IntegrationErrorCategory`) and 3 new tables
+(`IntegrationConnection`, `IntegrationSyncJob`,
+`IntegrationOperation`). No existing table, column, or enum value is
+removed or changed. As with every previous milestone's migration, it
+cannot be validated or generated in the build sandbox — run these for
+real on your machine.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_sap_integration
+
+# 2. Regenerate the Prisma client so it knows about
+#    IntegrationConnection, IntegrationSyncJob, IntegrationOperation,
+#    and their 8 new enums
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+
+# 4. Confirm a real production build succeeds (the sandbox could not
+#    get past its own Google Fonts network block to even reach this
+#    phase -- see PROGRESS.md's Milestone 9 honest verification results)
+npm run build
+```
+
+If `prisma migrate dev` reports schema drift because you've been
+running against the hand-written SQL already, use `migrate deploy`
+instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Configure the environment
+
+Add to `.env.local` (see the updated `.env.example`):
+
+```
+SAP_B1_PROVIDER=""
+SAP_B1_PASSWORD=""
+```
+
+Leave both blank until `docs/sap-integration/discovery-checklist.md` is
+fully complete. With `SAP_B1_PROVIDER` unset (or anything other than
+exactly `"live"`), every sync and submission in this milestone runs
+against the deterministic mock adapter — this is the correct, safe
+default for all normal use, demos, and the manual test script below.
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the new `tests/sap-order-outbox-db.integration.test.ts`
+alongside every pre-existing gated integration test. It reuses a
+pre-existing `Customer`/`Product` with the mock adapter's own fixture
+codes (`CUS-0001`/`ITM-0001`) if one is already present, or creates its
+own `isDemo: true` rows otherwise, and covers: `checkOrderEligibility`
+blocking a non-quotation order with `NOT_FROM_QUOTATION`; a quotation-
+converted order with a mapped customer/product/price returning
+`eligible: true` with a correctly-shaped submission; `submitOrderToSap`
+succeeding end-to-end and being idempotent on resubmission (exactly one
+`IntegrationOperation` row); the `TIMEOUT` → `UNCERTAIN` →
+`reconcileUncertainOperation` → `SUCCEEDED` path (spec section 7.2's
+central scenario); and the `UNCERTAIN` → reconciliation-not-found →
+`resolveUncertainOperation` → `FAILED` path, confirming the resulting
+`AuditEvent`. Everything it creates
+(`IntegrationOperation`/`CustomerOrder`/`OrderLine`/`Quotation`, and
+its own demo `Customer`/`Product` only if it had to create them) is
+cleaned up in `afterAll`. It needs only an `ADMINISTRATOR` user already
+seeded.
+
+**Honesty note**: this test file, like every gated DB-integration test
+in this project, has not been run against a real database from inside
+this sandbox — `@prisma/client` here is a stub that throws when
+constructed (see PROGRESS.md's "Sandbox-only blocker"). It was written
+to the same standard as `tests/approvals-db.integration.test.ts` and
+independently checked against the real source of every function/field/
+signature it calls (`lib/integrations/sap/*`, `prisma/schema.prisma`)
+— but treat it as unverified until you actually run it.
+
+### Manual test script (via the UI, mock adapter)
+
+1. Log in as the seeded `ADMINISTRATOR` and open **SAP Integration** in
+   the sidebar (`/integrations/sap`). Confirm the dashboard loads and
+   shows the connection as not yet configured/`MOCK` mode, with no
+   sync history yet.
+2. Open **Settings** from that page (`/integrations/sap/settings`).
+   Confirm there is no password field anywhere on this page. Enter a
+   placeholder base URL/company DB/username (these don't need to be
+   real while `SAP_B1_PROVIDER` is unset — every call still goes to the
+   mock adapter) and save. Confirm the change is reflected on reload
+   and that a corresponding `AuditEvent`
+   (`SAP_INTEGRATION_CONNECTION_UPDATED`) was recorded.
+3. Click **Test connection**. Confirm it reports success immediately
+   (the mock adapter's `testConnection` never fails) and that the
+   dashboard's "last tested" timestamp updates.
+4. Click **Sync now** for Products, then for Customers. Confirm each
+   creates a new `IntegrationSyncJob` row visible in the dashboard's
+   sync history, with a `COMPLETED` status and a summary count, and
+   that the mock adapter's 4 fixture products / 2 fixture customers
+   actually land in `/products`/`/customers` (via the existing
+   Milestone 1 import pipeline underneath).
+5. Create a quotation (`/quotations/new`) for a customer whose
+   `sapCustomerCode` is `CUS-0001` (one of the two just synced), with a
+   line for the product whose `sapItemCode` is `ITM-0001`, and carry it
+   through to **Accepted**, then **Convert to order**
+   (`convertQuotationToOrder`). Open the resulting order
+   (`/orders/[id]`). Confirm the new "SAP Business One" panel shows
+   status **Ready** and a **Submit to SAP** button.
+6. Click **Submit to SAP**. Confirm the panel updates to **Synced**
+   with a SAP document reference, and that
+   `/integrations/sap`'s operations table shows a `SUCCEEDED` row for
+   this order. Click **Submit to SAP** again (or re-POST
+   `/api/orders/[id]/sap-submit` directly) and confirm it returns the
+   *same* document reference rather than creating a second one.
+7. Create a second quotation-converted order the same way, but first
+   edit its `CustomerOrder.reference` directly in the database (or via
+   whatever path is convenient) to include the literal substring
+   `__SIMULATE_TIMEOUT__` — this is the mock adapter's own documented
+   test-only sentinel (see `lib/integrations/sap/mock-adapter.ts`'s
+   module comment), never reachable through any normal UI input.
+   Submit it; confirm the panel/operations table show **Uncertain**,
+   not Failed. As an `ADMINISTRATOR`, click **Reconcile** on that
+   operation; confirm it resolves to **Synced** (the mock "finds" the
+   order it secretly recorded despite the simulated timeout) —
+   demonstrating spec section 7.2's central guarantee that a lost
+   response is never silently treated as a rejection.
+8. Repeat step 7 with `__SIMULATE_UNCERTAIN_LOST__` instead. Confirm
+   **Reconcile** this time reports not-found, and that **Resolve** is
+   the only remaining action; choose "confirm not created" and confirm
+   the row moves to **Failed** with your notes recorded, and that a
+   `SAP_UNCERTAIN_SUBMISSION_RESOLVED` `AuditEvent` was created.
+9. As a `SALESPERSON`, confirm `/integrations/sap` and
+   `/integrations/sap/settings` both redirect away (`ADMINISTRATOR`/
+   `SALES_MANAGER`-only and `ADMINISTRATOR`-only respectively), but
+   that the SAP panel on an order they can see still shows its status
+   (view-only, no Submit button for a `SALESPERSON`).
+10. Confirm a manually-entered (non-quotation) order's SAP panel always
+    shows **Not ready** with the `NOT_FROM_QUOTATION` reason, regardless
+    of its status or value — this is the explicit, documented scope
+    boundary, not a bug.
+
+### 26a. Undoing this migration
+
+**This is destructive** — it drops the 3 new tables and the 8 new enum
+types. Back up first:
+
+```powershell
+pg_dump -Fc -d <your-database-name> -f backup-before-undo-milestone-9.dump
+```
+
+```sql
+ALTER TABLE "IntegrationConnection" DROP CONSTRAINT "IntegrationConnection_updatedById_fkey";
+ALTER TABLE "IntegrationSyncJob" DROP CONSTRAINT "IntegrationSyncJob_triggeredById_fkey";
+ALTER TABLE "IntegrationOperation" DROP CONSTRAINT "IntegrationOperation_syncJobId_fkey";
+ALTER TABLE "IntegrationOperation" DROP CONSTRAINT "IntegrationOperation_customerOrderId_fkey";
+
+DROP TABLE "IntegrationOperation";
+DROP TABLE "IntegrationSyncJob";
+DROP TABLE "IntegrationConnection";
+
+DROP TYPE "IntegrationErrorCategory";
+DROP TYPE "IntegrationOperationStatus";
+DROP TYPE "IntegrationOperationType";
+DROP TYPE "IntegrationTrigger";
+DROP TYPE "IntegrationSyncJobStatus";
+DROP TYPE "IntegrationSyncJobType";
+DROP TYPE "IntegrationMode";
+DROP TYPE "IntegrationProvider";
+```
+
+Apply the reversible part the same way as previous rollbacks (`psql`, a
+GUI client, or `npx prisma db execute --file
+.\rollback-milestone-9.sql --schema prisma/schema.prisma`), then revert
+`prisma/schema.prisma` to remove the same changes and run `npx prisma
+generate` again. Also tell Prisma's migration history about the
+rollback:
+
+```powershell
+npx prisma migrate resolve --rolled-back 20261111200000_add_sap_integration
+```

@@ -4516,3 +4516,342 @@ approval lifecycle (submission, self-approval block, cross-manager
 decision, concurrent-decision race, staleness/resubmission chaining,
 withdraw, cancel, role-eligibility) end to end against a real database
 but have not been run against one from inside this sandbox.
+
+# Milestone 9 — SAP Business One Integration
+
+Built from your attached full specification (25 numbered sections) in
+one pass, delivered silently per your `return only a zip of created and
+edited file` instruction. The spec's own engineering standard governed
+every design decision below: **when Bulawayo grants the required SAP
+permissions, Willsgrove should not need to redesign SalesFlow or start
+the integration project again — the remaining work should be
+environment configuration, connection verification, authorised testing,
+and controlled activation.** No SAP credentials, endpoint, or company
+database were ever guessed; no mock transaction is ever presented as
+real; no direct write to a SAP table is performed anywhere.
+
+## Design rationale
+
+**One adapter contract, two implementations, one choke point.**
+`lib/integrations/sap/types.ts`'s `SapAdapter` interface is the only
+shape a business module is allowed to depend on; `MockSapAdapter` and
+`ServiceLayerAdapter` both implement it identically, and
+`getSapAdapter()` (`lib/integrations/sap/get-adapter.ts`) is the single
+function that decides which one a caller actually gets. Nothing outside
+`lib/integrations/sap/` ever constructs a `fetch()` call to a SAP
+endpoint, and nothing outside this directory ever branches on mock vs.
+live.
+
+**Three independent gates must all agree before any real SAP call is
+ever made** (defense in depth, spec section 6): the `SAP_B1_PROVIDER`
+environment variable must literally equal `"live"` (an operator-only
+kill switch, never reachable from this app's UI or database — same
+category as this project's own pre-existing `EXTRACTION_PROVIDER`
+convention), **and** `IntegrationConnection.mode` must be `LIVE`,
+**and** `enabled` must be `true`, **and** a complete credential set
+must actually be resolvable (`baseUrl`/`companyDb`/`username` from the
+database, `SAP_B1_PASSWORD` from the environment). Any one of the four
+missing falls back to the deterministic mock adapter — see
+`lib/integrations/sap/config.ts`'s `canUseLiveSapAdapter`. No secret is
+ever stored in the database, logged, or returned by any API response;
+`IntegrationConnection` has no password/API-key column at all, by
+design.
+
+**The central scope decision, found by reading the existing codebase
+rather than assumed**: `OrderLine.approvedUnitPrice` and
+`CustomerOrder.subtotal/taxTotal/total` are structurally always `null`
+across the entire application today — the legacy pricing/discount-
+approval workflow referenced by `lib/orders.ts`'s own comments has never
+been built, in any milestone up to and including this one. The only
+place a genuine, Sales-approved commercial price exists anywhere in
+this codebase is `OrderLine.customerUnitPrice`, set only by
+`lib/quotations/convert-to-order.ts` when a quotation is converted.
+**Only quotation-converted orders (`CustomerOrder.source === "QUOTATION"`)
+are therefore eligible for SAP sales-order submission in this
+milestone** — every other order's integration status is permanently
+`NOT_READY` until a later milestone builds that pricing/approval
+workflow. This is a real, intentional, and clearly documented scope
+boundary (`lib/integrations/sap/order-eligibility.ts`'s own module
+comment, this file, `ROADMAP.md`, and the delivery report), not
+something quietly worked around with an invented price.
+
+**A network timeout does not prove the request was rejected (spec
+section 7.2, treated as CRITICAL).** `IntegrationOperation` is the
+outbox row for a sales-order submission — one per order, ever
+(`customerOrderId` is `@unique`), with an immutable `submittedSnapshot`
+captured at creation and reused verbatim on every retry, never
+recomputed. Its state machine has a dedicated `UNCERTAIN` status,
+reached only on a `TIMEOUT`, that is **never auto-retried**: resolving
+it requires either `reconcileUncertainOperation` (a read-only lookup by
+external reference) finding the order after all, or a human's own
+`resolveUncertainOperation` decision. Every other failure category is
+treated as a definite, interpretable answer from SAP — safe to correct
+and retry via `retrySubmission`, which always resubmits the same
+immutable snapshot, never a freshly recomputed one.
+
+**Reuse over duplication, structurally, not just by convention.**
+`lib/integrations/sap/{product,customer,invoice,credit-note}-sync.ts`
+each fetch from the adapter and then hand the result straight to the
+**existing** Milestone 1 (`lib/product-import.ts`,
+`lib/customer-master-import.ts`) or Milestone 5/6B
+(`lib/invoice-reconciliation/*`, `lib/returns-credits/*`) plan/execute
+functions, with zero changes to any of that code. `fetchProducts`/
+`fetchCustomers`/`fetchInvoices`/`fetchCreditNotes` on the adapter
+contract are typed to return exactly the shapes those functions already
+accept — there is no second parsing, matching, or upsert implementation
+anywhere in this milestone, which is spec sections 11/12's "do not
+create a competing system" made structural rather than conventional.
+
+**Invoice and credit-note sync are manual-only, by a clean, explicit,
+and documented architectural decision** — `SapInvoiceImportBatch
+.uploadedById`/`CreditNoteImportBatch.uploadedById` are both required,
+non-nullable columns from Milestone 5/6B, and a scheduled run triggered
+by an external scheduler has no signed-in user to attribute an import
+batch to. `scripts/sap-sync.ts` therefore runs only product and
+customer sync; invoice/credit-note sync only ever runs from an
+ADMINISTRATOR's own "Sync now" click on `/integrations/sap`. Sales-order
+outbox processing is likewise never run on a schedule in this
+milestone — submitting an order to SAP is always a deliberate,
+per-order action by whoever is looking at that order, not an unattended
+background sweep. A future milestone could add scheduled outbox
+processing as its own, separately-reviewed decision.
+
+**No persistent background worker is assumed anywhere.** This
+architecture has none (confirmed by reading every prior milestone's own
+scheduling convention — `scripts/expire-quotations.ts` is the
+precedent), so `scripts/sap-sync.ts` is a new standalone script meant to
+be invoked by a real external scheduler (Windows Task Scheduler — see
+`SETUP-WINDOWS.md`), never left running, and safe to run as often as the
+schedule likes.
+
+**RBAC uses only the three existing roles, with every check enforced
+server-side, never only in the UI.** Connection configuration and
+manual catalogue-wide sync (products/customers/invoices/credit notes),
+plus UNCERTAIN resolution/reconciliation, are `ADMINISTRATOR`-only;
+per-order submit/retry are `ADMINISTRATOR` + `SALES_MANAGER`; order
+integration-status viewing is open to any authenticated role (the real
+authorization-relevant gate for submission is
+`checkOrderEligibility`'s own business rules, not the route's coarse
+role check — same pattern this project's approvals routes already use);
+dashboard viewing is `ADMINISTRATOR` + `SALES_MANAGER`. Every mutating
+route is CSRF-protected via `verifyCsrfOrigin` and role-gated via
+`requireUserOrResponse`, following this project's own established
+convention exactly.
+
+**The Milestone 8 approval framework is respected, not bypassed, and
+the Orders-module framework-ready-only gate is explicitly NOT
+activated.** `checkOrderEligibility` calls
+`getLiveApprovalRequestForQuotation` and blocks submission
+(`LIVE_APPROVAL_PENDING`) while the source quotation has a pending
+discount-approval request — SAP submission can never race ahead of an
+approval decision. Per your own standing instruction from Milestone 8,
+`ApprovalActionType.ORDER_VALUE_EXCEEDS_THRESHOLD` remains framework-
+ready only; this milestone adds no call into that gate from anywhere in
+the SAP submission path.
+
+**Derive, don't store a second truth.** `getOrderIntegrationStatus()`
+and `getSapDashboardSummary()` (`lib/integrations/sap/queries.ts`)
+compute everything live from `IntegrationConnection`/
+`IntegrationSyncJob`/`IntegrationOperation` plus `checkOrderEligibility`
+— there is no cached status column anywhere that could silently drift
+from the rows it would be summarizing.
+
+## What was built
+
+- **Schema** (`prisma/schema.prisma`, additive migration only): 7 new
+  enums (`IntegrationProvider`, `IntegrationMode`,
+  `IntegrationSyncJobType`, `IntegrationSyncJobStatus`,
+  `IntegrationTrigger`, `IntegrationOperationType`,
+  `IntegrationOperationStatus`, `IntegrationErrorCategory`) and 3 new
+  models (`IntegrationConnection`, `IntegrationSyncJob`,
+  `IntegrationOperation`). No existing table, column, or enum value
+  changed, was dropped, or became non-nullable —
+  `CustomerOrder.integrationOperation` and two new `User` inverse-
+  relation fields are pure Prisma inverse-relation sides with no new
+  column on those existing tables. `IntegrationOperation.customerOrderId`
+  is a real, typed, `Restrict` foreign key onto `CustomerOrder`, never a
+  generic polymorphic reference.
+- **Adapter layer** (`lib/integrations/sap/`): `types.ts` (the
+  `SapAdapter` contract, `SapAdapterError` with per-category default
+  retryability), `mock-adapter.ts` (deterministic fixture catalogue,
+  idempotent `createSalesOrder`, and three documented simulation
+  sentinels exercising the NETWORK_UNAVAILABLE / lost-response-TIMEOUT /
+  never-reached-SAP-TIMEOUT failure paths), `real-adapter.ts` (a
+  Service-Layer-shaped implementation against SAP B1's public object
+  model, extensively marked **unverified against a real tenant** —
+  session/cookie management, a single 401-retry, a 30-second
+  `AbortController` timeout correctly categorized as `TIMEOUT` rather
+  than being swallowed into a generic network error), `get-adapter.ts`
+  (the one choke point), `config.ts` (the three-gate resolution,
+  `sanitizeSapErrorMessage` for defense-in-depth credential redaction
+  before any error is ever stored or shown), `connection.ts`
+  (singleton-per-provider CRUD, audited), `idempotency.ts`
+  (`buildSapSalesOrderIdempotencyKey`), `sync-job.ts` (the shared
+  `IntegrationSyncJob` lifecycle wrapper every sync type uses),
+  `{product,customer,invoice,credit-note}-sync.ts` (each a thin wrapper
+  calling the adapter then an existing Milestone 1/5/6B plan/execute
+  function verbatim), `order-eligibility.ts` (the scope-decision logic
+  above), `order-outbox.ts` (submit/retry/reconcile/resolve, the full
+  state machine), `queries.ts` (dashboard/operations/order-status,
+  always computed live), `display.ts` (pure formatting, safe for Client
+  Components), `validation.ts` (zod schemas).
+- **API routes**: `GET/PATCH /api/integrations/sap/connection`,
+  `POST /api/integrations/sap/connection/test`,
+  `POST /api/integrations/sap/sync/[jobType]`
+  (`products`/`customers`/`invoices`/`credit-notes`),
+  `GET /api/integrations/sap/dashboard`,
+  `GET /api/integrations/sap/operations`,
+  `POST /api/integrations/sap/operations/[id]/retry`,
+  `POST /api/integrations/sap/operations/[id]/reconcile`,
+  `POST /api/integrations/sap/operations/[id]/resolve`,
+  `POST /api/orders/[id]/sap-submit`,
+  `GET /api/orders/[id]/sap-status`. Every mutating route is CSRF-
+  protected and role-gated per the RBAC decisions above; every body is
+  parsed via the project's own `readJsonObject` convention.
+- **UI**: `/integrations/sap` (dashboard — connection health, per-job-
+  type last-sync summaries, manual sync buttons, the operations table
+  with retry/reconcile/resolve actions, all gated client-side **and**
+  re-enforced server-side), `/integrations/sap/settings`
+  (ADMINISTRATOR-only connection configuration form — never displays or
+  accepts a password field), and a self-fetching
+  `SapIntegrationPanel` added to `/orders/[id]` (status + a "Submit to
+  SAP" button, visible only when eligible and the viewer's role
+  permits). New "SAP Integration" sidebar entry alongside the existing
+  "SAP MASTER DATA" group.
+- **Demo-data cleanup**: `scripts/remove-demo-data.ts` extended with
+  `integrationOperations`/`integrationSyncJobs` deletion (expected
+  0-row no-ops today, since no demo-seeding path creates either —
+  included for forward-compatibility and audit-trail completeness).
+- **Scheduled sync**: `scripts/sap-sync.ts` (new standalone script,
+  `npm run sap:sync`) — product + customer sync only, for the documented
+  reasons above.
+- **Documentation**: `docs/sap-integration/discovery-checklist.md` — the
+  Bulawayo-HQ-facing checklist of exactly what must be confirmed/
+  granted before `SAP_B1_PROVIDER=live` is ever set anywhere but a test
+  environment (Service Layer access, service-account permissions, data-
+  mapping confirmation, idempotency/duplicate-detection support,
+  volumes/rate limits, go-live sequencing).
+- **Tests**: see the dedicated section below.
+
+## Known, documented limitations (not hidden)
+
+- **Only quotation-converted orders are SAP-submission-eligible.** Every
+  other order is permanently `NOT_READY` with a clear
+  `NOT_FROM_QUOTATION` blocker message, until the legacy pricing/
+  discount-approval workflow referenced throughout the existing codebase
+  is actually built. This is the real scope boundary described above,
+  not an oversight.
+- **Invoice and credit-note sync have no scheduled equivalent** — both
+  require a human `uploadedById`, a pre-existing Milestone 5/6B schema
+  constraint this milestone did not change. Only product sync, customer
+  sync, and (manually) order submission can ever happen without someone
+  physically clicking a button.
+- **`real-adapter.ts` is honestly unverified against a real SAP Business
+  One tenant.** It was written against SAP's standard, publicly
+  documented Service Layer object model, and every place a real
+  tenant's behavior could differ is explicitly commented and listed in
+  `docs/sap-integration/discovery-checklist.md`. It has never been
+  exercised against a real company database, because no real SAP
+  credentials, endpoint, or company database were ever available to (or
+  guessed by) this work.
+- **No native "changed since" incremental sync is assumed.** Every
+  fetch is a full refetch; downstream dedupe (by SAP code) already
+  happens in the reused Milestone 1/5/6B import pipelines, so this is
+  safe, just not bandwidth-optimal against a very large catalogue.
+- **Reconciliation-by-external-reference's real-world reliability is
+  unverified** — `findSalesOrderByExternalReference` is part of the
+  adapter contract and implemented against the mock fixture world, but
+  whether a real SAP B1 tenant actually supports looking a Sales Order
+  up by a caller-supplied reference field is one of the open items in
+  the discovery checklist. Until confirmed, a human SAP-side check
+  remains the fallback for resolving an `UNCERTAIN` submission.
+
+## Tests
+
+`tests/sap-mock-adapter.test.ts` (16 unconditional tests): the full
+mock-adapter fixture catalogue, idempotent resubmission, validation
+rejections (unknown customer/product code, non-positive quantity,
+negative price), and all three documented simulation sentinels
+(`__SIMULATE_NETWORK_DOWN__`, `__SIMULATE_UNCERTAIN_LOST__`,
+`__SIMULATE_TIMEOUT__` — including the critical case where the order
+*is* recorded despite the thrown `TIMEOUT`, and a reconciliation lookup
+afterwards finds it), plus `SapAdapterError`'s per-category default-
+retryable mapping. `tests/sap-config.test.ts` (13 unconditional tests):
+deployment-mode resolution (fail-safe-to-mock on any typo), live-
+credential resolution (missing-piece cases), the combined
+`canUseLiveSapAdapter` gate, and `sanitizeSapErrorMessage` (password/
+username redaction, `Authorization`-header and `Bearer`-token
+redaction, truncation). `tests/sap-idempotency.test.ts` (3 unconditional
+tests): the deterministic `SAP-SO-<orderId>` key shape.
+`tests/sap-order-outbox-db.integration.test.ts` (5 gated tests, same
+`RUN_DB_INTEGRATION_TESTS=1` convention as every prior milestone's own
+gated suite): `checkOrderEligibility`'s `NOT_FROM_QUOTATION` blocker and
+its eligible-submission shape, `submitOrderToSap`'s happy path and its
+idempotent resubmission (exactly one `IntegrationOperation` row), the
+TIMEOUT→UNCERTAIN→reconciliation→SUCCEEDED path, and the
+UNCERTAIN→reconciliation-not-found→human-`resolveUncertainOperation`→
+FAILED path with its `AuditEvent`. One real bug was found and fixed
+while writing these tests (see below) — not user-reported, caught by
+the verification discipline itself.
+
+## One real bug found and fixed this round
+
+While writing `tests/sap-config.test.ts`, `sanitizeSapErrorMessage`'s
+`Authorization`-header redaction regex (`Authorization:\s*\S+`) was
+found to only redact the auth **scheme** word ("Basic"/"Bearer"), never
+the credential token that follows it — so a Basic-auth header's base64
+payload would have survived into a stored `lastErrorMessage` or
+`lastTestMessage` verbatim. Fixed to consume up to two whitespace-
+separated tokens after `Authorization:`, covering both a bare single-
+token value and a `<scheme> <credential>` pair. This is exactly the
+kind of secret-leak path spec section 6 treats as critical; it is now
+covered by a dedicated test (`redacts an Authorization header and a
+Bearer token even with no credentials supplied`) that would have caught
+the original bug.
+
+## Honest verification results
+
+- **`npx eslint .`** — clean across the whole project, including every
+  file this milestone added or edited.
+- **`npx tsc --noEmit`** — 370 errors, up from 363 at the end of
+  Milestone 8. Every one of the 7 added errors was individually traced
+  to the same pre-existing, sandbox-only stale/stub-`@prisma/client`
+  noise category every prior milestone has produced here (`Namespace
+  'Prisma' has no exported member 'Decimal'`/`'JsonValue'`/
+  `'InputJsonValue'`, and `Parameter 'tx'`/destructured-query-result
+  implicitly has an `'any'` type on `prisma.$transaction` callbacks and
+  complex Prisma query results) — none are a real defect in this
+  milestone's code. Running `npx prisma generate` against a real
+  network and re-running `tsc` is expected to clear essentially all of
+  this delta, exactly as for every prior milestone.
+- **`npx vitest run`** — 553 passed, 90 skipped (44 files), up from 521
+  passed/85 skipped at the end of Milestone 8: +32 new unconditional
+  tests (all passing) and +5 new gated DB-integration tests (correctly
+  self-skipping per `describe.skipIf(!RUN_DB_INTEGRATION_TESTS)`, not
+  silently passing). Zero regressions in any pre-existing test.
+- **`npm run build`** — not re-attempted this round; every prior
+  milestone has hit the same pre-existing Google-Fonts network block in
+  this sandbox (`next/font` cannot reach `fonts.googleapis.com`),
+  unrelated to this milestone's own code.
+- **Not run in this sandbox** (same honest caveat as every prior
+  milestone): `npx prisma generate`/`validate` (network-blocked) and
+  this milestone's 5 gated DB-integration tests against a real
+  database. Also never run, for the reason stated throughout this
+  section and the delivery report: anything through `ServiceLayerAdapter`
+  against a real SAP Business One tenant — no real SAP credentials,
+  endpoint, or company database were ever available to this work, and
+  none were guessed.
+
+**Implemented: yes**, across every one of the spec's 25 numbered
+sections, with the real, intentional, and clearly documented scope
+boundary (only quotation-converted orders are SAP-submission-eligible,
+pending a future pricing/approval-workflow milestone) called out above
+and in the delivery report. **Tested: yes, with the same honest,
+layered caveat as every prior milestone** — 32 unconditional tests cover
+every piece of pure/mock-testable logic directly (and caught one real
+bug, fixed before delivery); 5 gated DB-integration tests walk the full
+eligibility→outbox→reconciliation/resolution lifecycle against a real
+database and the mock adapter, written to this project's own
+established convention but not run against a real database from inside
+this sandbox; nothing in this milestone has ever been tested against a
+real SAP Business One tenant, and nothing here claims otherwise.

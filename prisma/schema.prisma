@@ -316,6 +316,14 @@ model User {
   approvalEvents          ApprovalEvent[]   @relation("ApprovalEventActor")
   notifications           Notification[]    @relation("NotificationRecipient")
 
+  // Milestone 9 (SAP Business One Integration). ADMINISTRATOR-only
+  // actions (connection configuration, manual full syncs) -- enforced at
+  // the API route via requireUserOrResponse(["ADMINISTRATOR"]), not here.
+  // A scheduled job has no User at all (triggeredById stays null; see
+  // IntegrationSyncJob.trigger).
+  integrationConnectionsUpdated IntegrationConnection[] @relation("IntegrationConnectionUpdater")
+  integrationSyncJobsTriggered  IntegrationSyncJob[]    @relation("IntegrationSyncJobTrigger")
+
   @@index([isDemo])
 }
 
@@ -693,6 +701,18 @@ model CustomerOrder {
   // (not a later migration) so wiring the live gate later is additive
   // code only, no schema change.
   approvalRequests ApprovalRequest[] @relation("OrderApprovalRequests")
+
+  // Milestone 9 (SAP Business One Integration). Pure Prisma inverse side
+  // of IntegrationOperation.customerOrderId (a unique scalar FK living on
+  // IntegrationOperation, not here) -- at most one outbox row can ever
+  // exist for a given order, which is the DB-level duplicate-submission
+  // guard spec section 7.2 requires. Null until this order is actually
+  // submitted (or attempted) for SAP sales-order creation; most orders
+  // never reach that point in this milestone, since eligibility requires
+  // an approved commercial price source that only quotation-converted
+  // orders currently have -- see lib/integrations/sap/order-eligibility.ts
+  // and docs/milestones/PROGRESS.md's Milestone 9 section.
+  integrationOperation IntegrationOperation?
 
   @@index([customerId])
   @@index([status])
@@ -2978,5 +2998,290 @@ model Notification {
 
   @@index([userId, readAt])
   @@index([createdAt])
+  @@index([isDemo])
+}
+
+// Milestone 9 (SAP Business One Integration). SAP Business One remains
+// authoritative for product/customer master data, inventory, financial
+// accounting, SAP sales orders, SAP invoices and SAP credit notes (spec
+// section 3) -- nothing below duplicates or overrides that. These four
+// models exist purely to make SalesFlow's OWN side of the integration
+// durable, auditable and idempotent: what was synced, when, by what
+// mechanism, with what outcome, and (for the one outbound write this
+// milestone performs -- submitting a SAP sales order) exactly what was
+// sent and whether SAP's response can be trusted.
+//
+// Deliberately NOT built as a generic polymorphic entityType/entityId
+// reference system (spec section 7's explicit instruction against that):
+// IntegrationOperation.customerOrderId is a real, typed, Restrict foreign
+// key onto CustomerOrder -- the only outbound business object this
+// milestone submits -- not a generic "entity" pointer. Inbound sync
+// (products, customers, invoices, credit notes) reuses the EXISTING
+// Milestone 1/5/6B models and import pipelines unchanged (Product/
+// Customer upsert via lib/product-import.ts/lib/customer-master-import.ts;
+// SapInvoiceImportBatch/SapInvoice/SapInvoiceLine via lib/invoice-
+// reconciliation/*; CreditNoteImportBatch/CreditNote via lib/returns-
+// credits/*) -- IntegrationSyncJob only wraps those existing calls with a
+// job-level record (who/when/trigger/outcome) for the dashboard, and
+// cross-references the resulting batch id in its own `summary` JSON
+// rather than ever duplicating a single field those models already own.
+//
+// No IntegrationExternalReference / IntegrationSyncCursor model: the one
+// external reference this milestone needs (a submitted order's SAP
+// DocEntry/DocNum) lives directly as typed columns on IntegrationOperation
+// itself (see spec section 7's warning against a reference table with no
+// referential integrity), and incremental sync (where the real SAP
+// Service Layer interface supports server-side filtering, unverified
+// against a real environment -- see docs/sap-integration/
+// discovery-checklist.md) is computed from the most recent COMPLETED
+// IntegrationSyncJob's own `completedAt` per jobType rather than a
+// separate cursor row, avoiding an unverifiable guess at what a real
+// Service Layer "changed since" query actually looks like.
+enum IntegrationProvider {
+  SAP_B1
+}
+
+// MOCK is always available and requires no real SAP access at all (the
+// deterministic MockSapAdapter -- lib/integrations/sap/mock-adapter.ts).
+// LIVE only ever takes effect when BOTH this flag AND the deployment-level
+// SAP_B1_PROVIDER environment variable (a kill switch only an operator
+// with server access can flip, never reachable from this UI) allow it --
+// see lib/integrations/sap/get-adapter.ts. Defaults to MOCK everywhere
+// (spec section 6: "Default live integration to disabled").
+enum IntegrationMode {
+  MOCK
+  LIVE
+}
+
+enum IntegrationSyncJobType {
+  PRODUCT_IMPORT
+  CUSTOMER_IMPORT
+  INVOICE_IMPORT
+  CREDIT_NOTE_IMPORT
+  SALES_ORDER_OUTBOX
+}
+
+enum IntegrationSyncJobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  // At least one item in this job succeeded and at least one failed --
+  // never silently reported as COMPLETED just because the job itself
+  // didn't crash (spec section 16: standardised, honest error reporting).
+  PARTIAL
+}
+
+enum IntegrationTrigger {
+  MANUAL
+  SCHEDULED
+}
+
+// Open to extend -- SALES_ORDER_SUBMISSION is the only outbound write
+// this milestone performs (spec section 10: "the primary outbound
+// integration workflow"). Inbound sync (products/customers/invoices/
+// credit notes) is tracked at the IntegrationSyncJob level only, since
+// each of those reuses an existing batch-level model (SapInvoiceImportBatch
+// etc.) that already has its own per-row granularity -- a second,
+// duplicate per-row operation log over the same rows would be exactly the
+// "competing system" spec section 11 forbids.
+enum IntegrationOperationType {
+  SALES_ORDER_SUBMISSION
+}
+
+// PENDING: created, not yet attempted. PROCESSING: an attempt is
+// currently in flight (set immediately before calling the adapter, inside
+// the same transaction that reads it back out -- see
+// lib/integrations/sap/order-outbox.ts -- so a crashed process can never
+// leave a row silently stuck looking like nothing happened). SUCCEEDED:
+// SAP confirmed creation; externalDocEntry/externalDocNum are populated.
+// FAILED: a permanent rejection (validation, permission) -- safe to
+// correct and resubmit, never auto-retried. UNCERTAIN: the request may or
+// may not have reached SAP (timeout, dropped connection, lost response) --
+// spec section 7.2's central case; requires reconciliation (a lookup by
+// external reference, or an authorised human decision) before any retry,
+// never a blind resubmission.
+enum IntegrationOperationStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  UNCERTAIN
+}
+
+// Standardised error categories (spec section 16) -- stored on
+// IntegrationOperation.lastErrorCategory so the UI can show a meaningful,
+// non-technical reason and decide whether "Retry" is even offered
+// (VALIDATION_FAILURE and the two MISSING_*_MAPPING categories are
+// corrected-then-resubmit, never blindly retried; TIMEOUT/NETWORK_
+// UNAVAILABLE/SERVICE_UNAVAILABLE are the retryable/reconcile-first set).
+enum IntegrationErrorCategory {
+  AUTHENTICATION_FAILURE
+  PERMISSION_DENIED
+  NETWORK_UNAVAILABLE
+  TIMEOUT
+  VALIDATION_FAILURE
+  MISSING_CUSTOMER_MAPPING
+  MISSING_PRODUCT_MAPPING
+  DUPLICATE_EXTERNAL_REFERENCE
+  CURRENCY_MISMATCH
+  INVALID_QUANTITY
+  INVALID_PRICE
+  UNCERTAIN_SUBMISSION
+  SERVICE_UNAVAILABLE
+  INTERNAL_ERROR
+}
+
+// Effectively a singleton per provider (@unique on `provider`, and this
+// milestone only ever creates/reads the SAP_B1 row) rather than a
+// hardcoded config object, so ADMINISTRATOR changes are real, auditable
+// database writes (spec section 6: "audit configuration changes") and
+// the row simply doesn't exist until the first save -- lib/integrations/
+// sap/connection.ts's getOrCreateIntegrationConnection() returns an
+// in-memory MOCK/disabled default when no row exists yet, so "not
+// configured" and "explicitly configured as MOCK/disabled" both render
+// identically and safely with no seed data required.
+//
+// No password/API key/session-token column exists on this model, ever --
+// spec section 6: "never expose credentials to client components... never
+// write secrets to ordinary logs." The real secret lives only in the
+// SAP_B1_PASSWORD (or SAP_B1_API_KEY) environment variable, read
+// server-side at the moment of an actual adapter call -- see
+// lib/integrations/sap/config.ts. baseUrl/companyDb/username are
+// configuration, not secrets, but are still never returned to a
+// SALESPERSON/SALES_MANAGER session.
+model IntegrationConnection {
+  id       String               @id @default(cuid())
+  provider IntegrationProvider  @unique @default(SAP_B1)
+
+  mode    IntegrationMode @default(MOCK)
+  enabled Boolean         @default(false)
+
+  baseUrl   String?
+  companyDb String?
+  username  String?
+
+  lastTestedAt    DateTime?
+  lastTestOk      Boolean?
+  lastTestMessage String? // sanitized -- a category + short reason, never a raw stack trace or secret value
+
+  lastConnectionHealthCheckedAt DateTime?
+
+  updatedById String?
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  updatedBy User? @relation("IntegrationConnectionUpdater", fields: [updatedById], references: [id], onDelete: Restrict)
+
+  @@index([provider])
+}
+
+// One row per synchronisation run -- manual (an ADMINISTRATOR clicking
+// "Sync now") or scheduled (scripts/sap-sync.ts, run by an external
+// scheduler the same way scripts/expire-quotations.ts already is -- see
+// SETUP-WINDOWS.md). Durable so "last successful synchronisation" (spec
+// section 7's requirement) is a real query, not something only ever held
+// in memory, and so a partial/failed run is visible rather than silently
+// swallowed.
+model IntegrationSyncJob {
+  id String @id @default(cuid())
+
+  provider IntegrationProvider     @default(SAP_B1)
+  jobType  IntegrationSyncJobType
+  status   IntegrationSyncJobStatus @default(PENDING)
+  trigger  IntegrationTrigger
+
+  triggeredById String?
+
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  // Job-type-specific counts/cross-references (e.g. {createdCount,
+  // updatedCount, unchangedCount} for PRODUCT_IMPORT/CUSTOMER_IMPORT;
+  // {importBatchId, importedInvoiceCount, ...} for INVOICE_IMPORT,
+  // pointing at the real Milestone 5 SapInvoiceImportBatch row this job
+  // produced; the Milestone 6B equivalent for CREDIT_NOTE_IMPORT;
+  // {processedCount, succeededCount, failedCount, uncertainCount} for
+  // SALES_ORDER_OUTBOX). A dashboard rollup only -- never a second source
+  // of truth for anything the referenced batch/operation rows already
+  // hold.
+  summary Json?
+
+  errorMessage String? // set only when the whole job itself failed before producing any per-item outcome (e.g. the adapter call itself threw) -- an ordinary per-item failure lives on that item's own row/the batch's own counts instead
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  triggeredBy User?                  @relation("IntegrationSyncJobTrigger", fields: [triggeredById], references: [id], onDelete: Restrict)
+  operations  IntegrationOperation[]
+
+  @@index([jobType])
+  @@index([status])
+  @@index([createdAt])
+  @@index([isDemo])
+}
+
+// The outbox row for one CustomerOrder's SAP sales-order submission --
+// spec section 7.1's reliable outgoing-operation mechanism and section
+// 7.2's idempotency/duplicate-prevention requirement, both satisfied
+// structurally: `customerOrderId` is @unique, so the database itself
+// physically cannot hold two outbox rows for the same order, and
+// `idempotencyKey` is deterministic (never random) per order, so
+// regenerating it on a retry always matches this same row rather than
+// drifting. `syncJobId` is nullable: a row is created the moment an order
+// is submitted (ad hoc, by whoever clicked "Submit"), and only gains a
+// job reference if a later batch-processing run (scripts/sap-sync.ts or
+// the dashboard's own "Process pending" action) touches it.
+model IntegrationOperation {
+  id String @id @default(cuid())
+
+  syncJobId String?
+
+  operationType IntegrationOperationType
+  status        IntegrationOperationStatus @default(PENDING)
+
+  idempotencyKey String @unique
+
+  customerOrderId String @unique
+
+  // Immutable copy of exactly what was (or will be) submitted, captured
+  // at creation time -- so a later edit elsewhere can never silently
+  // change what this row claims was sent, and so a human reviewing an
+  // UNCERTAIN/FAILED row sees exactly what was attempted, not whatever
+  // the order looks like now.
+  submittedSnapshot Json
+
+  // Populated only once SAP has actually confirmed success -- never
+  // written speculatively. externalDocEntry unique when present (Postgres
+  // permits any number of NULLs through a unique index), mirroring
+  // SapInvoice.sapDocEntry's own pattern -- this is also the physical
+  // guard behind findSalesOrderByExternalReference (spec section 5.1).
+  externalDocEntry String? @unique
+  externalDocNum   String?
+
+  attemptCount  Int       @default(0)
+  lastAttemptAt DateTime?
+
+  lastErrorCategory IntegrationErrorCategory?
+  lastErrorMessage  String? // sanitized -- never a raw secret or full stack trace
+
+  // Set once this row reaches a terminal, resolved state: SUCCEEDED, a
+  // FAILED row a human has acknowledged, or an UNCERTAIN row a human has
+  // manually reconciled (linked to a found SAP document, or confirmed
+  // genuinely never created). Null while still PENDING/PROCESSING or
+  // while an UNCERTAIN/FAILED row still needs attention.
+  resolvedAt DateTime?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  syncJob       IntegrationSyncJob? @relation(fields: [syncJobId], references: [id], onDelete: Restrict)
+  customerOrder CustomerOrder       @relation(fields: [customerOrderId], references: [id], onDelete: Restrict)
+
+  @@index([status])
+  @@index([syncJobId])
   @@index([isDemo])
 }

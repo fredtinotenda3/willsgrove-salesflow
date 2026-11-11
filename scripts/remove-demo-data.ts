@@ -93,6 +93,20 @@
  * any point; it is grouped here only because it was added by the same
  * milestone.
  *
+ * Milestone 9 (SAP Business One Integration) added two more models with
+ * their own isDemo flag (IntegrationSyncJob, IntegrationOperation) --
+ * but, unlike every earlier milestone's models here, this one has no
+ * demo-seeding path that ever creates a row with isDemo: true (see lib/
+ * integrations/sap/sync-job.ts's module comment for why), so both
+ * deletes below are expected to affect 0 rows today. They are still
+ * included, correctly ordered, purely for correctness if that ever
+ * changes: IntegrationOperation.customerOrderId is a Restrict FK onto
+ * CustomerOrder and IntegrationOperation.syncJobId is a Restrict FK onto
+ * IntegrationSyncJob, so operations must be deleted before both their
+ * order and their sync job. IntegrationConnection (also added this
+ * milestone) has no isDemo column at all -- it is a singleton
+ * configuration row, not demo data, and is never touched by this script.
+ *
  * Milestone 0 fix (round 4): this is 12 sequential round trips over one
  * connection to a pooled Neon endpoint, and Prisma's *default* interactive
  * transaction timeout is 5000ms -- comfortably exceeded under real network
@@ -243,6 +257,24 @@ async function main() {
         where: { isDemo: true },
       });
 
+      // Milestone 9 (SAP Business One Integration). Defensive only, same
+      // reasoning as the User/Session block below: no demo-seeding path
+      // creates IntegrationSyncJob/IntegrationOperation rows in this
+      // milestone (see lib/integrations/sap/sync-job.ts's module
+      // comment), so this is expected to delete 0 rows today. Kept here,
+      // correctly ordered, so the script stays correct if that ever
+      // changes. IntegrationOperation.customerOrderId is a Restrict FK
+      // onto CustomerOrder (deleted below) and IntegrationOperation.
+      // syncJobId is a Restrict FK onto IntegrationSyncJob, so operations
+      // must go first, then their sync jobs.
+      const integrationOperations = await tx.integrationOperation.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const integrationSyncJobs = await tx.integrationSyncJob.deleteMany({
+        where: { isDemo: true },
+      });
+
       const orderLines = await tx.orderLine.deleteMany({
         where: { isDemo: true },
       });
@@ -333,6 +365,8 @@ async function main() {
             claimReturns: claimReturns.count,
             creditNotes: creditNotes.count,
             creditNoteImportBatches: creditNoteImportBatches.count,
+            integrationOperations: integrationOperations.count,
+            integrationSyncJobs: integrationSyncJobs.count,
           },
         },
       });
@@ -365,6 +399,8 @@ async function main() {
         claimReturns: claimReturns.count,
         creditNotes: creditNotes.count,
         creditNoteImportBatches: creditNoteImportBatches.count,
+        integrationOperations: integrationOperations.count,
+        integrationSyncJobs: integrationSyncJobs.count,
       };
     },
     {
@@ -401,6 +437,8 @@ async function main() {
   console.log(`  Claim returns:    ${result.claimReturns}`);
   console.log(`  Credit notes:     ${result.creditNotes}`);
   console.log(`  Credit note import batches: ${result.creditNoteImportBatches}`);
+  console.log(`  SAP integration operations: ${result.integrationOperations}`);
+  console.log(`  SAP integration sync jobs: ${result.integrationSyncJobs}`);
 }
 
 main()

@@ -13,6 +13,7 @@
     "db:seed": "tsx --conditions=react-server prisma/seed.ts",
     "db:remove-demo": "tsx --conditions=react-server scripts/remove-demo-data.ts",
     "quotations:expire": "tsx --conditions=react-server scripts/expire-quotations.ts",
+    "sap:sync": "tsx --conditions=react-server scripts/sap-sync.ts",
     "test": "vitest run"
   },
   "dependencies": {

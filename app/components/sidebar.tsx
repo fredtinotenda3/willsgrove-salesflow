@@ -30,6 +30,7 @@ import {
   Undo2,
   FileText,
   ShieldCheck,
+  Plug,
 } from "lucide-react";
 import NotificationBell from "./notification-bell";
 
@@ -182,6 +183,16 @@ const navigation = [
         name: "Customer Master Import",
         href: "/customers/master-import",
         icon: Building2,
+      },
+      // Milestone 9 (SAP Business One Integration). The connection/sync
+      // dashboard, not another CSV import -- sits here anyway since
+      // every existing item in this section is already "something to do
+      // with getting SAP master data into SalesFlow," and this is the
+      // same thing done automatically instead of by hand.
+      {
+        name: "SAP Integration",
+        href: "/integrations/sap",
+        icon: Plug,
       },
     ],
   },

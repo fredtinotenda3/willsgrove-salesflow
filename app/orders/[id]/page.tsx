@@ -37,6 +37,7 @@ import {
   Printer,
 } from "lucide-react";
 import HandoverPanel from "./handover-panel";
+import SapIntegrationPanel from "./sap-integration-panel";
 
 // Milestone 3 completion (Warehouse Assembly Form & Partial Availability).
 // Hidden only for a dead order -- nothing to assemble for one that's
@@ -479,6 +480,9 @@ export default async function OrderDetailPage({ params }: RouteParams) {
 
               {/* Milestone 2C: manual, per-order SAP handover generation. Milestone 3C: hard-gated on READY_TO_INVOICE -- see HandoverPanel's module comment. */}
               <HandoverPanel orderId={order.id} readyToInvoice={order.status === "READY_TO_INVOICE"} />
+
+              {/* Milestone 9 (SAP Business One Integration): sales-order submission status, self-fetched -- see that panel's own module comment. */}
+              <SapIntegrationPanel orderId={order.id} canSubmit={user.role === "ADMINISTRATOR" || user.role === "SALES_MANAGER"} />
 
               {/* Internal notes */}
               {order.internalNotes && (
