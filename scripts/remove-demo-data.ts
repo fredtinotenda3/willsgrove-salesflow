@@ -69,6 +69,30 @@
  * row-by-row, so an entirely-demo revision chain deletes cleanly in one pass
  * regardless of chain order.
  *
+ * Milestone 8 (Validation and Approvals) added four more models
+ * (ApprovalPolicy, ApprovalRequest, ApprovalEvent, Notification). This
+ * group is deleted FIRST, before even the Milestone 7 group above: both
+ * ApprovalRequest.quotationId and ApprovalRequest.customerOrderId are
+ * Restrict FKs onto Quotation and CustomerOrder respectively, so a demo
+ * approval request still pointing at a demo quotation or order would
+ * block those deletes further down if left until later. ApprovalEvent
+ * has no isDemo column of its own (mirroring QuotationEvent/
+ * OrderStatusHistory elsewhere in this file) and is matched via its
+ * parent ApprovalRequest's isDemo flag instead; it carries a Restrict FK
+ * back to ApprovalRequest, so it must go first. ApprovalRequest's own
+ * self-referential previousRequestId FK (the resubmission chain) needs
+ * no special handling, for the same reason given above for Quotation's
+ * revision chain: deleteMany issues one SQL DELETE statement, and
+ * Postgres checks FK constraints after the whole statement completes,
+ * not row-by-row. ApprovalRequest.policyId -> ApprovalPolicy is
+ * onDelete: SetNull (not Restrict), so ApprovalPolicy itself imposes no
+ * ordering constraint and is deleted last in this group, after the
+ * requests that may reference it. Notification has its own isDemo flag
+ * and onDelete: Cascade from User -- it is not referenced by anything
+ * else and has no FK dependents, so it can be deleted independently at
+ * any point; it is grouped here only because it was added by the same
+ * milestone.
+ *
  * Milestone 0 fix (round 4): this is 12 sequential round trips over one
  * connection to a pooled Neon endpoint, and Prisma's *default* interactive
  * transaction timeout is 5000ms -- comfortably exceeded under real network
@@ -100,6 +124,27 @@ async function main() {
 
   const result = await prisma.$transaction(
     async (tx) => {
+      // Milestone 8 (Validation and Approvals). Deleted before everything
+      // else, including the Milestone 7 group below -- see the file-level
+      // comment above for why (ApprovalRequest.quotationId/customerOrderId
+      // are Restrict FKs onto Quotation/CustomerOrder, deleted further
+      // below).
+      const approvalEvents = await tx.approvalEvent.deleteMany({
+        where: { approvalRequest: { isDemo: true } },
+      });
+
+      const approvalRequests = await tx.approvalRequest.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const approvalPolicies = await tx.approvalPolicy.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const notifications = await tx.notification.deleteMany({
+        where: { isDemo: true },
+      });
+
       // Milestone 7 (Quotations Management). Deleted first, before
       // anything else in this script -- see the file-level comment above
       // for why (Quotation.convertedOrderId is a Restrict FK onto
@@ -255,6 +300,10 @@ async function main() {
           entityType: "System",
           entityId: "demo-data-removal",
           afterData: {
+            approvalEvents: approvalEvents.count,
+            approvalRequests: approvalRequests.count,
+            approvalPolicies: approvalPolicies.count,
+            notifications: notifications.count,
             quotations: quotations.count,
             quotationLines: quotationLines.count,
             quotationEvents: quotationEvents.count,
@@ -289,6 +338,10 @@ async function main() {
       });
 
       return {
+        approvalEvents: approvalEvents.count,
+        approvalRequests: approvalRequests.count,
+        approvalPolicies: approvalPolicies.count,
+        notifications: notifications.count,
         quotations: quotations.count,
         quotationLines: quotationLines.count,
         quotationEvents: quotationEvents.count,
@@ -321,6 +374,10 @@ async function main() {
   );
 
   console.log("Demo data removed:");
+  console.log(`  Approval events:  ${result.approvalEvents}`);
+  console.log(`  Approval requests: ${result.approvalRequests}`);
+  console.log(`  Approval policies: ${result.approvalPolicies}`);
+  console.log(`  Notifications:    ${result.notifications}`);
   console.log(`  Quotations:       ${result.quotations}`);
   console.log(`  Quotation lines:  ${result.quotationLines}`);
   console.log(`  Quotation events: ${result.quotationEvents}`);

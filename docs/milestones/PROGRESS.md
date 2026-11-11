@@ -4292,3 +4292,227 @@ not been run against a real database from inside this sandbox, and
 that run — together with a real `npm run build` after `npx prisma
 generate` — is what remains before this milestone can be called fully
 verified rather than written and type-consistent.
+
+# Milestone 8 — Validation and Approvals
+
+Built from your attached full specification (14 numbered sections) in
+one pass. One explicit decision from you governs the one area of
+deliberate scope reduction: Customer-PO/order-value approval is
+**framework-ready only** — `ApprovalModule.ORDERS` and
+`ApprovalActionType.ORDER_VALUE_EXCEEDS_THRESHOLD` exist and are fully
+configurable through the policy UI, visibly labelled "Not yet
+enforced" there, but `lib/orders.ts`'s `createOrderCore` was left
+completely untouched. No live gate was wired into order creation. This
+was your call, not an oversight, and it is restated here so it reads
+the same way in the delivery report as it does in this file.
+
+## Design rationale
+
+**One reusable approval framework, not a bespoke flag on
+Quotations.** The spec explicitly asks for a cross-module mechanism
+("a consistent, reusable mechanism for requesting... approvals across
+different modules") and warns against ad-hoc per-module logic. Four
+new models carry this: `ApprovalPolicy` (the configurable rule —
+action type, threshold, required approver role, self-approval
+allowance, overdue window, effective date range, active flag),
+`ApprovalRequest` (one instance of a policy being triggered against a
+real quotation or order, with a 6-status lifecycle:
+`DRAFT`/`PENDING`/`APPROVED`/`REJECTED`/`CANCELLED`/`WITHDRAWN`),
+`ApprovalEvent` (append-only event history per request, mirroring
+`QuotationEvent`'s own pattern exactly), and `Notification` (the
+in-app mechanism covering the lack of any existing notification
+infrastructure — spec section 9's explicit fallback is "document the
+dependency," but a real mechanism was built instead because polling an
+unread count is a small amount of work against a schema that already
+exists everywhere else in this project).
+
+**No hardcoded business limits anywhere.** Every threshold, every
+required-approver-role, every self-approval allowance is a management-
+entered `ApprovalPolicy` row — never a number this codebase invents.
+No default policy is seeded: `prisma/seed.ts`'s `main()` only ever
+seeds Milestone 0's baseline (admin, demo customers, demo orders) —
+confirmed by reading it — the same as every milestone since M1, none
+of which extended it either. `tests/approvals-db.integration.test.ts`
+creates its own `isDemo: true` policy rows directly, same convention
+this project's gated tests already use for their own fixtures (demo
+`Product`/`TaxCode` in the Quotations suite, demo `SALES_MANAGER`
+users here).
+
+**Separation of duties is enforced in two independent places.** First,
+structurally: `requestedById` and `decidedById` are always compared,
+and a policy's `allowRequesterSelfApprove` flag (default `false`)
+decides whether that comparison blocks the decision. Second,
+server-side, at the one point that actually matters: every decision
+route (`approve`/`reject`/`withdraw`/`cancel`) re-derives eligibility
+from the live policy and the live requester, never trusting anything
+the client sends. There is no UI-only enforcement anywhere in this
+milestone — every button a role should not see is backed by a route
+that would reject the same action if called directly.
+
+**The Quotations pricing/discount-exception workflow is the one
+mandatory integration**, exactly as scoped. `lib/approvals/quotation-
+gate.ts`'s `checkAndRequireQuotationApproval` is called from
+`issueQuotation` (and from each of `addQuotationLine`/
+`updateQuotationLine`/`removeQuotationLine` via
+`invalidateStaleApprovalRequests`, so a line edit that changes the
+discount percentage can both retroactively clear a now-unnecessary
+pending request and create a fresh one against the new numbers). A
+quotation blocked on a pending approval cannot be re-issued — the gate
+re-checks on every issue attempt, not just the first — and the
+blocking request's id is returned to the client so the quotation-
+detail page can link straight to it.
+
+**Approval requests chain on resubmission, they do not disappear.**
+When a stale `PENDING` request is invalidated (because the underlying
+discount dropped back under threshold, or the quotation was edited
+again before a decision), it is marked `CANCELLED` with a system
+reason rather than deleted, and if a new request is created afterward,
+`previousRequestId`/`rootRequestId` link it back to the original —
+the same revision-chain shape this project already uses for
+`Quotation.previousRevisionId`/`rootQuotationId`, applied here so a
+reviewer can always see the full history of what was asked and
+re-asked, never just the latest snapshot.
+
+**Concurrent decisions are resolved with an atomic `updateMany` guard,
+not a read-then-write race.** `approveApprovalRequest`/
+`rejectApprovalRequest`/`withdrawApprovalRequest`/
+`cancelApprovalRequest` all update
+`where: { id, status: "PENDING" }` and check the affected row count;
+a second decision arriving after the first commits gets a 409, never
+a silently-overwritten decision. This is covered directly by the
+`Promise.all` concurrent-decision test in the DB-integration suite.
+
+## What was built
+
+- **Schema** (`prisma/schema.prisma`, additive migration only): four
+  new models (`ApprovalPolicy`, `ApprovalRequest`, `ApprovalEvent`,
+  `Notification`), two new enums for the request lifecycle and
+  notification type, and new relations off `User`, `Quotation`, and
+  `CustomerOrder` — no existing column changed type or became
+  non-nullable, per the standing "migrations must be additive/safe"
+  agreement.
+- **Core library** (`lib/approvals/`): `validation.ts` (pure —
+  transition matrix, zod schemas, threshold evaluation, self-approval/
+  role-eligibility predicates, snapshot matching — zero
+  `@prisma/client` import, so it runs unconditionally everywhere),
+  `policies.ts` + `policy-queries.ts` (policy CRUD), `requests.ts`
+  (the four decision mutations, every one with the atomic race guard
+  above), `queries.ts` (list/detail/dashboard queries, including
+  `getApprovalDashboard` for the summary counters and
+  `getLiveApprovalRequestForQuotation` for the quotation-detail
+  banner), `quotation-gate.ts` (the one mandatory integration point),
+  and `display.ts` (shared label/formatting helpers for the UI).
+- **Notifications** (`lib/notifications/`): `create.ts` (fires on
+  submit/approve/reject/withdraw, to the right recipient — the
+  eligible approvers on submit, the requester on a decision),
+  `queries.ts`, `mark-read.ts`.
+- **API routes**: `POST /api/approvals` (submit — reached only
+  through the quotation gate, not called directly by the UI),
+  `GET /api/approvals`, `GET /api/approvals/[id]`,
+  `POST /api/approvals/[id]/{approve,reject,withdraw,cancel}`,
+  `GET/POST /api/approval-policies`, `GET/PATCH
+  /api/approval-policies/[id]`, `GET /api/notifications`,
+  `POST /api/notifications/[id]/read`,
+  `POST /api/notifications/mark-all-read`. Every mutation route is
+  CSRF-protected and role-gated via `requireUserOrResponse`, and every
+  body is parsed with the project's own `readJsonObject` convention
+  (confirmed via grep as the dominant pattern across 37+ existing
+  routes before adopting it here).
+- **UI**: `/approvals` (list, with All/Pending-my-decision/Submitted-
+  by-me tabs, status/module filters, and summary counters sourced from
+  the dashboard query), `/approvals/[id]` (detail — submitted-values-
+  vs-current-values comparison table, full event history, and an
+  actions panel that only renders the buttons a given user is actually
+  eligible to use), `/approvals/policies` (SALES_MANAGER/ADMINISTRATOR
+  only — policy CRUD with an explicit "Not yet enforced" badge on the
+  Orders action type), a sidebar nav entry, and a notification bell in
+  the sidebar footer (30-second poll, dropdown with mark-read/mark-all-
+  read). The Quotations detail page gets an amber "pending approval"
+  banner linking to the live request, and the issue-action's error
+  path links straight to the blocking request when issuing is refused.
+- **Tests**: `tests/approvals.test.ts` — 79 unconditional unit tests
+  against `lib/approvals/validation.ts` (the full from×to transition
+  matrix, every zod schema's accept/reject boundary, threshold
+  evaluation including most-restrictive-wins and array-order
+  independence, snapshot matching, self-approval/role-eligibility
+  predicates). `tests/approvals-db.integration.test.ts` — a DB-gated
+  suite (`RUN_DB_INTEGRATION_TESTS=1`, same convention as every prior
+  milestone's own gated suite) walking: policy-blocked issue creating
+  a `PENDING` request, self-approval block, cross-manager approval,
+  re-issue-after-approval, re-decide-after-decided (409), reject with
+  mandatory reason plus the resulting notification, duplicate-
+  submission prevention, the concurrent-decision race, staleness
+  auto-clear and staleness-resubmission-chaining, requester-only
+  withdraw, admin-only cancel, and role-eligibility enforcement.
+- **Demo-data cleanup**: `scripts/remove-demo-data.ts` extended with a
+  new group (`ApprovalEvent` → `ApprovalRequest` → `ApprovalPolicy`,
+  plus the independent `Notification` cleanup), placed **before** the
+  existing Milestone 7 group — `ApprovalRequest.quotationId`/
+  `customerOrderId` are Restrict FKs onto `Quotation`/`CustomerOrder`,
+  so a demo approval request left in place would have blocked those
+  deletes further down the same script.
+
+## Known, documented limitation (not hidden)
+
+**Customer-PO/order-value approval is configurable but not
+enforced**, by your explicit instruction. A SALES_MANAGER or
+ADMINISTRATOR can create an `ORDER_VALUE_EXCEEDS_THRESHOLD` policy
+today through `/approvals/policies`, and it will sit there, visibly
+marked "Not yet enforced," doing nothing — `createOrderCore` in
+`lib/orders.ts` has no call into the approval framework at all. Wiring
+it in later is a small, additive change (the same `checkAndRequire*`
+gate pattern already proven on Quotations) and does not require
+another schema migration, since the models and enum values needed for
+it already exist.
+
+## Honest verification results
+
+- **`npx eslint .`** — clean across the whole project, including this
+  milestone's new files and the `scripts/remove-demo-data.ts` edit.
+- **`npx tsc --noEmit`** — 363 errors, unchanged from the count
+  measured immediately after this milestone's API/UI/test work and
+  before the `remove-demo-data.ts` edit. Every error in this run was
+  cross-checked by file and category against the pre-existing M2–M7
+  baseline (331 errors before this milestone): the only category this
+  milestone adds is the same stale/stub-`@prisma/client` noise every
+  prior milestone has produced in this sandbox (`Namespace 'Prisma' has
+  no exported member 'Decimal'`, `Module '"@prisma/client"' has no
+  exported member 'NotificationType'`, `Parameter 'tx' implicitly has
+  an 'any' type` on every `prisma.$transaction` callback) — a
+  consequence of `npx prisma generate` being unable to reach
+  `binaries.prisma.sh` from this sandbox, not a real defect in this
+  milestone's code. Running `npx prisma generate` against a real
+  network and re-running `tsc` is expected to clear essentially all of
+  this delta.
+- **`npx vitest run`** — 521 passed, 85 skipped (40 files), unchanged
+  from the run immediately after this milestone's tests were written.
+  The 85 skipped tests are every gated DB-integration test across
+  every milestone, including this one's 12 (`approvals-db.integration
+  .test.ts`), correctly self-skipping per
+  `describe.skipIf(!RUN_DB_INTEGRATION_TESTS)` rather than silently
+  passing.
+- **`npm run build`** — fails with the same pre-existing Google-Fonts
+  network block every prior milestone's build has hit in this sandbox
+  (`next/font` cannot reach `fonts.googleapis.com` through this
+  sandbox's outbound allowlist). Not a regression and not specific to
+  this milestone's code — the failure is in `app/layout.tsx`'s
+  shared font import, unrelated to anything built here.
+- **Not run in this sandbox** (same honest caveat as every prior
+  milestone): `npx prisma generate`/`validate` (network-blocked) and
+  the DB-gated integration suite, including `approvals-db.integration
+  .test.ts`'s 12 tests, against a real database. Both are expected to
+  pass once run against a real network and a real Postgres instance —
+  the integration test file itself has been confirmed to typecheck
+  and lint cleanly, which is as far as verification can go without
+  that database.
+
+**Implemented: yes**, across every one of the spec's 14 numbered
+sections, with the one explicit, documented scope reduction (Customer-
+PO/order approval left framework-ready, not enforced) called out
+above and in the delivery report. **Tested: yes, with the same honest
+caveat as Milestone 7** — 79 unconditional tests cover every piece of
+pure approval logic directly; the 12 gated DB tests walk the full
+approval lifecycle (submission, self-approval block, cross-manager
+decision, concurrent-decision race, staleness/resubmission chaining,
+withdraw, cancel, role-eligibility) end to end against a real database
+but have not been run against one from inside this sandbox.

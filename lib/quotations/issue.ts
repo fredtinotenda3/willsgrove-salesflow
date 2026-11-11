@@ -3,14 +3,21 @@ import { prisma } from "@/lib/prisma";
 import { TRANSACTION_OPTIONS } from "@/lib/orders";
 import { validateQuotationStatusTransition } from "@/lib/quotations/validation";
 import type { MutationFailure } from "@/lib/quotations/create";
+import { checkAndRequireQuotationApproval } from "@/lib/approvals/quotation-gate";
 
 /**
  * Milestone 7. Issuing a quotation (spec section 5's "Issued" state):
  * "represents a quotation formally sent or presented to the customer...
  * preserve the issued version and its financial values... record who
- * issued it and when." No approval gate -- any authenticated user (spec
- * section 4 explicitly forbids building an automatic pricing/discount
- * approval process in this milestone; that is Milestone 8's job).
+ * issued it and when."
+ *
+ * Milestone 8 integration: checkAndRequireQuotationApproval() is the
+ * ONE pricing/discount approval gate (spec section 4A, "an issued
+ * quotation must not bypass a required approval") -- called here,
+ * immediately before this function's own transition/line checks are
+ * trusted, never duplicated elsewhere. A quotation that never exceeds
+ * any active ApprovalPolicy threshold pays no extra cost and issues
+ * exactly as it did before Milestone 8 existed.
  *
  * "Must pass validation before issue" (spec section 5's Draft rules):
  * at least one line, and every line must have a resolvable price. Both
@@ -23,7 +30,7 @@ import type { MutationFailure } from "@/lib/quotations/create";
  * cannot legitimately be issued.
  */
 
-export type IssueQuotationResult = { ok: true } | MutationFailure;
+export type IssueQuotationResult = (MutationFailure & { approvalRequestId?: string }) | { ok: true };
 
 export async function issueQuotation(quotationId: string, actorId: string): Promise<IssueQuotationResult> {
   const quotation = await prisma.quotation.findUnique({
@@ -41,6 +48,11 @@ export async function issueQuotation(quotationId: string, actorId: string): Prom
 
   if (quotation._count.lines === 0) {
     return { ok: false, status: 400, message: "Cannot issue a quotation with no lines -- add at least one product first." };
+  }
+
+  const gate = await checkAndRequireQuotationApproval(quotationId, actorId);
+  if (!gate.ok) {
+    return { ok: false, status: gate.status, message: gate.message, approvalRequestId: gate.requestId };
   }
 
   await prisma.$transaction(async (tx) => {

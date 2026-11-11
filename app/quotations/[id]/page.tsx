@@ -6,8 +6,9 @@ import { getQuotationById, getQuotationRevisionHistory } from "@/lib/quotations/
 import { isEligibleForExpiry } from "@/lib/quotations/validation";
 import { QUOTATION_STATUS_LABELS, QUOTATION_STATUS_STYLES, QUOTATION_EVENT_LABELS } from "@/lib/quotations/display";
 import { formatOrderAmount as formatAmount } from "@/lib/order-display";
+import { getLiveApprovalRequestForQuotation } from "@/lib/approvals/queries";
 import Sidebar from "../../components/sidebar";
-import { ArrowLeft, Printer, History } from "lucide-react";
+import { ArrowLeft, Printer, History, ShieldCheck } from "lucide-react";
 import QuotationActionsPanel from "./quotation-actions-panel";
 
 /**
@@ -47,6 +48,12 @@ export default async function QuotationDetailPage({ params }: RouteParams) {
   }
 
   const revisions = await getQuotationRevisionHistory(id);
+  // Milestone 8. Surfaces whether a live discount-exception approval
+  // request is currently blocking this quotation from being issued
+  // (spec section 8's "quotation detail page must display its approval
+  // status") -- null for the overwhelming majority of quotations, which
+  // never cross a configured threshold.
+  const liveApproval = await getLiveApprovalRequestForQuotation(id);
   const today = new Date().toISOString().slice(0, 10);
   const validUntilStr = quotation.validUntil.toISOString().slice(0, 10);
   const eligibleForExpiry = isEligibleForExpiry(quotation.status, validUntilStr, today);
@@ -93,6 +100,18 @@ export default async function QuotationDetailPage({ params }: RouteParams) {
                   </Link>
                 </>
               )}
+            </div>
+          )}
+
+          {liveApproval && (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+              <span className="flex items-center gap-2">
+                <ShieldCheck size={15} />
+                This quotation&rsquo;s discount exceeds a configured threshold and is awaiting {liveApproval.requiredApproverRole.replace("_", " ").toLowerCase()} approval before it can be issued.
+              </span>
+              <Link href={`/approvals/${liveApproval.id}`} className="shrink-0 font-semibold underline">
+                View request &rarr;
+              </Link>
             </div>
           )}
 

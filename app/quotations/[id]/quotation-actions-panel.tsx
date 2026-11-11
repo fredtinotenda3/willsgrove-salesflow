@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Loader2, Plus, Trash2, Pencil } from "lucide-react";
 
 /**
@@ -119,6 +120,12 @@ export default function QuotationActionsPanel({
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Milestone 8. Set only when /issue is blocked because this quotation's
+  // discount exceeds a configured threshold -- lib/quotations/issue.ts's
+  // gate returns the newly-created (or already-pending) approval
+  // request's id alongside its 403, so this panel can link straight to
+  // it instead of leaving the salesperson to guess what happened.
+  const [blockedApprovalId, setBlockedApprovalId] = useState<string | null>(null);
   const [section, setSection] = useState<
     "closed" | "addLine" | "editLine" | "respond" | "cancel" | "revise" | "convert" | "followUp"
   >("closed");
@@ -265,11 +272,15 @@ export default function QuotationActionsPanel({
   async function submitIssue() {
     setSubmitting(true);
     setError(null);
+    setBlockedApprovalId(null);
     try {
       const response = await fetch(`/api/quotations/${quotationId}/issue`, { method: "POST" });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
         setError(typeof data.message === "string" ? data.message : "Unable to issue this quotation.");
+        if (typeof data.approvalRequestId === "string") {
+          setBlockedApprovalId(data.approvalRequestId);
+        }
         return;
       }
       router.refresh();
@@ -553,7 +564,19 @@ export default function QuotationActionsPanel({
         )}
       </div>
 
-      {error && <p className="mt-3 text-xs text-red-600">{error}</p>}
+      {error && (
+        <p className="mt-3 text-xs text-red-600">
+          {error}
+          {blockedApprovalId && (
+            <>
+              {" "}
+              <Link href={`/approvals/${blockedApprovalId}`} className="font-semibold underline">
+                View the approval request &rarr;
+              </Link>
+            </>
+          )}
+        </p>
+      )}
 
       {section === "addLine" && renderLineForm(submitAddLine, "Add line")}
       {section === "editLine" && renderLineForm(submitEditLine, "Save line")}

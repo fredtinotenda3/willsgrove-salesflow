@@ -12,6 +12,7 @@ import {
   isEditableStatus,
   validateValidityWindow,
 } from "@/lib/quotations/validation";
+import { invalidateStaleApprovalRequests } from "@/lib/approvals/quotation-gate";
 
 /**
  * Milestone 7. Draft editing (spec section 5's "Draft: can be created and
@@ -169,6 +170,10 @@ export async function addQuotationLine(quotationId: string, input: QuotationLine
     });
 
     await recomputeAndStoreQuotationTotals(tx, quotationId);
+    // Milestone 8: a line add can only ever INCREASE a quotation's
+    // discount exposure relative to what an earlier, now-smaller
+    // approval request was judged against -- never skip this check.
+    await invalidateStaleApprovalRequests(tx, quotationId);
     await tx.quotationEvent.create({ data: { quotationId, eventType: "EDITED", actorId, notes: `Line ${nextLineNumber} added.` } });
     await tx.auditEvent.create({ data: { actorId, action: "QUOTATION_LINE_ADDED", entityType: "Quotation", entityId: quotationId, afterData: { lineNumber: nextLineNumber } } });
 
@@ -212,6 +217,9 @@ export async function updateQuotationLine(quotationId: string, lineId: string, i
       },
     });
     await recomputeAndStoreQuotationTotals(tx, quotationId);
+    // Milestone 8: see addQuotationLine's own comment on why this is
+    // unconditional -- a line update can change the discount either way.
+    await invalidateStaleApprovalRequests(tx, quotationId);
     await tx.quotationEvent.create({ data: { quotationId, eventType: "EDITED", actorId, notes: `Line ${existingLine.lineNumber} updated.` } });
     await tx.auditEvent.create({ data: { actorId, action: "QUOTATION_LINE_UPDATED", entityType: "Quotation", entityId: quotationId, afterData: { lineNumber: existingLine.lineNumber } } });
   }, TRANSACTION_OPTIONS);
@@ -229,6 +237,10 @@ export async function removeQuotationLine(quotationId: string, lineId: string, a
   await prisma.$transaction(async (tx) => {
     await tx.quotationLine.delete({ where: { id: lineId } });
     await recomputeAndStoreQuotationTotals(tx, quotationId);
+    // Milestone 8: removing the one line that was driving a discount
+    // exception can make the quotation fall back under every threshold --
+    // re-evaluate rather than leave a now-irrelevant request live.
+    await invalidateStaleApprovalRequests(tx, quotationId);
     await tx.quotationEvent.create({ data: { quotationId, eventType: "EDITED", actorId, notes: `Line ${existingLine.lineNumber} removed.` } });
     await tx.auditEvent.create({ data: { actorId, action: "QUOTATION_LINE_REMOVED", entityType: "Quotation", entityId: quotationId, afterData: { lineNumber: existingLine.lineNumber } } });
   }, TRANSACTION_OPTIONS);

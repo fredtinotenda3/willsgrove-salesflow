@@ -2210,3 +2210,197 @@ rollback:
 ```powershell
 npx prisma migrate resolve --rolled-back 20261111150000_add_quotations_management
 ```
+
+## 25. Milestone 8: Validation and Approvals
+
+This migration is purely additive: 2 new enums beyond the ones listed
+below are actually 4 (`ApprovalRequestStatus`, `ApprovalModule`,
+`ApprovalActionType`, `ApprovalEventType`) plus `NotificationType`, and
+4 new tables (`ApprovalPolicy`, `ApprovalRequest`, `ApprovalEvent`,
+`Notification`). No existing table, column, or enum value is removed
+or changed, and the legacy, unused Milestone 0
+`ProductVerification`/`PriceDecision`/`OrderApproval` tables and their
+enums are deliberately left untouched — this migration neither reuses
+nor removes them (see ROADMAP.md's "never conflate" entry). As with
+every previous milestone's migration, it cannot be validated or
+generated in the build sandbox — run these for real on your machine.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_validation_and_approvals
+
+# 2. Regenerate the Prisma client so it knows about ApprovalPolicy,
+#    ApprovalRequest, ApprovalEvent, Notification, and their 5 new enums
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+
+# 4. Confirm a real production build succeeds now that the client
+#    actually knows about these models (the sandbox could not get past
+#    its own Google Fonts network block to even reach this phase — see
+#    PROGRESS.md's Milestone 8 honest verification results)
+npm run build
+```
+
+If `prisma migrate dev` reports schema drift because you've been
+running against the hand-written SQL already, use `migrate deploy`
+instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the new `tests/approvals-db.integration.test.ts` alongside
+every pre-existing gated integration test. It creates its own two
+`SALES_MANAGER` test users directly via `prisma.user.create` (`isDemo:
+true`) rather than `lib/users.ts`'s `createUser`, which hardcodes
+`isDemo: false`, and covers: a policy-blocked quotation issue creating
+a `PENDING` approval request; self-approval refused when the same user
+prepared and would decide the same quotation; a cross-manager approval
+succeeding; re-issuing after approval succeeding unconditionally;
+deciding an already-decided request returning `409`; rejection with a
+mandatory reason, confirming the resulting notification; duplicate-
+submission prevention (a second issue attempt while one request is
+already `PENDING` also returns `409`, and exactly one `ApprovalRequest`
+row exists); a concurrent-decision race (`Promise.all` on approve and
+reject against the same request) confirmed to let exactly one through
+and 409 the other; a discount lowered back under threshold auto-
+cancelling the stale `PENDING` request and letting the next issue
+through unconditionally; a discount raised again after that
+cancelling the old request and creating a new one chained to it via
+`previousRequestId`/`rootRequestId` pointing at the original; withdraw
+restricted to the original requester (403 for anyone else); cancel
+restricted to `ADMINISTRATOR`; and role-eligibility enforcement (a
+`SALES_MANAGER` refused 403 on a policy requiring `ADMINISTRATOR`,
+an `ADMINISTRATOR` succeeding on the same policy). Everything it
+creates (`ApprovalEvent`/`ApprovalRequest`/`ApprovalPolicy`, its own
+two test users, and any `Quotation`/`QuotationLine` it needs to drive
+the scenarios) is cleaned up in `afterAll` in FK-respecting
+leaves-first order. It needs only an admin user and the
+`DEMO-CUST-001` customer already seeded.
+
+**Honesty note**: this test file, like every gated DB-integration test
+in this project, has not been run against a real database from inside
+this sandbox — `@prisma/client` here is a stub that throws when
+constructed (see PROGRESS.md's "Sandbox-only blocker"). It was written
+to the same standard as `tests/quotations-db.integration.test.ts` and
+independently checked against the real source of every function/
+field/signature it calls (`lib/approvals/*`, `prisma/schema.prisma`)
+— but treat it as unverified until you actually run it.
+
+### Manual test script (via the UI)
+
+1. Log in as the seeded `ADMINISTRATOR` and open **Approvals** in the
+   sidebar (`/approvals`). Confirm the summary counters row renders
+   (Pending / Awaiting my decision / Submitted by me / Overdue /
+   Approved / Avg turnaround) and, with no requests yet, an empty list.
+2. Click through to **Approval policies** (`/approvals/policies`).
+   No policy is seeded by default (`prisma/seed.ts` was not extended
+   for this milestone), so the list should be empty at first. Create a
+   new policy: action type **Quotation discount exceeds threshold**,
+   threshold **10%**, required approver role **Sales Manager**,
+   active. Save and confirm it appears in the list with no "Not yet
+   enforced" badge. Then create a second policy with action type
+   **Order value exceeds threshold** and confirm that one *does* show
+   the **Not yet enforced** badge.
+3. As a `SALESPERSON` or `SALES_MANAGER`, create a quotation
+   (`/quotations/new`) with at least one line discounted above 10%.
+   Save as DRAFT, then click **Issue to customer**. Confirm issuing is
+   refused and the quotation detail page now shows an amber "pending
+   approval" banner linking to a new approval request.
+4. Follow that link to `/approvals/<id>`. Confirm the detail page shows
+   the submitted discount value, the requester, and (if you edit the
+   quotation's discount back down below 10% and look again) that the
+   request is auto-**Cancelled** with a system reason once the
+   underlying value no longer exceeds the threshold.
+5. Raise the discount back above 10% and attempt to issue again.
+   Confirm a *new* approval request is created and that its detail page
+   shows it chained to the original (same lineage, via
+   `previousRequestId`/`rootRequestId` — visible in the event history
+   if you added that to the detail page's display, or confirmable via
+   `GET /api/approvals/<id>`).
+6. Log in as a different user with the `SALES_MANAGER` role (not the
+   one who prepared the quotation) and open the same request. Confirm
+   **Approve**/**Reject** buttons are visible and working; approving
+   should flip the quotation's own blocked-issue state so **Issue to
+   customer** now succeeds. Confirm the bell icon in the sidebar footer
+   for the *requester's* account shows an unread notification, and that
+   opening it and clicking the notification marks it read and navigates
+   to the approval request.
+7. Log back in as the original requester (the quotation's preparer) and
+   confirm that, before it was decided, they could not approve/reject
+   their own request even if also a `SALES_MANAGER` (unless the
+   policy's "allow requester to self-approve" box was ticked when you
+   created it in step 2) — try `POST /api/approvals/<id>/approve`
+   directly and confirm it's refused.
+8. On a still-`PENDING` request you submitted yourself, click
+   **Withdraw**, confirm it moves to **Withdrawn** and disappears from
+   anyone's "awaiting my decision" tab. On a different `PENDING`
+   request, log in as the `ADMINISTRATOR` and click **Cancel**; confirm
+   a `SALES_MANAGER` attempting the same `POST
+   /api/approvals/<id>/cancel` directly gets a `403`.
+9. Confirm that creating an `ApprovalPolicy` with action type
+   **Order value exceeds threshold** and saving a Customer-PO/order
+   purely as normal (`/orders/new` or however orders are created in
+   your deployment) never triggers any approval request, regardless of
+   the order's value — this action type is deliberately framework-ready
+   only, per the explicit scope decision recorded in PROGRESS.md and
+   ROADMAP.md.
+
+### 25a. Undoing this migration
+
+**This is destructive** — it drops the 4 new tables and the 5 new enum
+types. Back up first:
+
+```powershell
+pg_dump -Fc -d <your-database-name> -f backup-before-undo-milestone-8.dump
+```
+
+```sql
+ALTER TABLE "ApprovalPolicy" DROP CONSTRAINT "ApprovalPolicy_createdById_fkey";
+ALTER TABLE "ApprovalRequest" DROP CONSTRAINT "ApprovalRequest_quotationId_fkey";
+ALTER TABLE "ApprovalRequest" DROP CONSTRAINT "ApprovalRequest_customerOrderId_fkey";
+ALTER TABLE "ApprovalRequest" DROP CONSTRAINT "ApprovalRequest_previousRequestId_fkey";
+ALTER TABLE "ApprovalRequest" DROP CONSTRAINT "ApprovalRequest_policyId_fkey";
+ALTER TABLE "ApprovalRequest" DROP CONSTRAINT "ApprovalRequest_requestedById_fkey";
+ALTER TABLE "ApprovalRequest" DROP CONSTRAINT "ApprovalRequest_decidedById_fkey";
+ALTER TABLE "ApprovalRequest" DROP CONSTRAINT "ApprovalRequest_withdrawnById_fkey";
+ALTER TABLE "ApprovalRequest" DROP CONSTRAINT "ApprovalRequest_cancelledById_fkey";
+ALTER TABLE "ApprovalEvent" DROP CONSTRAINT "ApprovalEvent_approvalRequestId_fkey";
+ALTER TABLE "ApprovalEvent" DROP CONSTRAINT "ApprovalEvent_actorId_fkey";
+ALTER TABLE "Notification" DROP CONSTRAINT "Notification_userId_fkey";
+
+DROP TABLE "ApprovalEvent";
+DROP TABLE "ApprovalRequest";
+DROP TABLE "ApprovalPolicy";
+DROP TABLE "Notification";
+
+DROP TYPE "ApprovalEventType";
+DROP TYPE "ApprovalActionType";
+DROP TYPE "ApprovalModule";
+DROP TYPE "ApprovalRequestStatus";
+DROP TYPE "NotificationType";
+```
+
+Apply the reversible part the same way as previous rollbacks (`psql`, a
+GUI client, or `npx prisma db execute --file
+.\rollback-milestone-8.sql --schema prisma/schema.prisma`), then revert
+`prisma/schema.prisma` to remove the same changes and run `npx prisma
+generate` again. Also tell Prisma's migration history about the
+rollback:
+
+```powershell
+npx prisma migrate resolve --rolled-back 20261111180000_add_validation_and_approvals
+```

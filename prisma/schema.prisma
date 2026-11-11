@@ -302,6 +302,20 @@ model User {
   convertedQuotations   Quotation[]      @relation("QuotationConverter")
   quotationEvents       QuotationEvent[] @relation("QuotationEventActor")
 
+  // Milestone 8 (Validation and Approvals). No dedicated "requester" role
+  // (anyone whose action triggers a policy becomes a requester); approve/
+  // reject/cancel are restricted to the request's own requiredApproverRole
+  // at submission time (enforced in lib/approvals/requests.ts and the API
+  // route, not the schema); withdraw is requester-only. See that module's
+  // own comments for the self-approval and preparer-vs-approver blocks.
+  approvalRequestsMade    ApprovalRequest[] @relation("ApprovalRequester")
+  approvalDecisions       ApprovalRequest[] @relation("ApprovalDecider")
+  approvalWithdrawals     ApprovalRequest[] @relation("ApprovalWithdrawer")
+  approvalCancellations   ApprovalRequest[] @relation("ApprovalCanceller")
+  approvalPoliciesCreated ApprovalPolicy[]  @relation("ApprovalPolicyCreator")
+  approvalEvents          ApprovalEvent[]   @relation("ApprovalEventActor")
+  notifications           Notification[]    @relation("NotificationRecipient")
+
   @@index([isDemo])
 }
 
@@ -669,6 +683,16 @@ model CustomerOrder {
   // duplicate orders"). Null for the (large majority of) orders never
   // created from a quotation.
   sourceQuotation Quotation? @relation("QuotationConvertedOrder")
+
+  // Milestone 8 (Validation and Approvals). Schema/policy-ready
+  // (ApprovalModule.ORDERS / ApprovalActionType.ORDER_VALUE_EXCEEDS_
+  // THRESHOLD exist and can be configured), but NOT YET populated by any
+  // live trigger in lib/orders.ts -- a deliberate scope decision this
+  // round, see docs/milestones/PROGRESS.md's Milestone 8 "known
+  // limitations." Always empty today; kept as a real typed relation
+  // (not a later migration) so wiring the live gate later is additive
+  // code only, no schema change.
+  approvalRequests ApprovalRequest[] @relation("OrderApprovalRequests")
 
   @@index([customerId])
   @@index([status])
@@ -2556,6 +2580,13 @@ model Quotation {
   lines  QuotationLine[]
   events QuotationEvent[]
 
+  // Milestone 8 (Validation and Approvals). Every ApprovalRequest ever
+  // raised against THIS quotation id (never the whole revision lineage --
+  // a revision is a new row with its own id, so it gets its own fresh
+  // gate check, exactly like it gets its own DRAFT lines). See
+  // lib/approvals/quotation-gate.ts.
+  approvalRequests ApprovalRequest[] @relation("QuotationApprovalRequests")
+
   @@unique([quotationNumber, revisionNumber])
   @@index([quotationNumber])
   @@index([rootQuotationId])
@@ -2640,4 +2671,312 @@ model QuotationEvent {
 
   @@index([quotationId])
   @@index([eventType])
+}
+
+// ===========================================================================
+// Milestone 8 (Validation and Approvals).
+//
+// ONE reusable, cross-module approval framework -- not a separate approval
+// implementation per module (spec section 2). The legacy M0 trio
+// (ProductVerification/PriceDecision/OrderApproval above) is left
+// untouched and still unused: it has zero requester/reason/evidence/
+// previous-value fields, no DRAFT/CANCELLED/WITHDRAWN states, and is
+// siloed per order-line/order, so it is not a safe foundation to extend
+// for a framework meant to serve Quotations (and, schema-ready,
+// CustomerOrder) alike. Confirmed by grep before this migration: no
+// lib/ or app/api code anywhere creates, reads, or transitions those
+// three models or ProductVerification/PriceDecision/OrderApproval's own
+// enums -- the only reference outside the schema is a defensive no-op
+// cleanup in scripts/remove-demo-data.ts.
+//
+// Integrity strategy for "traceable to the business record" (spec
+// section 2): ApprovalRequest below carries REAL, nullable, typed FK
+// columns -- one per supported target (quotationId, customerOrderId) --
+// discriminated by `module`/`actionType`, never a generic
+// entityType/entityId string pair with no referential integrity at all
+// (that shape is deliberately reserved for AuditEvent's own, different
+// purpose: a forensic log over every entity in this project, not a
+// structure anything needs to join against or enforce). Exactly one
+// typed reference is populated per row, enforced in
+// lib/approvals/validation.ts (zod + a runtime check), the same "no DB
+// CHECK constraint, enforced in application code" convention this
+// schema already follows for every other conditional business rule
+// (e.g. QuotationLine's catalogued-vs-unlisted XOR).
+//
+// Three layers of history, same deliberate non-collapse as every prior
+// milestone (Quotation's own comment explains the pattern first):
+//   - Direct fields on ApprovalRequest (submittedAt, decidedAt, ...) for
+//     fast dashboard/filter queries without a history-table join.
+//   - ApprovalEvent: a dedicated timeline for the detail-page UI, same
+//     role QuotationEvent/OrderStatusHistory already play.
+//   - AuditEvent: still written on every mutation, for forensic/cross-
+//     entity audit purposes.
+// ===========================================================================
+
+// Spec section 1, "possible approval statuses," exactly these 6 -- same
+// "no 7th status invented" discipline as QuotationStatus. DRAFT is
+// schema-complete but not reachable through any action built in this
+// milestone: every v1 trigger (lib/approvals/quotation-gate.ts) auto-
+// raises a request that is already PENDING the moment a configured
+// policy fires, rather than a human building one up over several saves
+// first -- see docs/milestones/PROGRESS.md's Milestone 8 section for why
+// DRAFT is kept in the enum (forward compatibility for a future manual-
+// submission flow) rather than removed.
+enum ApprovalRequestStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  WITHDRAWN
+}
+
+// Which part of the application a request/policy belongs to. ORDERS is
+// schema/policy-ready (an ADMINISTRATOR can define an ORDER_VALUE_
+// EXCEEDS_THRESHOLD policy in the Settings UI) but has NO live trigger
+// wired into lib/orders.ts createOrderCore this milestone -- a deliberate
+// scope decision (confirmed with the user) given that function's shared
+// use by manual order entry AND the Milestone 2B/2C PO-review/multi-
+// store-split flow. See PROGRESS.md's Milestone 8 "known limitations."
+enum ApprovalModule {
+  QUOTATIONS
+  ORDERS
+}
+
+// One value per distinct business rule a policy can express. Deliberately
+// NOT a generic "threshold exceeded" value reused across modules --
+// each actionType names the exact rule so a policy row is self-
+// explanatory without joining back to code.
+enum ApprovalActionType {
+  QUOTATION_DISCOUNT_EXCEEDS_THRESHOLD
+  ORDER_VALUE_EXCEEDS_THRESHOLD
+}
+
+// Spec section 7's own named event list, reworded to identifiers (same
+// convention as QuotationEventType). INVALIDATED is the "changes to
+// material financial values after approval must invalidate... renewed
+// approval" event (spec section 4A) -- it moves the request's status to
+// CANCELLED (never a 7th status) while recording, distinctly from a
+// human CANCELLED decision, that the system did this because the
+// underlying values changed.
+enum ApprovalEventType {
+  SUBMITTED
+  APPROVED
+  REJECTED
+  WITHDRAWN
+  CANCELLED
+  RESUBMITTED
+  INVALIDATED
+}
+
+model ApprovalPolicy {
+  id String @id @default(cuid())
+
+  module     ApprovalModule
+  actionType ApprovalActionType
+
+  name        String
+  description String?
+
+  // Threshold shape kept deliberately minimal (spec section 5: "keep the
+  // first version practical ... do not implement every theoretical
+  // configuration option"): one percent field and one amount+currency
+  // pair, each meaningful only for the actionType that uses it
+  // (QUOTATION_DISCOUNT_EXCEEDS_THRESHOLD reads thresholdPercent;
+  // ORDER_VALUE_EXCEEDS_THRESHOLD would read thresholdAmount/currency
+  // once wired). Never both required at once -- validated in
+  // lib/approvals/validation.ts, not here.
+  thresholdPercent Decimal? @db.Decimal(5, 2)
+  thresholdAmount  Decimal? @db.Decimal(18, 4)
+  currency         String? // required when thresholdAmount is set; never converted across currencies -- no exchange-rate table exists in this schema (spec section 5's explicit instruction)
+
+  requiredApproverRole UserRole @default(SALES_MANAGER)
+
+  // Spec section 2/6 explicitly lists "whether the requester may
+  // approve" as a configurable field -- default false (never silently
+  // allow self-approval), and even when an administrator sets this true
+  // for a given policy, lib/approvals/requests.ts still never lets the
+  // SAME user who triggered the request decide it, nor the quotation's
+  // own preparer decide a quotation-discount request (spec section 7's
+  // named "preparer vs. approver" pair) -- this flag can only ever
+  // widen WHO ELSE besides those two is eligible, never remove the
+  // self-approval block itself.
+  allowRequesterSelfApprove Boolean @default(false)
+
+  // Spec section 5's "whether approval is mandatory." true (the only
+  // value any policy created in this milestone's UI can actually be
+  // given effect for) means a firing policy blocks the gated action
+  // until decided. A policy somehow saved with this false would be
+  // informational-only -- not wired to skip the block in v1, since no
+  // code path creates or needs one yet; kept in the schema rather than
+  // omitted so a future "advisory-only" policy type is additive, not a
+  // migration.
+  isMandatory Boolean @default(true)
+
+  // Spec section 8's "overdue requests, where configured." Live-computed
+  // at read time (lib/approvals/queries.ts), never stored on
+  // ApprovalRequest itself -- same "never store what can be derived"
+  // discipline as every prior milestone's own computed-status fields
+  // (e.g. Quotation's expiry, SapInvoiceLine's remaining quantity). Null
+  // means no SLA configured for this policy -- a request against it is
+  // never flagged overdue.
+  overdueAfterHours Int?
+
+  effectiveFrom DateTime? @db.Date
+  effectiveTo   DateTime? @db.Date
+  active        Boolean  @default(true)
+
+  isDemo Boolean @default(false)
+
+  createdById String
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  createdBy User              @relation("ApprovalPolicyCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  requests  ApprovalRequest[]
+
+  @@index([module, actionType, active])
+  @@index([isDemo])
+}
+
+model ApprovalRequest {
+  id String @id @default(cuid())
+
+  module     ApprovalModule
+  actionType ApprovalActionType
+  status     ApprovalRequestStatus @default(PENDING)
+
+  // Exactly one of these is set, matching `module`/`actionType` -- see
+  // this block's own header comment on the integrity strategy. Real FK
+  // relations (Postgres-enforced referential integrity), never a bare
+  // (entityType, entityId) pair.
+  quotationId     String?
+  customerOrderId String?
+
+  // Revision/resubmission chain -- same shape and same reasoning as
+  // Quotation.previousRevisionId/rootQuotationId: @unique on
+  // previousRequestId structurally guarantees at most one resubmission
+  // ever points back to a given request, and rootRequestId lets "every
+  // attempt in this lineage" be queried in one indexed pass.
+  previousRequestId String? @unique
+  rootRequestId     String?
+
+  policyId             String? // which policy fired this -- SetNull (never cascade-delete the request) if the policy is later removed
+  requiredApproverRole UserRole // snapshotted from the policy at submission time; never re-derived from a policy that might be edited or deactivated later
+
+  requestedById String
+  reason        String? // the requester's own justification, where supplied
+  evidence      String? // free-text reference to supporting evidence -- no file-attachment pipeline built for this milestone (see PROGRESS.md's known limitations)
+
+  // Spec section 2's "previous and current values for changes requiring
+  // approval." previousValues is the business record's own prior state
+  // where meaningful (e.g. a revision's prior discount); submittedValues
+  // is the exact snapshot judged against the policy and shown to the
+  // approver -- compared again, live, at the moment the gated action
+  // actually executes (spec section 6: "revalidated... not merely when
+  // submitted"), never trusted as still-current just because this row
+  // says APPROVED.
+  previousValues  Json?
+  submittedValues Json
+
+  submittedAt    DateTime  @default(now()) @db.Timestamptz(6)
+  decidedAt      DateTime?
+  decidedById    String?
+  decisionReason String?
+
+  withdrawnAt   DateTime?
+  withdrawnById String?
+
+  cancelledAt        DateTime?
+  cancelledById       String?
+  cancellationReason String?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  quotation     Quotation?      @relation("QuotationApprovalRequests", fields: [quotationId], references: [id], onDelete: Restrict)
+  customerOrder CustomerOrder?  @relation("OrderApprovalRequests", fields: [customerOrderId], references: [id], onDelete: Restrict)
+  policy        ApprovalPolicy? @relation(fields: [policyId], references: [id], onDelete: SetNull)
+
+  requestedBy User  @relation("ApprovalRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  decidedBy   User? @relation("ApprovalDecider", fields: [decidedById], references: [id], onDelete: Restrict)
+  withdrawnBy User? @relation("ApprovalWithdrawer", fields: [withdrawnById], references: [id], onDelete: Restrict)
+  cancelledBy User? @relation("ApprovalCanceller", fields: [cancelledById], references: [id], onDelete: Restrict)
+
+  previousRequest ApprovalRequest? @relation("ApprovalRequestChain", fields: [previousRequestId], references: [id], onDelete: Restrict)
+  nextRequest     ApprovalRequest? @relation("ApprovalRequestChain")
+
+  events ApprovalEvent[]
+
+  @@index([module])
+  @@index([actionType])
+  @@index([status])
+  @@index([quotationId])
+  @@index([customerOrderId])
+  @@index([requestedById])
+  @@index([decidedById])
+  @@index([submittedAt])
+  @@index([rootRequestId])
+  @@index([isDemo])
+}
+
+model ApprovalEvent {
+  id                String            @id @default(cuid())
+  approvalRequestId String
+  eventType         ApprovalEventType
+  actorId           String?
+  notes             String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  approvalRequest ApprovalRequest @relation(fields: [approvalRequestId], references: [id], onDelete: Restrict)
+  actor           User?           @relation("ApprovalEventActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([approvalRequestId])
+  @@index([eventType])
+}
+
+// Spec section 9: "if the application has no notification
+// infrastructure, implement an appropriate internal notification
+// mechanism." Confirmed by grep before this migration: none existed.
+// Deliberately minimal (in-app only, polled on page load -- no
+// websocket/real-time push anywhere else in this codebase either, and
+// email/WhatsApp are explicitly out of scope for this milestone, spec
+// section 9/14) but a real, persisted, per-user model, not a
+// hand-waved "document the dependency" punt, since the spec gives that
+// as the fallback only when no mechanism is built.
+enum NotificationType {
+  APPROVAL_SUBMITTED
+  APPROVAL_APPROVED
+  APPROVAL_REJECTED
+  APPROVAL_WITHDRAWN
+  APPROVAL_OVERDUE
+}
+
+model Notification {
+  id      String           @id @default(cuid())
+  userId  String
+  type    NotificationType
+  title   String
+  message String
+  link    String? // relative app path, e.g. "/approvals/{id}" -- never an absolute URL, never SAP/external
+
+  readAt DateTime?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  // Cascade: a notification has no meaning once its recipient's own
+  // account is gone -- same reasoning as Session's own onDelete: Cascade,
+  // and unlike every business record in this schema (Restrict), because
+  // a Notification is purely a per-user inbox item, never a business
+  // fact anyone else needs to trace.
+  user User @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([createdAt])
+  @@index([isDemo])
 }

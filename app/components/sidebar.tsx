@@ -29,7 +29,9 @@ import {
   FileWarning,
   Undo2,
   FileText,
+  ShieldCheck,
 } from "lucide-react";
+import NotificationBell from "./notification-bell";
 
 const navigation = [
   {
@@ -64,6 +66,16 @@ const navigation = [
         name: "Quotations",
         href: "/quotations",
         icon: FileText,
+      },
+      // Milestone 8 (Validation and Approvals). Cross-module -- sits
+      // alongside Quotations/Orders rather than under Operations, since
+      // it serves every module with an approval workflow (today:
+      // Quotations' pricing/discount exceptions), not one operational
+      // step.
+      {
+        name: "Approvals",
+        href: "/approvals",
+        icon: ShieldCheck,
       },
     ],
   },
@@ -348,13 +360,16 @@ export default function Sidebar() {
       {/* Bottom settings */}
       <div className="relative border-t border-white/10 p-4">
 
-        <Link
-          href="/settings"
-          className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] font-medium text-white/60 transition hover:bg-white/[0.07] hover:text-white"
-        >
-          <Settings size={17} />
-          Settings
-        </Link>
+        <div className="flex items-center gap-1">
+          <Link
+            href="/settings"
+            className="flex flex-1 items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] font-medium text-white/60 transition hover:bg-white/[0.07] hover:text-white"
+          >
+            <Settings size={17} />
+            Settings
+          </Link>
+          <NotificationBell />
+        </div>
 
         {menuOpen && (
           <div className="absolute bottom-[72px] left-4 right-4 z-10 overflow-hidden rounded-xl border border-white/10 bg-[#152E24] shadow-lg">

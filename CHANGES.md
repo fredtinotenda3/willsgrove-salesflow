@@ -2216,3 +2216,87 @@ results.
 | `docs/milestones/PROGRESS.md` | Modified | Added the full Milestone 7 section: design rationale (no 7th status, revision-as-new-row, no automatic pricing approval, live-computed expiry, doubly-guarded idempotent conversion, catalogued-vs-unlisted structural distinction, no new RBAC role, print-ready HTML in place of a PDF), what was built, the known UI limitation, honest verification results, and acceptance-criterion confirmation. |
 | `CHANGES.md` | Modified | This section. |
 | `SETUP-WINDOWS.md` | Modified | Added §24 — apply the new migration, regenerate the Prisma client, run the new gated test file, set up the scheduled expiry script, and a manual test script walking through the full create→issue→respond→revise→convert lifecycle via the UI. |
+
+## Milestone 8 — Validation and Approvals
+
+Built from your attached full specification (14 numbered sections) in
+one pass. Customer-PO/order-value approval is framework-ready only —
+by your explicit instruction — with no live gate wired into order
+creation. See `docs/milestones/PROGRESS.md`'s Milestone 8 section for
+the full design rationale and honest verification results.
+
+## Schema / migration
+
+| File | Change | Reason |
+|---|---|---|
+| `prisma/schema.prisma` | Modified | 2 new enums (`ApprovalRequestStatus`-adjacent types, `NotificationType`), 4 new models (`ApprovalPolicy`, `ApprovalRequest`, `ApprovalEvent`, `Notification`), and new inverse-relation fields on `User`/`Quotation`/`CustomerOrder`. No existing column changed type or became non-nullable. |
+| `prisma/migrations/<timestamp>_add_validation_and_approvals/migration.sql` | Added | Hand-authored (this sandbox cannot run `prisma migrate dev`), matching the schema exactly: new enum types, 4 `CREATE TABLE`s, their indexes and foreign keys (`Restrict` on `ApprovalRequest.quotationId`/`customerOrderId`/`previousRequestId` and on `ApprovalEvent.approvalRequestId`, `SetNull` on `ApprovalRequest.policyId`, `Cascade` on `Notification.userId`). No existing table/column/enum value removed or changed. |
+
+## `lib/approvals/` and `lib/notifications/` (new modules)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/approvals/validation.ts` | Added | Pure: the 6-status transition matrix, every zod input schema, threshold evaluation (most-restrictive-wins across overlapping active policies), self-approval/role-eligibility predicates, submitted-values snapshot matching. No `@prisma/client` import. |
+| `lib/approvals/policies.ts` | Added | `server-only`, DB: `createApprovalPolicy`/`updateApprovalPolicy`, both audited. |
+| `lib/approvals/policy-queries.ts` | Added | DB, read-only: `listApprovalPolicies`, `getApprovalPolicyById`, `ENFORCED_ACTION_TYPES` (currently only `QUOTATION_DISCOUNT_EXCEEDS_THRESHOLD` — the UI's "Not yet enforced" badge is driven directly from this set). |
+| `lib/approvals/requests.ts` | Added | DB: `approveApprovalRequest`/`rejectApprovalRequest`/`withdrawApprovalRequest`/`cancelApprovalRequest` — every one an atomic `updateMany({ where: { id, status: "PENDING" } })` race guard, eligible-approver/blocked-decider checks, `ApprovalEvent` + `AuditEvent` + notification on every decision. |
+| `lib/approvals/queries.ts` | Added | DB, read-only: `listApprovalRequests` (status/module/mine filters), `getApprovalRequestById`, `getApprovalDashboard` (pending/awaiting-my-decision/submitted-by-me/overdue/approved/avg-turnaround counters), `getLiveApprovalRequestForQuotation` (drives the quotation-detail banner). |
+| `lib/approvals/quotation-gate.ts` | Added | DB: `checkAndRequireQuotationApproval` (the one mandatory integration point — called from `issueQuotation`), `invalidateStaleApprovalRequests` (called from every DRAFT line-edit function so a discount change can both auto-clear a now-unnecessary pending request and trigger a fresh one), `buildSnapshot`. |
+| `lib/approvals/display.ts` | Added | Pure label/style maps for `ApprovalRequestStatus`/`ApprovalModule`/`ApprovalActionType`, no `@prisma/client` import — safe for Client Components. |
+| `lib/notifications/create.ts` | Added | DB: fires on submit (to every eligible approver)/approve/reject/withdraw (to the requester). |
+| `lib/notifications/queries.ts` | Added | DB, read-only: `listNotificationsForUser`, `getUnreadNotificationCount`. |
+| `lib/notifications/mark-read.ts` | Added | DB: `markNotificationRead` (ownership-checked), `markAllNotificationsRead`. |
+
+## API routes (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/api/approvals/route.ts` | Added | `GET` — list, with status/module/mine filters. |
+| `app/api/approvals/[id]/route.ts` | Added | `GET` — detail, including submitted-values snapshot and event history. |
+| `app/api/approvals/[id]/approve/route.ts` | Added | `POST` — approve, role-gated to the policy's eligible approver roles. |
+| `app/api/approvals/[id]/reject/route.ts` | Added | `POST` — reject, mandatory reason. |
+| `app/api/approvals/[id]/withdraw/route.ts` | Added | `POST` — requester-only. |
+| `app/api/approvals/[id]/cancel/route.ts` | Added | `POST` — `ADMINISTRATOR`-only. |
+| `app/api/approval-policies/route.ts` | Added | `GET` list + `POST` create, `SALES_MANAGER`/`ADMINISTRATOR` only. |
+| `app/api/approval-policies/[id]/route.ts` | Added | `GET` single + `PATCH` update, same role gate. |
+| `app/api/notifications/route.ts` | Added | `GET` — the caller's own feed + unread count, no role restriction. |
+| `app/api/notifications/[id]/read/route.ts` | Added | `POST` — mark one read, ownership enforced in the lib layer. |
+| `app/api/notifications/mark-all-read/route.ts` | Added | `POST` — mark all read for the caller. |
+| Every route above | — | `requireUserOrResponse()` (with a role array where noted); `verifyCsrfOrigin` on every mutating route; `isValidId` on every path param; body parsing via the project's own `readJsonObject` convention. |
+
+## UI (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/approvals/page.tsx` | Added | List + dashboard: All/Pending-my-decision/Submitted-by-me tabs, status/module filter chips, summary counters row. |
+| `app/approvals/[id]/page.tsx` | Added | Detail: submitted-values-vs-current-values comparison table (changed fields highlighted), full event history, renders `ApprovalActionsPanel`. |
+| `app/approvals/[id]/approval-actions-panel.tsx` | Added | Client island: Approve/Reject/Withdraw/Cancel, each gated by the viewer's actual eligibility, inline reason textarea, `router.refresh()` after a successful decision. |
+| `app/approvals/policies/page.tsx` | Added | `SALES_MANAGER`/`ADMINISTRATOR`-only policy CRUD, redirects everyone else to `/approvals`. |
+| `app/approvals/policies/policies-panel.tsx` | Added | Client island: create/edit form, policy list with active/inactive toggle and an explicit "Not yet enforced" badge on `ORDER_VALUE_EXCEEDS_THRESHOLD` policies. |
+| `app/components/notification-bell.tsx` | Added | Client island in the sidebar footer: 30-second unread-count poll, dropdown with mark-read/mark-all-read. |
+| `app/components/sidebar.tsx` | Modified | New "Approvals" entry in the WORKSPACE section, next to "Quotations"; notification bell added to the footer next to the Settings link. |
+| `app/quotations/[id]/page.tsx` | Modified | Amber "pending approval" banner (via `getLiveApprovalRequestForQuotation`) linking straight to the live request. |
+| `app/quotations/[id]/quotation-actions-panel.tsx` | Modified | The issue action's error path now links to the blocking approval request when issuing is refused. |
+
+## Other changes
+
+| File | Change | Reason |
+|---|---|---|
+| `scripts/remove-demo-data.ts` | Modified | New deletion block (`ApprovalEvent` → `ApprovalRequest` → `ApprovalPolicy`, plus the independent `Notification` cleanup) inserted at the very start of the transaction, before even the existing Milestone 7 `Quotation` block — `ApprovalRequest.quotationId`/`customerOrderId` are `Restrict` FKs onto `Quotation`/`CustomerOrder`, so this group must run first; their counts added to the audit event and the summary output. |
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/approvals.test.ts` | Added | 79 unconditional tests: the full status-transition matrix, every zod schema's accept/reject boundary, threshold evaluation (most-restrictive-wins, array-order independence), snapshot matching, self-approval/role-eligibility predicates. All passing. |
+| `tests/approvals-db.integration.test.ts` | Added | 12 gated tests against a real database, building its own `SALES_MANAGER` test users directly via Prisma: policy-blocked issue creating a `PENDING` request, self-approval block, cross-manager approval, re-issue-after-approval, re-decide-after-decided (409), reject with mandatory reason plus the resulting notification, duplicate-submission prevention, the concurrent-decision race (`Promise.all`, exactly one succeeds), staleness auto-clear and staleness-resubmission-chaining (`previousRequestId`/`rootRequestId`), requester-only withdraw, admin-only cancel, and role-eligibility enforcement. Follows this project's established DB-integration-test conventions exactly; not yet run against a real database from this sandbox — see PROGRESS.md's honest verification results. |
+
+## Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/ROADMAP.md` | Modified | Added Milestone 8's row and its change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the full Milestone 8 section: design rationale, what was built, the known/documented Customer-PO/order non-enforcement decision, and honest verification results. |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §25 — apply the new migration, regenerate the Prisma client, run the new gated test file, and a manual test script walking through policy creation, a quotation-discount approval request, decision, and the notification bell. |
+| `MILESTONE-8-DELIVERY-REPORT.md` | Added | The spec-structured delivery report: architecture, models/migrations, policy/default rules, workflows affected, role/permission matrix, API routes, UI pages, audit/notification behaviour, tests + results, known limitations (including the Customer-PO/order non-enforcement decision), exact Windows PowerShell commands. |
