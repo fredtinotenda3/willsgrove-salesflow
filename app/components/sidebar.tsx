@@ -28,6 +28,7 @@ import {
   Receipt,
   FileWarning,
   Undo2,
+  FileText,
 } from "lucide-react";
 
 const navigation = [
@@ -53,6 +54,16 @@ const navigation = [
         name: "PO Intake",
         href: "/orders/intake",
         icon: Inbox,
+      },
+      // Milestone 7 (Quotations Management). Sits alongside Orders/PO
+      // Intake, not under Operations -- a quotation is the pre-order
+      // sales step (spec section 2: "used by sales staff when a customer
+      // requests pricing information before placing an order"), not an
+      // operational/fulfilment concern like the items below it.
+      {
+        name: "Quotations",
+        href: "/quotations",
+        icon: FileText,
       },
     ],
   },

@@ -1982,3 +1982,231 @@ rollback:
 ```powershell
 npx prisma migrate resolve --rolled-back 20261111120000_add_returns_credit_notes
 ```
+
+## 24. Milestone 7: Quotations Management
+
+This migration is purely additive: 2 new enums (`QuotationStatus`,
+`QuotationEventType`), 3 new tables (`Quotation`, `QuotationLine`,
+`QuotationEvent`), and one new value (`QUOTATION`) added to the
+existing `OrderSource` enum. No existing table, column, or enum value
+is removed or changed. As with every previous milestone's migration, it
+cannot be validated or generated in the build sandbox — run these for
+real on your machine.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_quotations_management
+
+# 2. Regenerate the Prisma client so it knows about Quotation,
+#    QuotationLine, QuotationEvent, their 2 new enums, and the new
+#    OrderSource.QUOTATION value
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+
+# 4. Confirm a real production build succeeds now that the client
+#    actually knows about these models (the sandbox could not get past
+#    its own Google Fonts network block to even reach this phase — see
+#    PROGRESS.md's Milestone 7 honest verification results)
+npm run build
+```
+
+If `prisma migrate dev` reports schema drift because you've been
+running against the hand-written SQL already, use `migrate deploy`
+instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the new `tests/quotations-db.integration.test.ts` alongside
+every pre-existing gated integration test. It builds its own `Product`/
+`TaxCode` fixtures (`isDemo: true`) rather than depending on a specific
+seeded catalogue item, and covers: decimal-exact line/quotation totals
+on creation (hand-verified figures, confirming discount is applied
+before VAT); rejecting an unlisted line with no description and a
+catalogued line referencing an unknown product, writing nothing; every
+DRAFT line add/update/remove path correctly recomputing the stored
+quotation totals, then hard-blocked the instant the quotation is
+issued; issuing refused with zero lines and refused a second time;
+recording the customer's ACCEPTED/REJECTED response (confirming
+ACCEPTED never silently creates a `CustomerOrder`); cancellation
+allowed from DRAFT/ISSUED/ACCEPTED(no order yet)/EXPIRED but blocked
+the moment a quotation has already been converted into a real order; a
+full convert-to-order cycle, confirming a second call against the same
+quotation returns the identical order (`alreadyConverted: true`) rather
+than ever creating a second one; a full revision cycle (new DRAFT row
+copied verbatim, the old row's status frozen and excluded from the
+default list query, re-revision blocked on both the now-superseded old
+row and the new DRAFT row); revision-history resolution from either the
+lineage's root id or any later revision's id; manual `expireQuotation`
+refused while still valid and the system-wide `sweepExpiredQuotations`
+sweep correctly leaving a still-valid quotation untouched; and the
+dual-write `QuotationEvent`/`AuditEvent` audit trail across a full
+create→issue→accept sequence. Everything it creates (`Quotation`/
+`QuotationLine`/`QuotationEvent`/the test `Product`/`TaxCode`, plus any
+`CustomerOrder` created by the conversion tests) is cleaned up in
+`afterAll` in an order that respects every new foreign key
+(`QuotationEvent`/`QuotationLine` before `Quotation`, and every
+`Quotation` row before the `CustomerOrder` rows it may reference via
+`convertedOrderId`). It needs only an admin user and the
+`DEMO-CUST-001` customer already seeded.
+
+**Honesty note**: this test file, like every gated DB-integration test
+in this project, has not been run against a real database from inside
+this sandbox — `@prisma/client` here is a stub that throws when
+constructed (see PROGRESS.md's "Sandbox-only blocker"). It was written
+to the same standard as `tests/returns-credits-db.integration.test.ts`
+and independently checked against the real source of every function/
+field/signature it calls (`lib/quotations/*`, `prisma/schema.prisma`)
+— but treat it as unverified until you actually run it.
+
+### Set up the scheduled expiry sweep (optional, but recommended)
+
+`npm run quotations:expire` runs `sweepExpiredQuotations()` once and
+exits — it is not a long-running process. Without a schedule, an
+`ISSUED` quotation whose validity date has passed still shows correctly
+as overdue everywhere the UI computes it live (the dashboard's
+"due for follow-up" figure, the detail page's warning banner), but its
+stored `status` column only actually flips to `EXPIRED` the next time
+someone opens its detail page and clicks **Mark expired**, or the next
+time this script runs. Running it daily keeps the stored `status`
+column itself accurate for anyone querying the database directly
+(reports, SAP exports, etc.), not just for anyone using the app.
+
+Using Windows Task Scheduler:
+
+1. Open **Task Scheduler** → **Create Task…**
+2. **General** tab: name it `SalesFlow - Expire Quotations`, select
+   "Run whether user is logged on or not."
+3. **Triggers** tab → **New…** → Daily, pick a time after midnight
+   (e.g. 00:15), so a quotation that expired "today" is swept promptly.
+4. **Actions** tab → **New…** → Program/script: `npm.cmd`; Arguments:
+   `run quotations:expire`; Start in: the full path to this project's
+   repository root (e.g. `C:\SalesFlow`).
+5. **Conditions** tab: untick "Start the task only if the computer is
+   on AC power" if this runs on a machine that might be on battery.
+6. Save, then right-click the task → **Run** once to confirm it
+   completes without error before relying on the schedule.
+
+Equivalent one-line `schtasks` command (run as Administrator, adjust
+the path):
+
+```powershell
+schtasks /create /tn "SalesFlow - Expire Quotations" /tr "npm.cmd run quotations:expire" /sc daily /st 00:15 /ru SYSTEM
+```
+
+### Manual test script (via the UI)
+
+1. Open **Quotations** in the sidebar (`/quotations`). Confirm the
+   dashboard shows summary cards (Total/Draft/Issued-awaiting-response/
+   Accepted/Rejected+Expired/Due-for-follow-up) and an empty list.
+2. Click **New Quotation**. Pick a customer, set a quotation date and a
+   validity date a week out, add one catalogued line (search for a real
+   SAP product) and one line marked **Unlisted / requested item** with
+   a free-text description. Save. Confirm you land on the new
+   quotation's detail page, status **Draft**, with both lines and
+   correct totals (check the VAT/discount math against the product's
+   own catalogue price and VAT code).
+3. On the detail page, edit a line's quantity, add a second catalogued
+   line, then remove it again. Confirm the totals update correctly
+   after each change.
+4. Click **Issue to customer**. Confirm the status becomes **Issued**
+   and every DRAFT-only editing control (add/edit/remove line, header
+   edit) disappears. Try `PATCH /api/quotations/<id>` directly (e.g.
+   via a REST client) and confirm it's refused with `409`.
+5. Click **Record customer response**, choose **Accepted**. Confirm the
+   status becomes **Accepted** and no `CustomerOrder` was created (check
+   `/orders` — nothing new).
+6. Click **Convert to order**. Confirm you land on a real new order's
+   detail page with matching lines. Go back to the quotation and click
+   **Convert to order** again (or call the API directly a second time);
+   confirm it returns the *same* order, not a second one.
+7. On this now-converted, Accepted quotation, confirm the **Cancel
+   quotation** button is no longer offered (or, calling the API
+   directly, `POST /api/quotations/<id>/cancel` returns `409`).
+8. Create a second quotation, issue it, and click **Create revision**.
+   Confirm you land on a new **Draft** quotation with the same
+   quotation number and revision 2, identical lines/totals copied over.
+   Go back to the original (revision 1)'s detail page and confirm it
+   shows an amber "superseded" banner linking to the new revision, and
+   that it no longer appears in the default `/quotations` list (filter
+   by its quotation number — only revision 2 shows).
+9. Create a third quotation, issue it, then edit its validity date
+   directly in the database (or just wait) to a date in the past.
+   Confirm the detail page shows a red "eligible for expiry" banner and
+   a **Mark expired** button; click it and confirm the status becomes
+   **Expired**. Separately, run `npm run quotations:expire` from a
+   terminal against another past-dated issued quotation and confirm it
+   reports the quotation as expired without you clicking anything.
+10. Open `/quotations/<id>/print` for any quotation. Confirm it renders
+    a clean, letterhead-style printable page with no sidebar/nav chrome,
+    a **Print** button (hidden from the printed output itself), and —
+    for a DRAFT/CANCELLED/REJECTED/EXPIRED/superseded quotation — a
+    clearly visible banner explaining its status is not current.
+
+### 24a. Undoing this migration
+
+**This is destructive** — it drops the 3 new tables and the 2 new enum
+types, and removing the `QUOTATION` value from `OrderSource` requires
+recreating that enum type (Postgres has no simple "remove enum value").
+Back up first:
+
+```powershell
+pg_dump -Fc -d <your-database-name> -f backup-before-undo-milestone-7.dump
+```
+
+```sql
+ALTER TABLE "Quotation" DROP CONSTRAINT "Quotation_customerId_fkey";
+ALTER TABLE "Quotation" DROP CONSTRAINT "Quotation_customerContactId_fkey";
+ALTER TABLE "Quotation" DROP CONSTRAINT "Quotation_preparedById_fkey";
+ALTER TABLE "Quotation" DROP CONSTRAINT "Quotation_salespersonId_fkey";
+ALTER TABLE "Quotation" DROP CONSTRAINT "Quotation_issuedById_fkey";
+ALTER TABLE "Quotation" DROP CONSTRAINT "Quotation_respondedById_fkey";
+ALTER TABLE "Quotation" DROP CONSTRAINT "Quotation_cancelledById_fkey";
+ALTER TABLE "Quotation" DROP CONSTRAINT "Quotation_supersededById_fkey";
+ALTER TABLE "Quotation" DROP CONSTRAINT "Quotation_convertedById_fkey";
+ALTER TABLE "Quotation" DROP CONSTRAINT "Quotation_previousRevisionId_fkey";
+ALTER TABLE "Quotation" DROP CONSTRAINT "Quotation_convertedOrderId_fkey";
+ALTER TABLE "QuotationLine" DROP CONSTRAINT "QuotationLine_quotationId_fkey";
+ALTER TABLE "QuotationLine" DROP CONSTRAINT "QuotationLine_productId_fkey";
+ALTER TABLE "QuotationEvent" DROP CONSTRAINT "QuotationEvent_quotationId_fkey";
+ALTER TABLE "QuotationEvent" DROP CONSTRAINT "QuotationEvent_actorId_fkey";
+
+DROP TABLE "QuotationLine";
+DROP TABLE "QuotationEvent";
+DROP TABLE "Quotation";
+
+DROP TYPE "QuotationEventType";
+DROP TYPE "QuotationStatus";
+
+-- Only if nothing in CustomerOrder.source uses 'QUOTATION' (check first:
+-- SELECT COUNT(*) FROM "CustomerOrder" WHERE source = 'QUOTATION';):
+ALTER TYPE "OrderSource" RENAME TO "OrderSource_old";
+CREATE TYPE "OrderSource" AS ENUM ('EMAIL', 'WHATSAPP', 'MANUAL', 'PDF', 'IMAGE', 'EXCEL', 'CSV');
+ALTER TABLE "CustomerOrder" ALTER COLUMN "source" TYPE "OrderSource" USING ("source"::text::"OrderSource");
+DROP TYPE "OrderSource_old";
+```
+
+Apply the reversible part the same way as previous rollbacks (`psql`, a
+GUI client, or `npx prisma db execute --file
+.\rollback-milestone-7.sql --schema prisma/schema.prisma`), then revert
+`prisma/schema.prisma` to remove the same changes and run `npx prisma
+generate` again. Also tell Prisma's migration history about the
+rollback:
+
+```powershell
+npx prisma migrate resolve --rolled-back 20261111150000_add_quotations_management
+```

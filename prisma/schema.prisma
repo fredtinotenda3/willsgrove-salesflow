@@ -34,6 +34,17 @@ enum OrderSource {
   IMAGE
   EXCEL
   CSV
+  // Milestone 7 (Quotations Management). Set only by
+  // lib/quotations/convert-to-order.ts when a CustomerOrder is created
+  // FROM an accepted Quotation -- never set any other way. Deliberately
+  // not reusing MANUAL: that would lose the one fact this value exists
+  // to preserve (spec section 8's "maintain a traceable relationship
+  // between the quotation and the resulting order"), which the new
+  // CustomerOrder.sourceQuotation relation already carries structurally,
+  // but a reconciliation/reporting query over OrderSource alone should
+  // not have to join Quotation just to tell these orders apart from a
+  // plain manually-keyed one.
+  QUOTATION
 }
 
 enum OrderStatus {
@@ -275,6 +286,22 @@ model User {
   matchedCreditNotes              CreditNote[]            @relation("CreditNoteMatcher")
   receivedClaimReturns            ClaimReturn[]           @relation("ClaimReturnReceiver")
 
+  // Milestone 7 (Quotations Management). No dedicated role for any of
+  // these (confirmed by the existing architecture: order creation itself
+  // -- app/api/orders/route.ts -- has no role gate, and M7 introduces no
+  // new financial-fact-creation action; approval-weight pricing/discount
+  // gating is explicitly deferred to Milestone 8). Every action below is
+  // open to any authenticated user, enforced only by requireUser() at
+  // the route layer -- see app/api/quotations/*.
+  preparedQuotations    Quotation[]      @relation("QuotationPreparer")
+  assignedQuotations    Quotation[]      @relation("QuotationSalesperson")
+  issuedQuotations      Quotation[]      @relation("QuotationIssuer")
+  recordedQuotationResponses Quotation[] @relation("QuotationResponseRecorder")
+  cancelledQuotations   Quotation[]      @relation("QuotationCanceller")
+  supersededQuotations  Quotation[]      @relation("QuotationSuperseder")
+  convertedQuotations   Quotation[]      @relation("QuotationConverter")
+  quotationEvents       QuotationEvent[] @relation("QuotationEventActor")
+
   @@index([isDemo])
 }
 
@@ -356,6 +383,9 @@ model Customer {
   // Milestone 6A (Invoice Claims Management).
   invoiceClaims InvoiceClaim[]
 
+  // Milestone 7 (Quotations Management).
+  quotations Quotation[]
+
   @@index([name])
   @@index([status])
   @@index([isDemo])
@@ -383,6 +413,11 @@ model CustomerContact {
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  // Milestone 7 (Quotations Management). "Customer contact, where
+  // available" -- a quotation may name which of the customer's contacts
+  // it was prepared for/sent to.
+  quotations Quotation[]
 
   @@index([customerId])
   @@index([isDemo])
@@ -465,6 +500,9 @@ model Product {
   // Milestone 4 (Lost-Sales Management).
   unfulfilledDemands        UnfulfilledDemand[]
   substituteDecisionEvents  CustomerDecisionEvent[] @relation("SubstituteProductRef")
+
+  // Milestone 7 (Quotations Management).
+  quotationLines QuotationLine[]
 
   @@index([itemName])
   @@index([category])
@@ -622,6 +660,15 @@ model CustomerOrder {
   // itself ("where possible, the original SalesFlow order") -- see that
   // model's own comment.
   invoiceClaims InvoiceClaim[]
+
+  // Milestone 7 (Quotations Management). Pure Prisma inverse side of
+  // Quotation.convertedOrderId (a unique scalar FK living on Quotation,
+  // not here) -- at most ONE Quotation can ever point to a given order,
+  // which is what structurally prevents "accepting a quotation twice"
+  // from ever producing two orders for it (spec section 8's "avoid
+  // duplicate orders"). Null for the (large majority of) orders never
+  // created from a quotation.
+  sourceQuotation Quotation? @relation("QuotationConvertedOrder")
 
   @@index([customerId])
   @@index([status])
@@ -2314,4 +2361,283 @@ model ClaimReturn {
   @@index([claimLineId])
   @@index([creditNoteId])
   @@index([isDemo])
+}
+
+// ===========================================================================
+// Milestone 7 (Quotations Management).
+//
+// A Quotation is a proposal FROM Willsgrove TO a customer -- the mirror
+// image of a CustomerOrder (an order RECEIVED FROM a customer). Spec
+// section 8 is explicit that these must never be conflated, so there is
+// no shared base type: a Quotation is converted into a genuinely separate
+// CustomerOrder only through an explicit action
+// (lib/quotations/convert-to-order.ts), never implied automatically by
+// ACCEPTED status alone.
+//
+// Three layers of history, deliberately not collapsed into one (mirrors
+// this schema's own existing layering -- see CustomerOrder's
+// receivedAt/approvedAt/... direct fields + OrderStatusHistory +
+// AuditEvent):
+//   - Direct fields on Quotation itself (issuedAt, respondedAt,
+//     expiredAt, cancelledAt, convertedAt, ...) for fast filtering/
+//     sorting/dashboard counts without joining a history table.
+//   - QuotationEvent: a dedicated, purpose-built timeline for the
+//     detail-page UI (spec section 7's named event list), the same role
+//     OrderStatusHistory already plays for CustomerOrder -- AuditEvent
+//     is this project's generic forensic log, never surfaced as a UI
+//     timeline anywhere in this codebase (confirmed: grepped for reads
+//     of it and found none), so a dedicated table is the established
+//     pattern for a readable event history, not a new one invented here.
+//   - AuditEvent: still written on every mutation, same as every other
+//     milestone, for forensic/cross-entity audit purposes.
+// ===========================================================================
+
+// Spec section 5, "at minimum, consider" -- these 6 plus nothing else.
+// EXPIRED/CANCELLED are deliberately terminal (see
+// lib/quotations/validation.ts's transition graph); a quotation that
+// needs to be revised after reaching any of ISSUED/ACCEPTED/REJECTED/
+// EXPIRED does so by creating a NEW Quotation row (see
+// previousRevisionId/supersededAt below) rather than a 7th status value
+// -- the OLD row's own status is frozen exactly as it was when revised
+// ("preserve the acceptance/rejection history of previous versions",
+// spec section 6), never overwritten to mean "superseded."
+enum QuotationStatus {
+  DRAFT
+  ISSUED
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
+// Spec section 7's own named event list, reworded to identifiers.
+// "Sent or presented" is deliberately not its own value: this
+// architecture has no email/WhatsApp send integration (explicitly out
+// of scope, spec section 14), so issuing a quotation and presenting it
+// to the customer are the same recorded moment -- ISSUED covers both
+// rather than inventing a second event for an action this system
+// cannot actually distinguish from issuing.
+enum QuotationEventType {
+  CREATED
+  EDITED
+  ISSUED
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  CANCELLED
+  REVISED
+  CONVERTED
+}
+
+model Quotation {
+  id String @id @default(cuid())
+
+  // Shared across every revision of one lineage (spec section 6: "a
+  // revised quotation must be traceable to the original quotation") --
+  // the human-facing number a customer sees never changes on revision,
+  // only revisionNumber does. Same "PREFIX-YYYYMMDD-8HEX" shape as
+  // generateOrderReference()/generateClaimReference(), generated once
+  // for revision 1 and copied forward on every later revision.
+  quotationNumber String
+  revisionNumber  Int    @default(1)
+
+  // Null on the very first revision (that IS the root); non-null on
+  // every later revision, pointing at the very first row in the chain --
+  // lets "every revision of quotation X" be queried in one indexed pass
+  // without walking previousRevisionId links one at a time. Deliberately
+  // NOT a Prisma relation field (plain, indexed string only) -- same
+  // category as sapItemCodeSnapshot elsewhere in this schema: a
+  // denormalized convenience pointer set once at creation and never
+  // mutated, not something that needs its own onDelete semantics (rows
+  // in this table are never deleted through the application).
+  rootQuotationId String?
+
+  // The immediate prior version. @unique: at most one later revision can
+  // ever point back to a given quotation, which is exactly what makes
+  // "create a second revision from an already-revised version" a
+  // straightforward conflict to detect (lib/quotations/revise.ts checks
+  // this, not just supersededAt, as the authoritative guard).
+  previousRevisionId String? @unique
+
+  // Set on THIS row the moment a NEW revision is created from it (i.e.
+  // written onto the OLD row, pointing at who/when revised it -- the new
+  // row's own id is reachable via previousRevisionId from the other
+  // side). "Do not allow an old version to be mistaken for the currently
+  // issued quotation" (spec section 6) is enforced by every list/
+  // dashboard query excluding supersededAt: { not: null } by default,
+  // not by changing status.
+  supersededAt DateTime? @db.Timestamptz(6)
+  supersededById String?
+
+  customerId        String
+  customerContactId String?
+
+  quotationDate DateTime @db.Date
+  validUntil    DateTime @db.Date
+
+  currency String @default("USD") // "USD" | "ZWG", same free-string convention as Customer.currencyCode/CustomerOrder.currency
+
+  customerReference String? // the customer's own RFQ/reference number, if they supplied one -- never invented, same convention as InvoiceClaim.customerComplaintReference
+
+  preparedById  String // who prepared this quotation
+  salespersonId String // the assigned salesperson -- may differ from preparedById (a manager can prepare on a salesperson's behalf)
+
+  status QuotationStatus @default(DRAFT)
+
+  internalNotes String? // staff-only
+  customerNotes String? // "customer-facing notes and terms" -- printed on the document
+
+  // Spec section 4's calculations, STORED (not computed live) -- same
+  // reason CustomerOrder.subtotal/taxTotal/total and OrderLine.lineTotal
+  // are stored, not derived-on-read: once ISSUED, these values must
+  // never silently drift if catalogue prices or VAT rates change later
+  // ("preserve the original quotation values after issue," spec section
+  // 4). Recomputed by lib/quotations/calculations.ts on every DRAFT
+  // edit; frozen the instant status leaves DRAFT, because no API path
+  // can edit lines/header once a quotation is no longer DRAFT.
+  subtotal       Decimal @db.Decimal(18, 4) @default(0)
+  discountTotal  Decimal @db.Decimal(18, 4) @default(0)
+  vatTotal       Decimal @db.Decimal(18, 4) @default(0)
+  total          Decimal @db.Decimal(18, 4) @default(0)
+
+  issuedAt   DateTime? @db.Timestamptz(6)
+  issuedById String?
+
+  // Customer response (spec section 7).
+  respondedAt               DateTime? @db.Timestamptz(6)
+  respondedById             String? // who in SalesFlow recorded the response -- never the customer themselves
+  responseNotes             String?
+  rejectionReason           String?
+  customerResponseReference String? // evidence/reference the customer gave (a confirmation email ref, a PO number) -- never invented when absent
+
+  // Follow-up tracking (spec section 7). "A quotation that has been
+  // issued but has no recorded response should remain identifiable as
+  // awaiting customer feedback" -- lib/quotations/queries.ts's dashboard
+  // counts read status === ISSUED && respondedAt === null live, never a
+  // separate stored flag that could drift from these two fields.
+  nextFollowUpDate DateTime? @db.Date
+  followUpNotes    String?
+
+  expiredAt DateTime? @db.Timestamptz(6) // set only by the explicit expiry action (lib/quotations/expiry.ts) -- never implied by validUntil alone; see that file's own comment
+
+  cancelledAt        DateTime? @db.Timestamptz(6)
+  cancelledById      String?
+  cancellationReason String?
+
+  // Conversion into a real CustomerOrder (spec section 8). @unique:
+  // structurally guarantees at most one order is ever created from a
+  // given quotation, which is what makes "avoid duplicate orders" a
+  // database-enforced fact rather than a convention -- see
+  // lib/quotations/convert-to-order.ts.
+  convertedOrderId String? @unique
+  convertedAt      DateTime? @db.Timestamptz(6)
+  convertedById    String?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  customer        Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  customerContact CustomerContact? @relation(fields: [customerContactId], references: [id], onDelete: SetNull)
+  preparedBy      User             @relation("QuotationPreparer", fields: [preparedById], references: [id], onDelete: Restrict)
+  salesperson     User             @relation("QuotationSalesperson", fields: [salespersonId], references: [id], onDelete: Restrict)
+  issuedBy        User?            @relation("QuotationIssuer", fields: [issuedById], references: [id], onDelete: Restrict)
+  respondedBy     User?            @relation("QuotationResponseRecorder", fields: [respondedById], references: [id], onDelete: Restrict)
+  cancelledBy     User?            @relation("QuotationCanceller", fields: [cancelledById], references: [id], onDelete: Restrict)
+  supersededBy    User?            @relation("QuotationSuperseder", fields: [supersededById], references: [id], onDelete: Restrict)
+  convertedBy     User?            @relation("QuotationConverter", fields: [convertedById], references: [id], onDelete: Restrict)
+
+  previousRevision Quotation? @relation("QuotationRevisionChain", fields: [previousRevisionId], references: [id], onDelete: Restrict)
+  nextRevision     Quotation? @relation("QuotationRevisionChain")
+
+  convertedOrder CustomerOrder? @relation("QuotationConvertedOrder", fields: [convertedOrderId], references: [id], onDelete: Restrict)
+
+  lines  QuotationLine[]
+  events QuotationEvent[]
+
+  @@unique([quotationNumber, revisionNumber])
+  @@index([quotationNumber])
+  @@index([rootQuotationId])
+  @@index([customerId])
+  @@index([status])
+  @@index([quotationDate])
+  @@index([validUntil])
+  @@index([salespersonId])
+  @@index([preparedById])
+  @@index([supersededAt])
+  @@index([nextFollowUpDate])
+  @@index([isDemo])
+}
+
+model QuotationLine {
+  id          String @id @default(cuid())
+  quotationId String
+  lineNumber  Int
+
+  // Exactly one of (productId set, isUnlistedItem false) or
+  // (productId null, isUnlistedItem true, unlistedItemDescription set)
+  // -- enforced in lib/quotations/validation.ts, same "no DB CHECK
+  // constraint" convention this entire schema already follows for every
+  // other conditional business rule (e.g. ClaimLineDisputeType's
+  // quantity-vs-amount split). Spec section 3: "must not be treated as
+  // an SAP product or silently assigned a fabricated code."
+  productId                  String?
+  sapItemCodeSnapshot        String? // null for an unlisted item -- never fabricated
+  sapItemDescriptionSnapshot String? // snapshotted at line-add time so an issued quotation's printed description can never drift if the catalogue description changes later
+  isUnlistedItem             Boolean @default(false)
+  unlistedItemDescription    String? // the customer's own wording for a requested-but-not-catalogued item
+
+  quantity      Decimal @db.Decimal(18, 4)
+  unitOfMeasure String? // "where available" -- defaults from Product.unitOfMeasure, overridable
+
+  // "Sales determines selling prices... do not invent selling prices
+  // from purchase costs, SAP stock values or historical prices" (spec
+  // section 4) -- always manually entered/verified by the salesperson,
+  // never looked up or suggested from PriceListEntry.
+  unitPrice       Decimal  @db.Decimal(18, 4)
+  discountPercent Decimal? @db.Decimal(5, 2) // 0-100; manual, sales-entered -- no approval gate (that is Milestone 8's job, spec section 4 explicitly forbids building it here)
+
+  // VAT resolved from Product.vatCode -> TaxCode.ratePercent at the
+  // moment this line is saved, then frozen -- same reasoning as
+  // Quotation's own stored totals: an issued quotation's VAT must never
+  // silently drift if a TaxCode's rate changes later.
+  vatCodeSnapshot        String?
+  vatRatePercentSnapshot Decimal? @db.Decimal(5, 2)
+
+  lineSubtotal   Decimal @db.Decimal(18, 4) // quantity * unitPrice
+  discountAmount Decimal @db.Decimal(18, 4) @default(0)
+  vatAmount      Decimal @db.Decimal(18, 4) @default(0)
+  lineTotal      Decimal @db.Decimal(18, 4) // lineSubtotal - discountAmount + vatAmount
+
+  notes String?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Restrict)
+  product   Product?  @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@unique([quotationId, lineNumber])
+  @@index([quotationId])
+  @@index([productId])
+  @@index([isDemo])
+}
+
+model QuotationEvent {
+  id          String             @id @default(cuid())
+  quotationId String
+  eventType   QuotationEventType
+  actorId     String?
+  notes       String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Restrict)
+  actor     User?     @relation("QuotationEventActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([quotationId])
+  @@index([eventType])
 }

@@ -3993,3 +3993,302 @@ verified rather than merely written and type-consistent.
 **With this stage delivered, Milestones 6A and 6B together complete
 the full Invoice Claims Management & Returns/Credit Notes
 specification** as scoped across both stages.
+
+# Milestone 7 — Quotations Management
+
+Built from your attached full specification (15 numbered sections) in
+one pass, after the repo-inspection/migration-consistency-gate/design-
+questions stages this project's standing process requires before any
+schema change (see the task list: "Inspect existing repo for M7
+prerequisites," "Review M6A/M6B migration consistency gate," "Identify
+open design questions for M7" — all completed before any
+`lib/quotations/` code was written).
+
+## Design rationale
+
+**A quotation is its own first-class record, not a draft order.** It
+gets its own model, its own status lifecycle, and its own number
+(`QUO-YYYYMMDD-8HEX`, same shape as every other reference generator in
+this project) — never a `CustomerOrder` row in a pre-order status. The
+only point of contact between the two is a one-way, explicit, audited
+conversion action (below); nothing about creating, issuing, or even
+accepting a quotation ever touches `CustomerOrder`.
+
+**Exactly the 6 named statuses — `DRAFT`/`ISSUED`/`ACCEPTED`/
+`REJECTED`/`EXPIRED`/`CANCELLED` — never a 7th.** The spec's own wording
+("at minimum, consider") left room to add a `SUPERSEDED` status for a
+revised-away quotation, but that would mean threading a dead-end status
+through every other transition as a trap state. Instead, a revision
+freezes the OLD row's status exactly as it was the moment it was
+revised (`Quotation.supersededAt`/`supersededById`) and the query layer
+excludes `supersededAt: { not: null }` from every default list/
+dashboard view — "never let an old version appear as current" is
+enforced where quotations are *read*, not by inventing a status value
+that would have to mean something different depending on what the row
+used to be.
+
+**A revision is a brand-new `Quotation` row, never an in-place edit of
+an issued one.** `lib/quotations/revise.ts` copies the original's
+header and lines byte-for-byte into a new `DRAFT` row
+(`previousRevisionId` pointing back, `rootQuotationId` shared across
+every revision in the chain, the human-facing `quotationNumber`
+unchanged, only `revisionNumber` incrementing) and supersedes the old
+row in the same transaction. This is what makes "preserve the
+acceptance/rejection history of previous versions" (spec section 6)
+structurally true rather than conventional — there is no code path that
+can mutate an already-issued quotation's own lines/header; the *only*
+way to change anything after issue is to create a new row.
+
+**No automatic pricing/discount approval process — by explicit scope
+exclusion, not an oversight.** `UnitPrice`/`discountPercent` on every
+line are always directly Sales-entered values, validated for shape
+(non-negative, correct decimal places, discount bounded 0–100%) but
+never looked up from `PriceListEntry`, never checked against a stock
+cost, and never routed through any approval gate. The spec says this
+explicitly belongs to a later milestone; building it here would have
+meant inventing an approval workflow the spec didn't ask for and that
+would need its own design review.
+
+**Expiry is a live-computed fact, never a trusted stored flag.**
+`isEligibleForExpiry(status, validUntil, today)` is pure and reused
+everywhere "overdue" matters — the dashboard's `dueForFollowUp` count,
+the detail page's warning banner — so the UI can never show a stale
+answer even before any write happens. The actual `ISSUED → EXPIRED`
+write only ever happens through one function
+(`lib/quotations/expiry.ts`'s `expireQuotation`), triggered either by a
+manual per-quotation action or by `scripts/expire-quotations.ts` (a
+standalone script, since this architecture has no background-job
+runner — same "one-command script, run on a real schedule via Windows
+Task Scheduler/cron" shape as `scripts/remove-demo-data.ts`). Both
+paths call the identical function, so neither can drift from the
+other.
+
+**Converting an accepted quotation into a real order is always a
+separate, explicit, idempotent action — never a side effect of
+`ACCEPTED`.** `lib/quotations/convert-to-order.ts` reuses
+`lib/orders.ts`'s own `createOrderCore` directly rather than
+duplicating its nested-create/`OrderStatusHistory`/audit logic, and
+guards against a duplicate order twice: an application-level pre-check
+on `Quotation.convertedOrderId`, and a deterministic
+`QUO-CONVERT-<quotationId>` idempotency key on the created
+`CustomerOrder` (the same column every other order-creation path in
+this project already uses for safe client retries) — both the order
+creation and the quotation's own `convertedOrderId` write happen inside
+one transaction, so there is no window where one exists without the
+other. Cancelling a quotation that has already produced a real order is
+blocked by a direct read of `convertedOrderId` in
+`lib/quotations/cancel.ts`, deliberately *not* encoded as a missing
+edge in the transition graph — the graph has no way to see other
+columns, so that specific data fact is checked at the one place that
+actually writes `CANCELLED`.
+
+**An unlisted/requested item is structurally distinct from a catalogued
+SAP product, never a fabricated code.** `QuotationLine` enforces (in
+`lib/quotations/validation.ts`'s zod union, not a DB `CHECK` constraint
+— this schema has none anywhere in its migration history, so this
+follows the established pattern) exactly one of `productId` set /
+`isUnlistedItem` true with a free-text description — never both, never
+neither. A catalogued line's SAP identity and VAT code are snapshotted
+at the moment it's added (`sapItemCodeSnapshot`/
+`sapItemDescriptionSnapshot`/`vatCodeSnapshot`/`vatRatePercentSnapshot`)
+so an issued quotation's printed figures can never silently drift if
+the catalogue or a tax rate changes later — the same "snapshot for
+display, re-read live only when nothing has been issued yet" philosophy
+`OrderLine`/`SapInvoiceLine` already use elsewhere in this project.
+
+**No new RBAC role, and no approval gate on any Milestone 7 action.**
+Every `lib/quotations/*` mutation and every new `app/api/quotations/*`
+route uses the existing `requireUserOrResponse()` with no role array —
+same tier as order creation itself. A quotation is a sales-staff
+working document; nothing about creating, editing, issuing, recording a
+response, expiring, cancelling, revising, or converting one is a
+judgment call that needs manager sign-off in this milestone's scope.
+
+**No PDF library is installed in this project** (confirmed by
+inspecting `package.json` before building), so the printable quotation
+document (spec section 9) is print-ready HTML — a zero-write Server
+Component at `/quotations/[id]/print` with A4 print CSS, mirroring
+`/orders/[id]/assembly-form`'s already-established pattern exactly —
+rather than a generated PDF file. The browser's own "Print → Save as
+PDF" is how a PDF actually gets produced, same as the assembly form.
+
+## What was built
+
+- **Schema**: 2 new enums (`QuotationStatus`, `QuotationEventType`) and
+  3 new models (`Quotation`, `QuotationLine`, `QuotationEvent`), plus
+  one new value (`QUOTATION`) added to the existing `OrderSource` enum
+  so a converted order's `source` can say where it actually came from.
+  Purely additive — see CHANGES.md for the exact diff and
+  `prisma/migrations/20261111150000_add_quotations_management/
+  migration.sql` for the hand-authored SQL (this sandbox cannot run
+  `prisma migrate dev`).
+- **`lib/quotations/`** (12 files): `validation.ts` (pure — the 6-status
+  transition graph, zod schemas, percent/quantity/date validators, the
+  live `isEligibleForExpiry` check — no `@prisma/client` import, so it's
+  the one file this milestone's unconditional test file can exercise
+  directly), `calculations.ts` (decimal-exact line/quotation totals via
+  `Prisma.Decimal`, discount applied before VAT), `create.ts`
+  (reference generation + collision retry, line resolution/snapshotting
+  shared with `edit.ts`), `edit.ts` (every DRAFT-only header/line
+  mutation, each recomputing and storing the quotation's totals),
+  `issue.ts`, `respond.ts`, `cancel.ts`, `revise.ts`,
+  `convert-to-order.ts`, `expiry.ts` (`expireQuotation` +
+  `sweepExpiredQuotations`), `display.ts` (label/style maps, no
+  `@prisma/client` import), `queries.ts` (list/dashboard/detail/
+  revision-history reads).
+- **14 new API routes** under `app/api/quotations/`: list+create,
+  dashboard, detail+header-edit, line add/update/remove, follow-up
+  scheduling, issue, respond, cancel, revise, convert-to-order, manual
+  expire, and revision history — every one `requireUserOrResponse()`
+  with no role gate, `verifyCsrfOrigin` on every mutating route,
+  `isValidId` on every path param.
+- **UI**: a new `/quotations` dashboard+list page (summary cards,
+  status tabs, debounced search, salesperson/currency/date filters —
+  the value-by-status card explicitly grouped by currency and never
+  summed across currencies or labelled "revenue," same discipline
+  `lib/invoice-claims/financial.ts` already established),
+  `/quotations/new` (header + per-line builder with a toggle between
+  SAP-catalogue search and a free-text unlisted-item field),
+  `/quotations/[id]` (detail page: fields grid, lines table with
+  totals, customer-response/cancellation sections, revision-history
+  list, event-history timeline, a `QuotationActionsPanel` client island
+  wiring up every mutating action gated by the quotation's own
+  status/`isSuperseded`/`hasConvertedOrder`), and
+  `/quotations/[id]/print` (the printable document described above). A
+  new "Quotations" sidebar entry sits in the WORKSPACE section next to
+  Orders/PO Intake — a quotation is the pre-order sales step, not an
+  operational/fulfilment concern.
+- **`scripts/expire-quotations.ts`** (new, one-command script) and
+  **`scripts/remove-demo-data.ts`** (extended) — the new models' rows
+  are deleted first in the demo-cleanup transaction, before the
+  existing `CustomerOrder` deletion block, because
+  `Quotation.convertedOrderId` is a `Restrict` FK onto `CustomerOrder`.
+
+## Known, documented UI limitation (not hidden)
+
+The create-quotation form has no `customerContactId` selector.
+`Quotation.customerContactId` is optional in the schema and the lib
+layer fully supports it, but no existing endpoint in this codebase
+lists a customer's contacts (`getCustomerById` doesn't return them,
+and no `/api/customers/[id]/contacts` route exists) — building a new
+endpoint purely to populate one optional dropdown was judged out of
+this milestone's scope rather than done silently. A quotation can
+still be linked to a specific contact via a direct `PATCH
+/api/quotations/[id]` call; the UI gap is the one thing left for a
+follow-up round, not a missing capability in the data model or lib
+layer.
+
+## Honest verification results
+
+- **`npx eslint .`** (full repo, every Milestone 7 file included) —
+  **clean, 0 problems.** One unescaped-apostrophe `react/no-unescaped-
+  entities` error was caught and fixed in
+  `quotation-actions-panel.tsx` during this round's own verification,
+  before being counted as clean.
+- **`npx tsc --noEmit`** — **331 errors, up from 257 at the end of
+  Milestone 6B** (+63 from `lib/quotations/*`, +5 from the UI
+  (`app/quotations/[id]/page.tsx` ×4, `.../print/page.tsx` ×1), +6 from
+  `tests/quotations-db.integration.test.ts`). Every one of the 74 new
+  errors was individually confirmed, by reading the actual error text
+  file-by-file (not just counted), to be the same single, already-
+  documented sandbox-only root cause as every prior milestone: `npx
+  prisma generate` cannot run here (`binaries.prisma.sh` blocked by this
+  sandbox's network allowlist), so the installed `@prisma/client` has
+  zero knowledge of `Quotation`/`QuotationLine`/`QuotationEvent`, their
+  2 new enums, or indeed any model from any prior milestone either —
+  manifesting as `TS7006` implicit-`any` on a Prisma query result's
+  `.map()` callback parameter, or `Prisma.Decimal`/
+  `Prisma.QuotationWhereInput`/`Prisma.QuotationSelect`/
+  `Prisma.PrismaClientKnownRequestError` reported missing from the
+  degraded stub `Prisma` namespace. Zero new error *categories*. **Run
+  `npx prisma generate` on your own machine** (SETUP-WINDOWS.md §24)
+  and these resolve the same way every prior milestone's schema-driven
+  `tsc` errors have.
+- **`npx vitest run`** (full project suite) — **442 passed, 75 skipped,
+  0 failed** (up from 364 passed/62 skipped at the end of Milestone
+  6B): +78 unconditional (`tests/quotations.test.ts`, covering every
+  pure function in `lib/quotations/validation.ts` — the full 6×6
+  status-transition matrix, every terminal/revisable/convertible/
+  editable predicate, quantity/validity-window/expiry-eligibility
+  checks, and every zod schema's accept/reject boundary — run and
+  confirmed passing in isolation before the full-suite run too) and
+  +13 gated (`tests/quotations-db.integration.test.ts`, confirmed to
+  skip cleanly on its own: `npx vitest run tests/quotations-db.
+  integration.test.ts` reports `13 skipped`) since
+  `RUN_DB_INTEGRATION_TESTS` is unset here. Zero regressions anywhere
+  in the pre-existing suite.
+- **`npm run build`** — hits this sandbox's pre-existing Google Fonts
+  network block in `app/layout.tsx` (`fonts.googleapis.com`), unrelated
+  to and untouched by this milestone — the same block every prior
+  round's build has hit since Milestone 1 (see that milestone's fix
+  round 2 for the original diagnosis). Turbopack's bundler itself
+  reached and compiled every new Milestone 7 route/page/component
+  before hitting the font fetch — the compile graph for this
+  milestone's new files is structurally sound — but as with every
+  prior milestone, no claim about the build's static-generation/
+  prerendering phase for these new routes should be read as sandbox-
+  verified, since getting past the font block alone would only reach
+  the same Prisma-stub wall described above. **Your next real `npm run
+  build`** (after `npx prisma generate`) **is what actually confirms
+  this.**
+- **The one thing this sandbox genuinely cannot confirm**: that the new
+  13-test gated file actually passes against a real, regenerated Prisma
+  client and a seeded database. It is written, follows this project's
+  established DB-integration-test conventions exactly (own
+  `Product`/`TaxCode` fixtures, `isDemo: true` throughout, FK-respecting
+  cleanup order confirmed against `prisma/schema.prisma`'s actual
+  `onDelete` clauses rather than assumed), and every function/field/
+  signature it calls was independently checked against the real
+  `lib/quotations/*` source files, not assumed — but **run `npx prisma
+  generate` and then `RUN_DB_INTEGRATION_TESTS=1 npm test` for real**
+  (SETUP-WINDOWS.md §24) before treating this as verified, same as
+  every gated test in this project. It covers: decimal-exact totals on
+  create (including the discount-before-VAT rule, verified against
+  hand-computed figures); rejecting an unlisted line with no
+  description and a catalogued line against an unknown product; every
+  DRAFT line-edit path recomputing stored totals correctly, then
+  blocked once issued; issuing refused with zero lines or a second
+  time; accept/reject responses (confirming ACCEPTED never creates a
+  `CustomerOrder` as a side effect); cancellation allowed from
+  DRAFT/ISSUED/ACCEPTED(no order) but blocked once converted; a full
+  convert-to-order cycle confirmed idempotent on a repeat call with
+  exactly one order ever created; a full revision cycle (new DRAFT row,
+  old row frozen and excluded from default listings, re-revision
+  blocked on both the old and new row); revision-history resolution
+  from either the root or a later revision's id; manual expire and the
+  system-wide sweep, each confirmed to leave a still-valid quotation
+  untouched; and the dual-write `QuotationEvent`/`AuditEvent` audit
+  trail across a create→issue→accept sequence.
+
+### Acceptance-criterion confirmation
+
+The spec's own central requirements, confirmed one by one: every SAP
+item code/description on a quotation line is either a real, looked-up
+catalogue value or explicitly marked as an unlisted/requested item —
+structurally, never a fabricated code; pricing is always a manually
+Sales-entered value with no automatic pricing/discount approval process
+built (the explicit scope exclusion, honored); the 6-status lifecycle
+is enforced by an exhaustive transition graph re-validated at write
+time, with expiry computed live rather than trusted from a stale label
+and a real (if background-job-less) server-side expiry mechanism built
+for it; a revision is always traceable to the original via
+`rootQuotationId`/`previousRevisionId`, with the old version's own
+history preserved and structurally excluded from ever being mistaken
+for current; converting an accepted quotation into an order is always
+an explicit, human-triggered, idempotent action, never automatic, and
+is blocked from creating a duplicate by two independent, redundant
+guards; a quotation already converted into a real order cannot be
+cancelled; a printable document exists, print-ready HTML given this
+project has no PDF library; and every mutating action writes both a
+dedicated `QuotationEvent` and a generic `AuditEvent` row.
+
+**Implemented: yes**, across every one of the spec's 15 numbered
+sections. **Tested: yes, with the one honest caveat already stated
+above** — the 78 unconditional tests cover every piece of pure logic
+directly; the 13 gated DB tests walk the full quotation lifecycle
+(creation through conversion, revision, and expiry) end to end against
+a real database but, as with every gated test in this project, have
+not been run against a real database from inside this sandbox, and
+that run — together with a real `npm run build` after `npx prisma
+generate` — is what remains before this milestone can be called fully
+verified rather than written and type-consistent.

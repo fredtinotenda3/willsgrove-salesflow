@@ -53,6 +53,22 @@
  * InvoiceClaimLine), then CreditNote, then CreditNoteImportBatch (which
  * CreditNote references).
  *
+ * Milestone 7 (Quotations Management) added three more models (Quotation,
+ * QuotationLine, QuotationEvent). Quotation and QuotationLine each have
+ * their own isDemo flag; QuotationEvent does not (mirroring OrderStatusHistory
+ * elsewhere in this file), so it is matched via its parent quotation instead.
+ * This whole group is deleted FIRST, before everything else in this script,
+ * for one reason that actually matters: Quotation.convertedOrderId is a
+ * Restrict FK onto CustomerOrder, so a demo quotation that was converted into
+ * a demo order would block that order's own deletion further below if
+ * deleted out of order. QuotationEvent and QuotationLine both carry Restrict
+ * FKs back to Quotation, so both must go before it. Quotation's own
+ * self-referential previousRevisionId FK (the revision chain) needs no
+ * special handling here -- deleteMany issues one SQL DELETE statement, and
+ * Postgres checks FK constraints after the whole statement completes, not
+ * row-by-row, so an entirely-demo revision chain deletes cleanly in one pass
+ * regardless of chain order.
+ *
  * Milestone 0 fix (round 4): this is 12 sequential round trips over one
  * connection to a pooled Neon endpoint, and Prisma's *default* interactive
  * transaction timeout is 5000ms -- comfortably exceeded under real network
@@ -84,6 +100,22 @@ async function main() {
 
   const result = await prisma.$transaction(
     async (tx) => {
+      // Milestone 7 (Quotations Management). Deleted first, before
+      // anything else in this script -- see the file-level comment above
+      // for why (Quotation.convertedOrderId is a Restrict FK onto
+      // CustomerOrder, deleted much further below).
+      const quotationEvents = await tx.quotationEvent.deleteMany({
+        where: { quotation: { isDemo: true } },
+      });
+
+      const quotationLines = await tx.quotationLine.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const quotations = await tx.quotation.deleteMany({
+        where: { isDemo: true },
+      });
+
       const verifications = await tx.productVerification.deleteMany({
         where: { orderLine: { isDemo: true } },
       });
@@ -223,6 +255,9 @@ async function main() {
           entityType: "System",
           entityId: "demo-data-removal",
           afterData: {
+            quotations: quotations.count,
+            quotationLines: quotationLines.count,
+            quotationEvents: quotationEvents.count,
             orders: orders.count,
             orderLines: orderLines.count,
             customers: customers.count,
@@ -254,6 +289,9 @@ async function main() {
       });
 
       return {
+        quotations: quotations.count,
+        quotationLines: quotationLines.count,
+        quotationEvents: quotationEvents.count,
         orders: orders.count,
         orderLines: orderLines.count,
         customers: customers.count,
@@ -283,6 +321,9 @@ async function main() {
   );
 
   console.log("Demo data removed:");
+  console.log(`  Quotations:       ${result.quotations}`);
+  console.log(`  Quotation lines:  ${result.quotationLines}`);
+  console.log(`  Quotation events: ${result.quotationEvents}`);
   console.log(`  Orders:           ${result.orders}`);
   console.log(`  Order lines:      ${result.orderLines}`);
   console.log(`  Customers:        ${result.customers}`);

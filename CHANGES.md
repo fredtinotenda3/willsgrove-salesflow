@@ -2129,3 +2129,90 @@ design rationale and honest verification results.
 | `docs/milestones/PROGRESS.md` | Modified | Added the full Milestone 6B section: design rationale (recording vs. executing in SAP, the auto-advance ratchet, claim-level matching granularity, manual entry + CSV import), what was built, honest verification results, and acceptance-criterion confirmation. |
 | `CHANGES.md` | Modified | This section. |
 | `SETUP-WINDOWS.md` | Modified | Added §23 — apply the new migration, regenerate the Prisma client, run the new gated test file, and a manual test script walking through recording a return/credit note, the CSV import wizard, and manual reconciliation via the UI. |
+
+## Milestone 7 — Quotations Management
+
+Built from your attached full specification (15 numbered sections) in
+one pass. See `docs/milestones/PROGRESS.md`'s Milestone 7 section for
+the full design rationale, known UI limitation, and honest verification
+results.
+
+## Schema / migration
+
+| File | Change | Reason |
+|---|---|---|
+| `prisma/schema.prisma` | Modified | 2 new enums (`QuotationStatus`, `QuotationEventType`), 3 new models (`Quotation`, `QuotationLine`, `QuotationEvent`), and one new value (`QUOTATION`) added to the existing `OrderSource` enum. Purely additive inverse-relation fields on `User`/`Customer`/`CustomerContact`/`Product`/`CustomerOrder` — no new column on any existing table besides the one enum value. |
+| `prisma/migrations/20261111150000_add_quotations_management/migration.sql` | Added | Hand-authored (this sandbox cannot run `prisma migrate dev`), matching the schema exactly: 1 `ALTER TYPE ... ADD VALUE`, 2 `CREATE TYPE`, 3 `CREATE TABLE`, their indexes and foreign keys (`Restrict` on every FK into `Customer`/`User`/`Quotation`/`CustomerOrder`, `SetNull` on `customerContactId`/`productId`). No existing table/column/enum value removed or changed. |
+
+## `lib/quotations/` (new module)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/quotations/validation.ts` | Added | Pure: the 6-status `QUOTATION_STATUS_TRANSITIONS` adjacency graph, `validateQuotationStatusTransition()`, `isTerminalQuotationStatus`/`isRevisableStatus`/`isConvertibleStatus`/`isEditableStatus`, `validatePositiveQuantity`/`validateValidityWindow`/`isEligibleForExpiry`, `percentStringSchema`, and every zod input schema. No `@prisma/client` import. |
+| `lib/quotations/calculations.ts` | Added | `server-only`, DB-adjacent: `computeQuotationLineAmounts()`/`computeQuotationTotals()` — exact `Prisma.Decimal` arithmetic, discount applied before VAT, quotation totals defined as the straight sum of already-rounded line amounts. |
+| `lib/quotations/create.ts` | Added | DB: `generateQuotationNumber()`, `resolveQuotationLines()` (shared with `edit.ts` — validates/snapshots/calculates every line identically whichever module calls it), `createQuotation()` with reference-collision retry. |
+| `lib/quotations/edit.ts` | Added | DB: `updateQuotationHeader`, `updateQuotationFollowUp` (deliberately not DRAFT-gated — follow-up scheduling stays meaningful on an ISSUED quotation awaiting a response), `addQuotationLine`/`updateQuotationLine`/`removeQuotationLine` (each recomputing and storing the quotation's totals). Every function but the follow-up one hard-blocks on any status other than DRAFT. |
+| `lib/quotations/issue.ts` | Added | DB: `issueQuotation()` — validates the transition and that at least one line exists. |
+| `lib/quotations/respond.ts` | Added | DB: `respondToQuotation()` — records the customer's ACCEPTED/REJECTED decision as a fact; never creates a `CustomerOrder` as a side effect. |
+| `lib/quotations/cancel.ts` | Added | DB: `cancelQuotation()` — validates the transition, then reads `convertedOrderId` directly to block cancelling an already-converted quotation (a data-fact check the transition graph itself can't express). |
+| `lib/quotations/revise.ts` | Added | DB: `reviseQuotation()` — copies header+lines byte-for-byte into a new DRAFT row, supersedes the original in the same transaction. |
+| `lib/quotations/convert-to-order.ts` | Added | DB: `convertQuotationToOrder()` — reuses `lib/orders.ts`'s `createOrderCore` directly; doubly guarded against duplicate orders (an app-level `convertedOrderId` pre-check plus a `QUO-CONVERT-<id>` idempotency key), both the order and the quotation's own link written in one transaction. |
+| `lib/quotations/expiry.ts` | Added | DB: `expireQuotation()` (one quotation, audited) and `sweepExpiredQuotations()` (every eligible `ISSUED` quotation system-wide, called by `scripts/expire-quotations.ts`) — both call the same `isEligibleForExpiry()` check, so neither can drift from the other. |
+| `lib/quotations/display.ts` | Added | Pure label/style maps for `QuotationStatus`/`QuotationEventType`, no `@prisma/client` import — safe for Client Components. |
+| `lib/quotations/queries.ts` | Added | DB, read-only: `listQuotations` (excludes `supersededAt: { not: null }` by default), `getQuotationById`, `listQuotationRevisions`/`getQuotationRevisionHistory` (resolves from either the root or any later revision's id), `getQuotationDashboardCounts` (value-by-status grouped by currency, never summed across currencies). |
+
+## API routes (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/api/quotations/route.ts` | Added | `GET` list + `POST` create. Any authenticated user. |
+| `app/api/quotations/dashboard/route.ts` | Added | `GET` — dashboard counts. |
+| `app/api/quotations/[id]/route.ts` | Added | `GET` detail + `PATCH` header edit (DRAFT-only, enforced in the lib layer). |
+| `app/api/quotations/[id]/lines/route.ts` | Added | `POST` — add a line (DRAFT-only). |
+| `app/api/quotations/[id]/lines/[lineId]/route.ts` | Added | `PATCH` update / `DELETE` remove a line (DRAFT-only). |
+| `app/api/quotations/[id]/follow-up/route.ts` | Added | `PATCH` — follow-up date/notes. Deliberately separate from the header-edit route; not DRAFT-gated. |
+| `app/api/quotations/[id]/issue/route.ts` | Added | `POST` — issue to the customer. |
+| `app/api/quotations/[id]/respond/route.ts` | Added | `POST` — record the customer's accept/reject decision. |
+| `app/api/quotations/[id]/cancel/route.ts` | Added | `POST` — cancel, with a required reason. |
+| `app/api/quotations/[id]/revise/route.ts` | Added | `POST` — create a new revision, returns its id/number. |
+| `app/api/quotations/[id]/convert-to-order/route.ts` | Added | `POST` — convert into a real order, returns the order id/reference and whether it was already converted. |
+| `app/api/quotations/[id]/expire/route.ts` | Added | `POST` — the manual per-quotation counterpart to the scheduled sweep script. |
+| `app/api/quotations/[id]/revisions/route.ts` | Added | `GET` — the full revision history for this quotation's lineage. |
+| Every route above | — | `requireUserOrResponse()` with no role array — same tier as order creation; `verifyCsrfOrigin` on every mutating route; `isValidId` on every path param. |
+
+## UI (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/quotations/page.tsx` | Added | Dashboard + paginated list: summary cards (fetched once, not re-fetched per filter), status tabs, debounced search, salesperson/currency/date filters, a value-by-status-and-currency card never summed across currencies or labelled revenue. |
+| `app/quotations/new/page.tsx` | Added | Server shell + auth check for quotation creation. |
+| `app/quotations/new/new-quotation-form.tsx` | Added | Client island: customer search, header fields, a per-line builder toggling between SAP-catalogue product search and a free-text unlisted-item description. Uses a module-level line-key counter rather than `crypto.randomUUID()` to avoid Next 16's Cache Components prerendering restriction (same fix `app/orders/new/page.tsx` already uses). |
+| `app/quotations/[id]/page.tsx` | Added | Detail page: fields grid, superseded/eligible-for-expiry banners, lines table with totals, customer-response/cancellation sections, revision-history list, event-history timeline, renders `QuotationActionsPanel`. |
+| `app/quotations/[id]/quotation-actions-panel.tsx` | Added | Client island: DRAFT line add/edit/remove, issue, record response, cancel, revise, convert-to-order, manual expire, follow-up scheduling — each gated by the quotation's own status/`isSuperseded`/`hasConvertedOrder` props, `router.refresh()` after every successful mutation. |
+| `app/quotations/[id]/print/page.tsx` | Added | The printable quotation document: zero-write Server Component, A4 print CSS, company identity from `lib/company-info.ts` — mirrors `/orders/[id]/assembly-form` exactly. A cautionary banner shows for any non-current (DRAFT/CANCELLED/REJECTED/EXPIRED/superseded) status rather than hiding the page outright. |
+| `app/quotations/[id]/print/print-actions.tsx` | Added | The print page's one client island (`window.print()`), `print:hidden` so it never appears in the printed output. |
+| `app/components/sidebar.tsx` | Modified | New "Quotations" entry in the WORKSPACE section, next to "PO Intake" — a quotation is the pre-order sales step, not an operational/fulfilment concern. |
+
+## Other changes
+
+| File | Change | Reason |
+|---|---|---|
+| `scripts/expire-quotations.ts` | Added | One-command script calling `sweepExpiredQuotations()`, mirroring `scripts/remove-demo-data.ts`'s own `main()`/`.catch()`/`.finally()` shape — meant to be run on a real schedule (Windows Task Scheduler/cron; see SETUP-WINDOWS.md §24). |
+| `package.json` | Modified | Added the `quotations:expire` script entry. |
+| `scripts/remove-demo-data.ts` | Modified | New deletion block (`QuotationEvent` → `QuotationLine` → `Quotation`) inserted at the very start of the transaction, before the existing `CustomerOrder` deletion block — `Quotation.convertedOrderId` is a `Restrict` FK onto `CustomerOrder`, so this group must run first; their counts added to the audit event and the summary output. |
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/quotations.test.ts` | Added | 78 unconditional tests: the full 6×6 status-transition matrix, every terminal/revisable/convertible/editable predicate, quantity/validity-window/expiry-eligibility checks, and every zod schema's accept/reject boundary (including the catalogued-vs-unlisted XOR). All passing. |
+| `tests/quotations-db.integration.test.ts` | Added | 13 gated tests against a real database, building its own `Product`/`TaxCode` fixtures: decimal-exact totals on create (hand-verified figures, discount before VAT); rejection of an unlisted line with no description and a catalogued line against an unknown product; every DRAFT line-edit path recomputing totals, then blocked once issued; issuing refused with zero lines or twice; accept/reject responses (confirming ACCEPTED never creates an order); cancellation allowed until converted, then blocked; a full convert-to-order cycle confirmed idempotent on repeat; a full revision cycle (new DRAFT row, old row frozen and excluded from default listings, re-revision blocked both ways); revision-history resolution from either the root or a later revision's id; manual expire + the system-wide sweep, each leaving a still-valid quotation untouched; and the dual-write `QuotationEvent`/`AuditEvent` trail. Follows this project's established DB-integration-test conventions exactly; not yet run against a real database from this sandbox — see PROGRESS.md's honest verification results. |
+
+## Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/ROADMAP.md` | Modified | Added Milestone 7's row, a "never conflate" entry (a quotation vs. the order it may eventually become), and its change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the full Milestone 7 section: design rationale (no 7th status, revision-as-new-row, no automatic pricing approval, live-computed expiry, doubly-guarded idempotent conversion, catalogued-vs-unlisted structural distinction, no new RBAC role, print-ready HTML in place of a PDF), what was built, the known UI limitation, honest verification results, and acceptance-criterion confirmation. |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §24 — apply the new migration, regenerate the Prisma client, run the new gated test file, set up the scheduled expiry script, and a manual test script walking through the full create→issue→respond→revise→convert lifecycle via the UI. |
