@@ -26,6 +26,8 @@ import {
   Inbox,
   TrendingDown,
   Receipt,
+  FileWarning,
+  Undo2,
 } from "lucide-react";
 
 const navigation = [
@@ -101,6 +103,22 @@ const navigation = [
         name: "Invoice Reconciliation",
         href: "/invoice-reconciliation",
         icon: Receipt,
+      },
+      // Milestone 6A (Invoice Claims Management). Same "no pre-existing
+      // dead placeholder link" situation as Lost Sales/Invoice
+      // Reconciliation above.
+      {
+        name: "Invoice Claims",
+        href: "/invoice-claims",
+        icon: FileWarning,
+      },
+      // Milestone 6B (Returns & Credit Notes). Same "no pre-existing dead
+      // placeholder link" situation as Lost Sales/Invoice Reconciliation/
+      // Invoice Claims above.
+      {
+        name: "Returns & Credits",
+        href: "/returns-credits",
+        icon: Undo2,
       },
     ],
   },

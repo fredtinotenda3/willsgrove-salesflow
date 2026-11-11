@@ -1966,3 +1966,166 @@ honest verification results.
 | `docs/milestones/PROGRESS.md` | Modified | Added the full Milestone 5 section: architecture assessment, design rationale for every decision (derive-don't-store, running-tally matching, cancelled-invoice exclusion, CSV-only scope, date-parsing conservatism), what was built, what was deliberately not touched, the one real bug found and fixed, tests, honest verification results, and the explicit nine-step acceptance-criterion confirmation. |
 | `CHANGES.md` | Modified | This section. |
 | `SETUP-WINDOWS.md` | Modified | Added §21 — apply the new migration, regenerate the Prisma client, run the new gated test file, and a manual test script walking through importing a sample invoice CSV and resolving an ambiguous match via the UI. |
+
+## Milestone 6A — Invoice Claims Management
+
+Stage 1 of 2 of the Invoice Claims Management & Returns/Credit Notes
+specification. 6B (Returns / Credit Notes) is explicitly deferred
+until this stage is reviewed. See `docs/milestones/PROGRESS.md`'s
+Milestone 6A section for the full architecture assessment, design
+rationale, and honest verification results.
+
+## Schema / migration
+
+| File | Change | Reason |
+|---|---|---|
+| `prisma/schema.prisma` | Modified | 5 new enums (`InvoiceClaimCategory`, `InvoiceClaimPriority`, `InvoiceClaimStatus`, `ClaimLineDisputeType`, `ClaimResolutionDecision`) and 4 new models (`InvoiceClaim`, `InvoiceClaimLine`, `ClaimResolution`, `InvoiceClaimAttachment`). Purely additive inverse-relation fields on `SapInvoice`/`SapInvoiceLine`/`CustomerOrder`/`Customer`/`User` — no new column on any existing table. |
+| `prisma/migrations/20261111000000_add_invoice_claims_management/migration.sql` | Added | Hand-authored (this sandbox cannot run `prisma migrate dev`), matching the schema exactly: 5 `CREATE TYPE`, 4 `CREATE TABLE`, their indexes and foreign keys (`Restrict` on every FK into `SapInvoice`/`SapInvoiceLine`/`CustomerOrder`/`Customer`/`User`). No existing table/column/enum value touched. |
+
+## `lib/invoice-claims/` (new module)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/invoice-claims/validation.ts` | Added | Pure: the 5 fixed enums, the exhaustive `CLAIM_STATUS_TRANSITIONS` adjacency graph, `validateClaimStatusTransition()`, `isConcludedStatus()`, the exhaustive `resolutionDecisionToClaimStatus()` mapping, quantity/amount validators, zod schemas. No `@prisma/client` import. |
+| `lib/invoice-claims/queries.ts` | Added | DB, read-only: `getAlreadyClaimedQuantity`/`getAlreadyClaimedTotal` (live aggregates, never a stored running total), `listInvoiceClaims`, `getClaimDetail`, `listClaimLinesForInvoiceLine`. |
+| `lib/invoice-claims/create-claim.ts` | Added | DB: `generateClaimReference()` and `createInvoiceClaim()` — validates invoice/customer/order/assignee existence and every line's quantities/amount both before and inside the transaction (race-safety), creates the claim + lines, batch-fills display snapshots, audits. |
+| `lib/invoice-claims/claim-lifecycle.ts` | Added | DB: `changeClaimStatus()` — validates the transition, inline-checks the actor's role only when the specific transition requires approval, sets `resolvedAt`/`closedAt`, audits. |
+| `lib/invoice-claims/claim-resolution.ts` | Added | DB: `recordClaimResolution`, `approveClaimResolution`, `rejectClaimResolution` — append-only resolution history, defensive re-validation of the transition even though the route layer already gates approval/reject by role, each audited. |
+| `lib/invoice-claims/attachments.ts` | Added | DB + storage: `uploadClaimAttachment()` (content-sniffed, storage-cleanup on any DB-write failure) and `getClaimAttachmentForDownload()`, reusing the existing storage driver and content-sniffing helpers unchanged. |
+| `lib/invoice-claims/display.ts` | Added | Pure label/style maps, no `@prisma/client` import — safe for Client Components. |
+| `lib/invoice-claims/financial.ts` | Added | Pure/DB mix: `computeClaimLineDisputedValue()` (always from the real SAP `unitPrice`, never the customer's claimed price), `computeClaimFinancialSummary()` (six structurally distinct exposure figures, `actualSapCreditedAmount` always `null` this stage), `computeExposureByCurrency()` (never converts). |
+| `lib/invoice-claims/dashboard.ts` | Added | DB: `getInvoiceClaimsDashboard()` — status/category/priority/customer/product/department breakdowns, average resolution time, repeat-complaint customers, exposure by currency. |
+
+## API routes (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/api/invoice-claims/route.ts` | Added | `GET` list + `POST` create. Any authenticated user. |
+| `app/api/invoice-claims/[id]/route.ts` | Added | `GET` — claim detail + financial summary. |
+| `app/api/invoice-claims/[id]/status/route.ts` | Added | `POST` — change status. Open to any authenticated user; role checked inline only for transitions that require approval. |
+| `app/api/invoice-claims/[id]/resolutions/route.ts` | Added | `POST` — record a resolution. Any authenticated user. |
+| `app/api/invoice-claims/[id]/resolutions/[resolutionId]/approve/route.ts` | Added | `POST` — approve a resolution. `SALES_MANAGER`/`ADMINISTRATOR` only. |
+| `app/api/invoice-claims/[id]/resolutions/[resolutionId]/reject/route.ts` | Added | `POST` — reject a resolution. `SALES_MANAGER`/`ADMINISTRATOR` only. |
+| `app/api/invoice-claims/[id]/attachments/route.ts` | Added | `POST` — multipart attachment upload. Any authenticated user. |
+| `app/api/invoice-claims/attachments/[id]/route.ts` | Added | `GET` — attachment download. Dedicated route, not folded into `app/api/files/[id]/route.ts`. |
+| `app/api/invoice-claims/dashboard/route.ts` | Added | `GET` — the dashboard summary. |
+
+## UI (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/invoice-claims/page.tsx` | Added | Claims queue: status filter pills, search, pagination, customer drill-down from the dashboard. |
+| `app/invoice-claims/new/page.tsx` | Added | Server shell + auth check for claim creation. |
+| `app/invoice-claims/new/new-claim-form.tsx` | Added | Client island: invoice search, line selection with per-line dispute-type toggle, customer resolution, category/priority/assignee/communication notes, submits to `/api/invoice-claims`. |
+| `app/invoice-claims/[id]/page.tsx` | Added | Claim detail: header, financial-exposure metrics, disputed-lines table, attachments, append-only resolution history with a 6B-follow-up hint. |
+| `app/invoice-claims/[id]/claim-actions-panel.tsx` | Added | Client island: change-status, record-resolution, approve/reject, attachment upload. |
+| `app/invoice-claims/dashboard/page.tsx` | Added | Status/category/customer/product/department breakdowns, exposure-by-currency table, average resolution time, repeat complaints. |
+| `app/components/sidebar.tsx` | Modified | New "Invoice Claims" entry under Operations (`FileWarning` icon) linking to `/invoice-claims` — added fresh, no pre-existing dead placeholder for it. |
+
+## Other changes
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/invoice-reconciliation/queries.ts` | Modified | Added an optional `search` parameter to `listSapInvoices()` (filters `sapDocNum`/`customerName`/`matchedCustomer.name`, case-insensitive) — a small, backward-compatible extension needed directly by the claim-creation form's invoice picker, not unrelated refactoring. |
+| `scripts/remove-demo-data.ts` | Modified | New leaves-first deletion block (`InvoiceClaimAttachment` → `ClaimResolution` → `InvoiceClaimLine` → `InvoiceClaim`) inserted before the existing SAP-invoice deletion block, since the new tables' `Restrict` FKs would otherwise block demo-data cleanup. |
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/invoice-claims.test.ts` | Added | 26 unconditional tests covering every pure function in `validation.ts` directly — including the test that caught a real transition-graph bug (`AWAITING_INTERNAL_ACTION` was missing `"RESOLVED"`), fixed before delivery. All passing. |
+| `tests/invoice-claims-db.integration.test.ts` | Added | 6 gated tests against a real database: claim creation + quantity dispute, live-aggregate rejection of a second claim once a line's remaining quantity is exhausted, amount-only dispute, full resolution lifecycle (record → reject → record → approve), direct transition-graph enforcement, and a financial summary confirming the actual-SAP-credited figure stays `null`/unavailable. Follows this project's established DB-integration-test conventions exactly; not yet run against a real database from this sandbox — see PROGRESS.md's honest verification results. |
+
+## Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/ROADMAP.md` | Modified | Marked Milestone 6 (Invoice Claims Management) in progress / its 6A stage done, added its "never conflate" entry, and its change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the full Milestone 6A section: architecture assessment, design rationale (recommendation-vs-executed-action, the exhaustive transition graph, live already-claimed aggregates, append-only resolutions, snapshot-vs-live, six-figure financial exposure), what was built, what was deliberately not touched (the 6B boundary), the one real bug found and fixed, tests, honest verification results, and acceptance-criterion confirmation. |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §22 — apply the new migration, regenerate the Prisma client, run the new gated test file, and a manual test script walking through filing a claim and taking it through resolution via the UI. |
+
+## Milestone 6B — Returns & Credit Notes
+
+Stage 2 of 2 of the Invoice Claims Management & Returns/Credit Notes
+specification, built per your own explicit instruction to start it
+without waiting for a separate review round on 6A. See
+`docs/milestones/PROGRESS.md`'s Milestone 6B section for the full
+design rationale and honest verification results.
+
+## Schema / migration
+
+| File | Change | Reason |
+|---|---|---|
+| `prisma/schema.prisma` | Modified | 2 new enums (`ReturnCondition`, `CreditNoteMatchStatus`) and 3 new models (`ClaimReturn`, `CreditNote`, `CreditNoteImportBatch`). Reuses `InvoiceLineMatchMethod` (Milestone 5) as-is for `CreditNote.matchMethod`. Purely additive inverse-relation fields on `User`/`SapInvoice`/`InvoiceClaim`/`InvoiceClaimLine` — no new column on any existing table. |
+| `prisma/migrations/20261111120000_add_returns_credit_notes/migration.sql` | Added | Hand-authored (this sandbox cannot run `prisma migrate dev`), matching the schema exactly: 2 `CREATE TYPE`, 3 `CREATE TABLE`, their indexes and foreign keys (`Restrict` on every FK into `User`/`SapInvoice`/`InvoiceClaim`/`InvoiceClaimLine`/`CreditNote`). No existing table/column/enum value touched. |
+
+## `lib/returns-credits/` (new module)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/returns-credits/validation.ts` | Added | Pure: `ReturnCondition`/`CreditNoteMatchStatus` enums, `returnConditionRequiresDetail()`, zod input schemas. No `@prisma/client` import. |
+| `lib/returns-credits/status-recompute.ts` | Added | Pure: `determineAutoAdvanceTarget()` — the full decision matrix for auto-advancing a claim's status once an actual return/credit note is recorded, covering all four credit-bearing/return decision shapes. Two dead, impossible comparisons (`TS2367`) caught and fixed via `tsc` before delivery. No `@prisma/client` import, unit-testable in isolation. |
+| `lib/returns-credits/apply-status-recompute.ts` | Added | DB: `recomputeClaimStatusAfterActuals()` — gathers live inputs (latest approved resolution, live credit-note sum, received-return count), calls the pure decision function, then defensively re-validates against `validateClaimStatusTransition()` before writing (throwing, not silently skipping, on an impossible edge) and delegates the actual write to 6A's `applyValidatedClaimStatusChange()`. |
+| `lib/returns-credits/matching.ts` | Added | Pure: `matchCreditNoteToClaim()` — conservative claim-level matching (exactly one qualifying candidate or `null`, never a guess), mirroring `lib/invoice-reconciliation/matching.ts`'s own philosophy. No `@prisma/client` import. |
+| `lib/returns-credits/match-credit-note.ts` | Added | DB: `runAutoMatchForCreditNote()` — gathers candidate claims against a credit note's resolved base invoice (each with its own live actual-credited total), calls the pure matcher, writes the match and recomputes the newly-linked claim's status. |
+| `lib/returns-credits/csv.ts` | Added | Pure: SAP credit-note CSV column mapping (`CREDIT_NOTE_TARGET_FIELDS`, suggestion patterns), preview parsing, row validation (only `docNum`/`amount` required), and grouping of flattened export rows into one credit note per document (header-level `amount` taken from the first row only, never summed). |
+| `lib/returns-credits/plan-import.ts` | Added | DB, read-only: `readCreditNoteCsvUpload()`, `planCreditNoteImport()` — chunked dedupe lookup against existing `CreditNote` rows and chunked base-invoice resolution against already-imported `SapInvoice` rows, never writing anything. |
+| `lib/returns-credits/execute-import.ts` | Added | DB, transactional: `executeCreditNoteImport()` — creates every planned `CreditNote` row, then a second pass auto-matching each against its candidate claims, audited. |
+| `lib/returns-credits/returns.ts` | Added | DB: `generateReturnReference()`/`recordClaimReturn()` — gated on the claim already having an approved resolution, validates condition/quantity, creates the `ClaimReturn` row, audits, and triggers the status recompute. Role-agnostic by design (any authenticated user). |
+| `lib/returns-credits/credit-notes.ts` | Added | DB: `recordCreditNoteManually()`, `manuallyMatchCreditNote()`, `markCreditNoteCannotLink()`, `reopenCreditNoteMatch()` — the manual single-record entry path and the manual-reconciliation actions for an imported credit note. Role-agnostic at the lib layer; `SALES_MANAGER`/`ADMINISTRATOR`-only enforcement lives entirely in the route layer. |
+| `lib/returns-credits/display.ts` | Added | Pure label/style maps for `ReturnCondition`/`CreditNoteMatchStatus`, no `@prisma/client` import — safe for Client Components. |
+| `lib/returns-credits/queries.ts` | Added | DB, read-only: `listClaimReturns`, `listCreditNotesForClaim`, `listCreditNotes` (the reconciliation queue, paginated/filterable), `getCreditNoteDetail`, `listClaimsForInvoice` (the full, unfiltered candidate set for the manual-match picker), `listCreditNoteImportBatches`. |
+
+## API routes (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/api/invoice-claims/[id]/returns/route.ts` | Added | `GET` list + `POST` record a physical return. Any authenticated user. |
+| `app/api/invoice-claims/[id]/credit-notes/route.ts` | Added | `GET` list (any user) + `POST` record a credit note manually (`SALES_MANAGER`/`ADMINISTRATOR` only). The claim id always comes from the URL, never the body — any `claimId` in the request body is overwritten before validation. |
+| `app/api/returns-credits/import/preview/route.ts` | Added | `POST` — two-stage stateless preview (headers, then plan). `SALES_MANAGER`/`ADMINISTRATOR` only. |
+| `app/api/returns-credits/import/confirm/route.ts` | Added | `POST` — re-plans and writes, with a double-submit guard comparing the fresh plan's counts against the operator's confirmed preview. `SALES_MANAGER`/`ADMINISTRATOR` only. |
+| `app/api/returns-credits/import-history/route.ts` | Added | `GET` — past import batches. Any authenticated user. |
+| `app/api/returns-credits/credit-notes/route.ts` | Added | `GET` — the reconciliation queue, filterable. Any authenticated user. |
+| `app/api/returns-credits/credit-notes/[id]/route.ts` | Added | `GET` — one credit note's detail. Any authenticated user. |
+| `app/api/returns-credits/credit-notes/[id]/candidate-claims/route.ts` | Added | `GET` — every claim against the credit note's resolved base invoice, for the manual-match picker. Any authenticated user. |
+| `app/api/returns-credits/credit-notes/[id]/match/route.ts` | Added | `POST` — manual match to a claim. `SALES_MANAGER`/`ADMINISTRATOR` only. |
+| `app/api/returns-credits/credit-notes/[id]/cannot-link/route.ts` | Added | `POST` — mark unlinkable. `SALES_MANAGER`/`ADMINISTRATOR` only. |
+| `app/api/returns-credits/credit-notes/[id]/reopen/route.ts` | Added | `POST` — reopen back to `UNMATCHED`. `SALES_MANAGER`/`ADMINISTRATOR` only. |
+
+## UI (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/returns-credits/page.tsx` | Added | The credit-note reconciliation queue: match-status filter pills, paginated table, links to the import wizard and import history. |
+| `app/returns-credits/[id]/page.tsx` | Added | One credit note's detail, with a `CreditNotePanel` action island for match/cannot-link/reopen. |
+| `app/returns-credits/[id]/credit-note-panel.tsx` | Added | Client island: manual match (loads candidate claims), cannot-link, reopen. |
+| `app/returns-credits/import/page.tsx` | Added | The 3-stage SAP credit-note CSV import wizard (upload → map columns → validate/preview → confirm), mirroring `app/invoice-reconciliation/import/page.tsx`'s own shape. |
+| `app/returns-credits/import-history/page.tsx` | Added | Read-only list of past import batches. |
+| `app/invoice-claims/[id]/returns-credits-panel.tsx` | Added | Client island on the claim detail page: record-physical-return (any user) and record-credit-note-manually (`SALES_MANAGER`/`ADMINISTRATOR`, re-enforced server-side) forms. |
+| `app/invoice-claims/[id]/page.tsx` | Modified | New "Physical returns" and "Credit notes" read-only sections; the financial-exposure grid now shows a live "Actual SAP credited" figure and a new "Credit shortfall" metric in place of 6A's static "Pending Milestone 6B" placeholder; `ReturnsCreditsPanel` wired in above `ClaimActionsPanel`. |
+| `app/components/sidebar.tsx` | Modified | New "Returns & Credits" entry under Operations (`Undo2` icon) linking to `/returns-credits` — added fresh, no pre-existing dead placeholder for it. |
+
+## Other changes
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/invoice-claims/financial.ts` | Modified | `actualSapCreditedAmount` is now a live sum of real `CreditNote.amount` rows (no longer 6A's placeholder `null`), `actualCreditDataAvailable` is now always `true`; added `actualCreditShortfall` and `actualExceedsApproved` (flags, never clamps, SAP crediting more than was approved), and `CurrencyExposureBucket` gained the same live `actualSapCreditedAmount` roll-up. |
+| `scripts/remove-demo-data.ts` | Modified | New leaves-first deletion block (`ClaimReturn` → `CreditNote` → `CreditNoteImportBatch`) inserted before the existing Milestone 6A deletion block, since the new tables' `Restrict` FKs would otherwise block demo-data cleanup; their counts added to the audit event and the summary output. |
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/returns-credits.test.ts` | Added | 42 unconditional tests: the full `determineAutoAdvanceTarget()` decision matrix (every decision shape, every current-status guard, the never-escalate-partial and never-clamp-the-excess rules), `matchCreditNoteToClaim()`'s ambiguous/exact-match/no-remaining-exposure cases, and the CSV column-mapping/validation/grouping logic. All passing. |
+| `tests/returns-credits-db.integration.test.ts` | Added | 8 gated tests against a real database, driving claims to `APPROVED` through the real Milestone 6A lifecycle rather than writing status by hand: physical-return auto-resolution; full-credit auto-resolution with the financial summary checked; partial-credit never escalating to resolved; an over-credit flagged, never clamped; CSV import auto-matching the single outstanding candidate; CSV import landing `UNMATCHED` on an ambiguous (two-qualifying-claim) case; a full manual match/cannot-link/reopen cycle; and both `recordClaimReturn`/`recordCreditNoteManually` refusing to act on a claim with no approved resolution. Follows this project's established DB-integration-test conventions exactly; not yet run against a real database from this sandbox — see PROGRESS.md's honest verification results. |
+| `tests/invoice-claims-db.integration.test.ts` | Modified | Updated one 6A test's assertions: `actualSapCreditedAmount`/`actualCreditDataAvailable` are no longer asserted `null`/`false` (that was 6A's honest placeholder, now intentionally superseded by 6B) — now asserts the live `"0.0000"`/`true`/`"0.0000"`/`false` values for a claim with no credit note recorded yet. |
+
+## Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/ROADMAP.md` | Modified | Marked Milestone 6B (Returns & Credit Notes) done, added two new "never conflate" entries (approved-vs-actual-credited amount; the status auto-advance ratchet), and its change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the full Milestone 6B section: design rationale (recording vs. executing in SAP, the auto-advance ratchet, claim-level matching granularity, manual entry + CSV import), what was built, honest verification results, and acceptance-criterion confirmation. |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §23 — apply the new migration, regenerate the Prisma client, run the new gated test file, and a manual test script walking through recording a return/credit note, the CSV import wizard, and manual reconciliation via the UI. |

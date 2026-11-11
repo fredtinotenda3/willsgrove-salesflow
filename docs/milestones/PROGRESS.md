@@ -3279,3 +3279,717 @@ can be called verified rather than merely written and type-consistent.
 
 **Do not start Milestone 6A until this is reviewed** — per the spec's
 own explicit instruction.
+
+## Milestone 6A — Invoice Claims Management
+
+Built on top of Milestone 5 per the "WILLSGROVE SALESFLOW — MILESTONE
+6: INVOICE CLAIMS MANAGEMENT & RETURNS/CREDIT NOTES" specification,
+stage 1 of 2 (6B — Returns / Credit Notes — is explicitly deferred
+until this stage is delivered and reviewed, per both the spec's own
+Part 5 instruction and this project's standing multi-session working
+agreement). As with every milestone since 4, the architecture
+assessment below was done before any schema or code was written.
+
+### Architecture assessment (done before implementation)
+
+**Reusable, unmodified:** Milestone 5's `SapInvoice`/`SapInvoiceLine`
+models are read-only from this milestone's perspective — a claim
+always links to one `SapInvoice` and, where possible, one
+`SapInvoiceLine`, but nothing in `lib/invoice-claims/` ever writes to
+either. `lib/picking/validation.ts`'s scaled-BigInt decimal-string
+helpers (`parseScaledDecimal`, `decimalStringSchema`) are imported
+directly for all quantity/money arithmetic, for the same reason every
+prior milestone has reused them. The generic `AuditEvent` model is
+reused for every claim action (creation, status change, resolution
+recorded/approved/rejected, attachment upload) — no bespoke
+claim-history table. `lib/storage/index.ts`'s `getStorageDriver()` and
+`lib/storage/content-sniff.ts`'s `validateUploadContent` are reused
+unchanged for claim attachments, exactly as `OrderDocument` already
+uses them.
+
+**Schema additions identified as required:** four new tables
+(`InvoiceClaim`, `InvoiceClaimLine`, `ClaimResolution`,
+`InvoiceClaimAttachment`) and five new enums (`InvoiceClaimCategory`,
+`InvoiceClaimPriority`, `InvoiceClaimStatus`, `ClaimLineDisputeType`,
+`ClaimResolutionDecision`). No column was added to `SapInvoice`/
+`SapInvoiceLine`/`CustomerOrder`/`Customer` — every new fact lives on
+the four new tables, which point *at* the existing data via nullable/
+required foreign keys, never the reverse.
+
+**Conflicts with Milestones 0–5: none found.** The spec's own central
+distinction — *customer complaint ≠ rejection ≠ quantity dispute ≠
+physical return ≠ SAP credit note ≠ confirmed financial loss* — maps
+directly onto what this milestone does and does not build: an
+`InvoiceClaim` records a complaint and a proposed/approved
+*resolution*, never an executed action. No accounting transaction is
+ever created, no SAP invoice field is ever altered, and no
+`actualSapCreditedAmount` is ever anything but `null` in this stage —
+that figure can only come from a real SAP credit-note document, which
+is Milestone 6B's job, not this one's.
+
+### The central rules this milestone exists to enforce
+
+- *"A recommendation is not the same as an executed action."*
+  Recording a `ClaimResolution` (`recordClaimResolution()`) never
+  changes financial exposure beyond "potential" — it only moves the
+  claim to `AWAITING_INTERNAL_ACTION`. Only `approveClaimResolution()`
+  (role-gated, `SALES_MANAGER`/`ADMINISTRATOR` only) sets
+  `approvedCreditAmount` and advances the claim past that point, via
+  `resolutionDecisionToClaimStatus()` — an exhaustive `switch` (a
+  missing case is a compile error, not a runtime surprise) mapping
+  each of the 9 `ClaimResolutionDecision` values to exactly one target
+  status. Even then, `approvedCreditAmount` is an *approved exposure*
+  figure, never a claim that SAP has actually issued a credit —
+  `computeClaimFinancialSummary()` always returns
+  `actualSapCreditedAmount: null, actualCreditDataAvailable: false`,
+  unconditionally, in every code path, because that fact does not and
+  cannot exist in this stage.
+- *"No arbitrary status changes bypassing investigation/approval."*
+  `CLAIM_STATUS_TRANSITIONS` (`lib/invoice-claims/validation.ts`) is an
+  exhaustive `Record<ClaimStatus, readonly ClaimStatus[]>` adjacency
+  list — TypeScript enforces every one of the 9 statuses has an entry,
+  so a new status added later without updating this table is a
+  compile error, not a silent gap. `validateClaimStatusTransition()`
+  is the single gate every status change passes through (direct
+  change-status calls, resolution recording, and resolution approval/
+  rejection all call it, never a bespoke check of their own), and it
+  alone decides `requiresApproval` for a given transition.
+- *"Accepted + rejected quantity across every claim ever filed against
+  a line must never exceed what was invoiced."* `getAlreadyClaimedQuantity()`/
+  `getAlreadyClaimedTotal()` (`lib/invoice-claims/queries.ts`) are live
+  aggregates — `SUM(acceptedQuantity + rejectedQuantity)` across every
+  `InvoiceClaimLine` ever created against one `SapInvoiceLine`, not a
+  stored running total anywhere — because more than one claim can
+  legitimately be filed against the same invoice line over time (a
+  second dispute after the first was partially resolved, for example).
+  `validateClaimLineQuantities()` checks the new line's requested
+  accepted+rejected quantity against `invoiced - alreadyClaimedElsewhere`,
+  both before the transaction opens (fast failure with a specific
+  field error) and again inside it against a transaction-consistent
+  read (closing the race window between two concurrent claims against
+  the same line).
+
+### Design rationale for the data model
+
+- **Fixed, non-DB-configurable enums**, per the user's own confirmed
+  answer: `CLAIM_CATEGORIES` (11 values), `CLAIM_PRIORITIES`,
+  `CLAIM_STATUSES` (the 9-value lifecycle), `CLAIM_LINE_DISPUTE_TYPES`
+  (`QUANTITY`/`AMOUNT_ONLY`), `RESOLUTION_DECISIONS` (9 values) — all
+  `as const` arrays in `lib/invoice-claims/validation.ts`, with `OTHER`
+  as the escape valve on category and resolution decision only
+  (matching the existing `LostSaleReason`/`DecisionSource` precedent),
+  each requiring a free-text detail when selected
+  (`claimCategoryRequiresDetail`/`resolutionDecisionRequiresDetail`).
+- **Two-tier authorization, per the user's own confirmed answer:** any
+  authenticated user may create a claim, record investigation
+  findings, and propose a resolution; only `SALES_MANAGER`/
+  `ADMINISTRATOR` may approve a resolution or move a claim into
+  `RESOLVED`/`PARTIALLY_RESOLVED`/`APPROVED`/`REJECTED`/`CLOSED`
+  (`isApprovalWeightStatus()`). This is enforced at two different
+  layers on purpose: every resolution-approve/-reject route is
+  whole-route-gated via `requireUserOrResponse([...])`, matching every
+  prior milestone's convention for approval-weight actions — but the
+  status-change route (`[id]/status/route.ts`) stays open to *any*
+  authenticated user, because a non-approval-weight transition (e.g.
+  `OPEN` → `UNDER_INVESTIGATION`) should not require manager
+  involvement at all. `changeClaimStatus()` inline-checks the actor's
+  role only when `validateClaimStatusTransition()` itself reports
+  `requiresApproval: true` for the specific transition requested. This
+  is a deliberate, documented variation from the whole-route gate used
+  everywhere else, not an inconsistency — a single status endpoint
+  serves two different authorization weights depending on what's being
+  asked of it.
+- **Append-only `ClaimResolution`.** Recording a new resolution never
+  edits a prior one — a prior *rejected* recommendation remains
+  permanently visible in the claim's resolution history, exactly as a
+  real investigation trail should. `approvedById`/`rejectedById` are
+  mutually exclusive by application logic (a resolution already
+  approved or rejected cannot be approved/rejected again — checked
+  explicitly, `409` on conflict — not a DB constraint, since Prisma has
+  no native "exactly one of two nullable FKs" check).
+- **Snapshot-for-display, re-read-live-for-math.**
+  `InvoiceClaimLine.sapItemCodeSnapshot`/`sapItemDescriptionSnapshot`
+  exist purely so the claim detail page and lists can show what was
+  claimed without a join back to (potentially since-changed) SAP data
+  — filled by a small batch update right after the nested line-create,
+  since Prisma's nested-create API has no "computed from elsewhere"
+  field. Every quantity/financial calculation (`getAlreadyClaimedTotal`,
+  `computeClaimLineDisputedValue`, the dashboard) always re-reads the
+  live `SapInvoiceLine`, never the snapshot — the snapshot is cosmetic
+  only and is never trusted for a number.
+- **Financial exposure kept as six structurally distinct figures**,
+  never collapsed into one "claim value": original invoice value
+  (from the real SAP line, untouched), claimed value (the sum of what
+  was disputed, flagged `claimedValueIncomplete` when a `QUANTITY`
+  line's `sapLine.unitPrice` is unknown — never guessed), potential
+  credit exposure (claimed value, pending), approved credit exposure
+  (the sum of `approvedCreditAmount` across approved resolutions
+  only), the actual SAP-credited amount (always `null`/unavailable
+  this stage, by design), and the remaining unresolved exposure
+  (claimed minus approved). `computeExposureByCurrency()` buckets by
+  the invoice's real `currencyCode` (or `"UNKNOWN"`) and never
+  converts between currencies, matching the spec's own instruction.
+- **A disputed line's value is computed from the real SAP unit price,
+  never the customer's claimed price.** `computeClaimLineDisputedValue()`
+  for a `QUANTITY` dispute multiplies `rejectedQuantity` by
+  `sapLine.unitPrice` (not `disputedUnitPrice`, which is recorded for
+  context only) — a customer alleging a different price does not
+  change what SalesFlow computes as financial exposure; that figure
+  always traces back to SAP's own billed price.
+- **Dedicated, non-generalized attachment storage.**
+  `InvoiceClaimAttachment` gets its own download route
+  (`app/api/invoice-claims/attachments/[id]/route.ts`), deliberately
+  *not* folded into the existing, `OrderDocument`-specific
+  `app/api/files/[id]/route.ts` — reusing the storage driver and
+  content-sniffing helpers underneath, but keeping the route itself
+  separate rather than generalizing a route that several other things
+  depend on, per the standing "no unrelated refactoring" rule.
+  `uploadClaimAttachment()` deletes the just-stored file on any DB
+  write failure (mirroring the existing cleanup convention in
+  `app/api/orders/[id]/documents/route.ts`) so a failed upload never
+  leaves an orphaned object in storage.
+- **Minimal, additive extension to Milestone 5's query function.**
+  `lib/invoice-reconciliation/queries.ts`'s `listSapInvoices()` gained
+  an optional `search` parameter (filtering `sapDocNum`/`customerName`/
+  `matchedCustomer.name`, case-insensitive) — needed directly by the
+  claim-creation form's invoice picker, backward-compatible (optional,
+  defaults to no filter), and judged a small, directly-needed
+  extension rather than "unrelated refactoring" of Milestone 5's code.
+
+### What was built
+
+- **Schema** (`prisma/schema.prisma`): 5 new enums (`InvoiceClaimCategory`,
+  `InvoiceClaimPriority`, `InvoiceClaimStatus`, `ClaimLineDisputeType`,
+  `ClaimResolutionDecision`) and 4 new models (`InvoiceClaim`,
+  `InvoiceClaimLine`, `ClaimResolution`, `InvoiceClaimAttachment`).
+  Entirely additive — every new relation field on `SapInvoice`/
+  `SapInvoiceLine`/`CustomerOrder`/`Customer`/`User` is a pure Prisma
+  inverse-relation side with no new column on any existing table.
+- **Migration** (hand-authored, this sandbox cannot run `prisma
+  migrate dev`): 5 `CREATE TYPE`, 4 `CREATE TABLE`, their indexes, and
+  their foreign keys (`Restrict` on every FK pointing at
+  `SapInvoice`/`SapInvoiceLine`/`CustomerOrder`/`Customer`, so a claim
+  can never be left dangling by a deletion elsewhere). No existing
+  table/column/enum value touched.
+- **`lib/invoice-claims/`** (new module): `validation.ts` (pure — the 5
+  enums, the exhaustive status-transition graph, the exhaustive
+  resolution→status mapping, quantity/amount validation, zod schemas),
+  `queries.ts` (DB — live already-claimed aggregates, list/detail
+  queries), `create-claim.ts` (DB — full claim creation with
+  pre-transaction and in-transaction quantity revalidation, reference
+  generation, snapshot batch-update, audit), `claim-lifecycle.ts` (DB —
+  `changeClaimStatus()` with the inline approval-weight check),
+  `claim-resolution.ts` (DB — record/approve/reject, each audited,
+  approve/reject with defensive re-validation of the transition even
+  though the route layer already gates by role), `attachments.ts` (DB
+  + storage — upload with content-sniffing and orphan-cleanup,
+  download), `display.ts` (pure label/style maps, no `@prisma/client`
+  import), `financial.ts` (pure/DB mix — per-line disputed value,
+  per-claim financial summary, per-currency exposure, never fabricating
+  an actual credited amount), `dashboard.ts` (DB — status/category/
+  priority/customer/department/product breakdowns, average resolution
+  time, repeat-complaint customers, exposure by currency).
+- **API routes** (9, all under `app/api/invoice-claims/`): list+create,
+  detail+financial-summary, status-change (open to any user, inline
+  role check), record-resolution (open to any user), approve-resolution
+  and reject-resolution (both `SALES_MANAGER`/`ADMINISTRATOR` only),
+  attachment upload (open to any user) and download (mirrors
+  `app/api/files/[id]/route.ts`'s response-construction pattern), and
+  the dashboard summary.
+- **UI**: `/invoice-claims` (queue list with status filter pills,
+  search, customer drill-down), `/invoice-claims/new` (claim-creation
+  form: invoice search → line selection with per-line dispute-type →
+  customer resolution → category/priority/assignee/communication
+  notes), `/invoice-claims/[id]` (detail page: header, financial-
+  exposure metrics, disputed-lines table, attachments, append-only
+  resolution history with pending/approved/rejected badges and a 6B-
+  follow-up hint, the `ClaimActionsPanel` client island), and
+  `/invoice-claims/dashboard` (status/category/customer/product/
+  department breakdowns, exposure-by-currency table, average
+  resolution time, repeat complaints). A new "Invoice Claims" sidebar
+  entry under Operations (`FileWarning` icon), added fresh since there
+  was no pre-existing dead placeholder link for it.
+- **`scripts/remove-demo-data.ts`**: a new leaves-first deletion block
+  (`InvoiceClaimAttachment` → `ClaimResolution` → `InvoiceClaimLine` →
+  `InvoiceClaim`) inserted before the existing `SapInvoiceLine`/
+  `SapInvoice` deletion block, since the new tables' `Restrict` FKs
+  point into `SapInvoice`/`SapInvoiceLine`/`CustomerOrder`/`Customer`/
+  `User` and would otherwise block demo-data cleanup.
+
+### Explicitly not touched, and why (Milestone 6B boundary)
+
+No `ReturnRequest`/`CreditNote` model, no physical-return workflow, no
+actual SAP credit-note recording, and no change to
+`SapInvoiceLine.isCancelledOrReversed` or any other Milestone 5 write
+path — all explicitly out of scope for 6A per the spec's own two-stage
+instruction. `RESOLUTIONS_IMPLYING_6B_FOLLOWUP` (`display.ts`) is a
+`Set` used only to label a UI hint ("this resolution will need a
+Milestone 6B follow-up once built") — it never implies a 6B record
+already exists, and nothing reads it as one.
+
+### Tests added
+
+- `tests/invoice-claims.test.ts` (new, unconditional, 26 tests) — pure
+  logic only (`validation.ts`), covering: the full status-transition
+  graph (every valid move, approval-weight flagging, invalid/no-op/
+  terminal transitions, full coverage of all 9 statuses so a status
+  added later without a transitions entry fails to compile rather than
+  silently passing), `isConcludedStatus()`, the exhaustive
+  `resolutionDecisionToClaimStatus()` mapping (the test that caught a
+  real bug — see below), "Other requires detail" for both category and
+  resolution decision, quantity validation (the spec's 100/85/15
+  worked example, exceeding the remaining quantity, live-aggregate-
+  across-multiple-claims scenarios, zero-both-rejected, malformed
+  input, full rejection, partial acceptance), and amount-only
+  validation (no ceiling when the line total is unknown, zero
+  rejected, exceeding the known ceiling, within it). **All 26
+  passing.**
+- `tests/invoice-claims-db.integration.test.ts` (new, gated, 6 tests) —
+  against a real database, following this project's established
+  DB-integration-test conventions (`RUN_DB_INTEGRATION_TESTS=1` gate,
+  `isDemo: true`, FK-safe `beforeAll`/`afterAll` building its own
+  `SapInvoiceImportBatch`/`SapInvoice`/`SapInvoiceLine` fixture rows
+  directly rather than through Milestone 5's CSV pipeline). Covers:
+  creating a claim with a quantity dispute and confirming the original
+  SAP invoice line is byte-identical before and after; a second claim
+  against the same line correctly rejected once the first claim's
+  accepted+rejected quantity exhausts what remains (the live-aggregate
+  rule, exercised against real rows, not just the pure-function test
+  above); an amount-only dispute; the full resolution lifecycle
+  (record → reject → record a second → approve, asserting the
+  append-only history, `approvedCreditAmount`, and the resulting
+  status via the real decision→status mapping); direct enforcement of
+  the transition graph through `changeClaimStatus()` itself (not just
+  the pure validator); and a financial summary distinguishing claimed
+  value from approved exposure while confirming
+  `actualSapCreditedAmount`/`actualCreditDataAvailable` are `null`/
+  `false` in every case.
+
+### A real bug found and fixed during this round's verification (not a sandbox artifact)
+
+Running `npx vitest run` the first time surfaced a genuine logic gap:
+`CLAIM_STATUS_TRANSITIONS["AWAITING_INTERNAL_ACTION"]` was missing
+`"RESOLVED"` as an allowed target. `resolutionDecisionToClaimStatus()`
+maps `NO_ACTION_REQUIRED` directly to `RESOLVED` (a claim that, after
+investigation, turns out to need no further action at all — no
+`APPROVED` stage in between), and a claim reaches
+`AWAITING_INTERNAL_ACTION` precisely by having a resolution recorded
+against it. Without this entry, `approveClaimResolution()` would have
+hit its own defensive 500 "Internal error" branch — which exists
+exactly to catch an invalid mapping before it reaches the database —
+for that one, entirely valid decision. Fixed by adding `"RESOLVED"` to
+that transition's allowed-targets array with an explanatory comment;
+confirmed fixed by re-running the suite and seeing it go from 1 failed
+to 0 failed with no other change. This is exactly the category of
+self-caught defect the standing verification rule exists to surface,
+not something a user reported.
+
+### Honest verification results
+
+- `npx eslint .` (full repo) — **clean, 0 problems.** 13 errors and 1
+  warning were found and fixed during this check: `react/no-unescaped-
+  entities` for raw apostrophes/quotes in JSX text across
+  `claim-actions-panel.tsx` (4), `new-claim-form.tsx` (3), and
+  `app/invoice-claims/page.tsx` (1) — replaced with `&rsquo;`/
+  `&ldquo;`/`&rdquo;`; an unused `sapLine` binding in `create-claim.ts`
+  — removed. Re-running confirmed 0 problems both for the touched
+  files and for the full repo (no regression from the
+  `lib/invoice-reconciliation/queries.ts` or `sidebar.tsx` edits).
+- `npx tsc --noEmit` — new errors confirmed to fall into two buckets
+  only: one genuine bug (`TS5097`, a `.ts` extension left in an import
+  path in `validation.ts` — fixed, extension removed) and the
+  remainder — 34×`TS7006` (implicit-any on Prisma model params),
+  14×`TS2339` (property does not exist on the degraded `{}` stub
+  type), 11×`TS2694` (missing `Prisma.XxxWhereInput`/`Prisma.Decimal`
+  namespace members) — individually confirmed to be the same
+  pre-existing, already-documented sandbox limitation first reproduced
+  directly in Milestone 4: `npx prisma generate` cannot run in this
+  sandbox (`binaries.prisma.sh` blocked, no cached engine binary), so
+  the installed `@prisma/client` has zero knowledge of `InvoiceClaim`/
+  `InvoiceClaimLine`/`ClaimResolution`/`InvoiceClaimAttachment`/their 5
+  new enums. Cross-checked against an untouched file
+  (`lib/price-list-import.ts`), which shows the identical `"Property X
+  does not exist on type '{}'"` pattern for its own, long-stable
+  models — confirming the cause is the stub, not this milestone's code.
+  Two invented/incorrect patterns were found and fixed independently of
+  the stub bucket during this same pass, since they would be real bugs
+  even with a regenerated client: a non-existent
+  `Prisma.Decimal.toBigInt()` method in `financial.ts` (replaced with
+  the established `parseScaledDecimal` string-based scaling helper,
+  keeping only the legitimate `.toDecimalPlaces(4)` for rounding), and
+  an unnecessary `prisma as unknown as Prisma.TransactionClient` cast
+  in `create-claim.ts` (removed — `PrismaClient` structurally satisfies
+  `Prisma.TransactionClient`, which is `PrismaClient` minus a few
+  top-level methods, so no cast is needed). **Run `npx prisma
+  generate` on your own machine** (SETUP-WINDOWS.md §22) and the
+  stub-bucket errors resolve the same way every prior milestone's
+  schema-driven `tsc` errors have.
+- `npx vitest run` (full project suite) — **322 passed, 54 skipped, 0
+  failed** (up from 296 passed/48 skipped at the end of Milestone 5):
+  +26 unconditional (the new pure test file) and the new 6-test gated
+  file skips cleanly (confirmed in isolation: `npx vitest run
+  tests/invoice-claims-db.integration.test.ts` reports `6 skipped`)
+  since `RUN_DB_INTEGRATION_TESTS` is unset here. One real bug (the
+  transition-graph gap above) was caught and fixed by this run itself
+  before being recorded as passing. Zero regressions anywhere in the
+  pre-existing suite, confirmed by an actual full-suite run twice (once
+  after the fix, once as a final confirmation pass), not file-by-file
+  assumption.
+- `npm run build` — same result as every prior round: Turbopack's
+  bundling stage runs (confirming the pipeline tolerates every new
+  file), then the build hits this sandbox's pre-existing Google Fonts
+  network block in `app/layout.tsx` (untouched by this milestone,
+  confirmed unrelated — the same two-font `403` every prior round's
+  build has hit).
+- **The one thing this sandbox genuinely cannot confirm**: that the
+  new 6-test gated file actually passes against a real, regenerated
+  Prisma client and a seeded database. It is written, follows this
+  project's established DB-integration-test conventions exactly, and
+  every function/field/signature it calls was independently checked
+  against the real `lib/invoice-claims/*` source and
+  `prisma/schema.prisma` (not assumed) — but **run `npx prisma
+  generate` and then `RUN_DB_INTEGRATION_TESTS=1 npm test` for real**
+  (SETUP-WINDOWS.md §22) before treating this as verified, same as
+  every gated test in this project.
+
+### Acceptance-criterion confirmation
+
+The spec's own central requirements, confirmed one by one: a claim
+**always** links to its SAP invoice (`sapInvoiceId` is a required,
+`Restrict`-FK column — there is no code path that creates an
+`InvoiceClaim` without one) and, where possible, to the specific
+invoice line(s) in dispute (`InvoiceClaimLine.sapInvoiceLineId`,
+required per line); the six-way distinction (complaint / rejection /
+quantity dispute / physical return / SAP credit note / confirmed
+financial loss) is preserved structurally — this milestone only ever
+produces the first three, a *recommendation* for the others, never an
+executed credit or a confirmed loss; the lifecycle's 9 statuses and
+their transitions are enforced by an exhaustive, compile-checked graph
+rather than convention; the two-tier authorization split is enforced
+at both the route layer (whole-route gates on approval actions) and
+inline (the status-change route's per-transition check); and financial
+exposure is reported as explicitly distinct figures with the actual
+SAP-credited amount always honestly `null` this stage, never
+fabricated from an estimate.
+
+**Implemented: yes**, within this stage's explicit scope. **Tested:
+yes, with the one honest caveat already stated above** — the 26
+unconditional tests cover every piece of pure logic directly,
+including the one real bug this project's own test suite caught and
+that was fixed before delivery; the 6 gated DB tests walk the claim
+lifecycle end to end against a real database but, as with every gated
+test in this project, have not been run against a real database from
+inside this sandbox, and that run is the one remaining step before
+this milestone can be called verified rather than merely written and
+type-consistent.
+
+**Do not start Milestone 6B until this is reviewed** — per the spec's
+own explicit two-stage instruction and this project's standing
+multi-session working agreement.
+
+# Milestone 6B — Returns & Credit Notes
+
+Stage 2 of 2 of the Invoice Claims Management & Returns/Credit Notes
+specification. Built per your own explicit instruction — *"Claude
+start Milestone 6B"* — which supersedes this document's own prior
+"Do not start Milestone 6B until this is reviewed" line: this stage
+was started without waiting for a separate review round on 6A, by
+your direct authorization, not by relaxing the standing milestone-
+gating agreement generally.
+
+## Confirmed design decisions
+
+Before writing any 6B code, four design questions were put to you via
+`AskUserQuestion` and answered directly — every line of this
+milestone follows from these four answers:
+
+1. **Physical returns are tracked as a separate `ClaimReturn` model**,
+   not free text on the claim or resolution. This is what makes "a
+   return was actually received" a structured fact with its own
+   quantity, condition, and date, queryable and auditable on its own
+   terms rather than buried in a notes field.
+2. **Recording that SAP has actually issued a credit note is
+   restricted to `SALES_MANAGER`/`ADMINISTRATOR`.** This is the same
+   approval-weight tier as approving a `ClaimResolution` in 6A — both
+   assert a completed financial fact, not a recommendation or an
+   investigation finding (which stay open to any authenticated user,
+   same as 6A).
+3. **Once an actual return or credit note is recorded, the claim's
+   status auto-advances** through 6A's *existing* validated transition
+   graph — never a new graph edge, never a status skipped. This is
+   what turns "a recommendation is not the same as an executed action"
+   (6A's own central rule) into its natural completion: once the
+   action is actually executed in the real world, the claim's status
+   reflects that without a human having to separately remember to move
+   it.
+4. **Both manual single-record entry and a full CSV import pipeline**
+   are built for credit notes — you explicitly chose this over the
+   alternative (recommended) option of manual entry only, on the
+   reasoning that a real SAP B1 AR-credit-memo export is exactly the
+   kind of bulk document this project already has a proven pattern
+   for (Milestone 5's own CSV pipeline).
+
+## Design rationale
+
+**SAP Business One remains the sole system of record, structurally.**
+Every write this milestone makes only ever *records* a fact that
+already happened in SAP or in the physical world — SalesFlow never
+creates a credit note in SAP itself, and never marks goods as returned
+except by a human (or an imported row) attesting that they actually
+arrived. `lib/returns-credits/credit-notes.ts` and `returns.ts` say
+this in their own module doc comments, and nowhere in this milestone
+does a function call out to SAP or assert a SAP-side write — there is
+no SAP write path in this codebase at all, by design, matching every
+prior milestone's own stance (Milestone 5 never creates an invoice in
+SAP either; it only reconciles against one already there).
+
+**A `ClaimResolution`'s approved amount is never the same fact as a
+`CreditNote`'s actual amount.** `ClaimResolution.approvedCreditAmount`
+(6A) is what an internal manager approved as the claim's resolution;
+`CreditNote.amount` (6B) is what SAP actually issued, entered by a
+human who sees it on their own SAP B1 screen or read verbatim from a
+real SAP export — never computed as an estimate from the claim's own
+lines (the spec's own explicit instruction: "never calculate an actual
+credit amount based only on an estimated claim"). `lib/invoice-claims/
+financial.ts`'s `actualSapCreditedAmount` is a live `SUM` of real
+`CreditNote` rows, recomputed on every read, never a stored running
+total — same "derive, don't store a second truth" convention this
+project has used since Milestone 5's own reconciliation aggregates.
+When the two figures diverge in SAP's favor (SAP credited more than
+was internally approved), the new `actualExceedsApproved` flag
+surfaces that exception rather than silently clamping it away — the
+same philosophy as Milestone 5's own `causesOverInvoicing` flag.
+
+**The status auto-advance is a forward-only ratchet, re-validated at
+write time, not a second source of truth about what transitions are
+legal.** `lib/returns-credits/status-recompute.ts`'s
+`determineAutoAdvanceTarget()` is a pure function that only ever
+*proposes* a target status from a fixed decision table (reproduced in
+full in its own doc comment); its caller,
+`lib/returns-credits/apply-status-recompute.ts`'s
+`recomputeClaimStatusAfterActuals()`, re-checks that proposal against
+6A's own `validateClaimStatusTransition()` immediately before writing
+it, and `throw`s (aborting the whole enclosing transaction, including
+the return/credit-note record that triggered it) rather than silently
+skipping an impossible edge. This mirrors `lib/invoice-claims/
+claim-resolution.ts`'s own "Internal error... not expected" 500-
+response pattern for the same reason: a defensive check that should
+never fire in practice is not dead code, it is the thing that turns a
+latent logic bug into a loud, caught failure instead of a silently
+wrong database write. The ratchet only ever moves a claim forward
+(`APPROVED`/`PARTIALLY_RESOLVED` → `PARTIALLY_RESOLVED`/`RESOLVED`) and
+deliberately never reverses an already-applied auto-advance when a
+credit note is later unlinked, reopened, or marked cannot-link —
+that correction is left to the ordinary manual status-change action
+(6A's own `PATCH .../status`), a documented, deliberate scope boundary
+rather than an oversight.
+
+**Credit-note matching granularity is the claim, not the claim line.**
+6A already tracks financial exposure at the claim level
+(`ClaimResolution.approvedCreditAmount`), so there is no
+`CreditNoteLine` model and nothing in `lib/returns-credits/matching.ts`
+reads SAP item codes — a deliberate simplification against Milestone
+5's own line-level invoice matching, made explicit in that file's own
+doc comment rather than left to be discovered. `matchCreditNoteToClaim()`
+auto-matches only when exactly one candidate claim against the credit
+note's resolved base invoice is `APPROVED`/`PARTIALLY_RESOLVED`, has a
+credit-bearing latest-approved decision, and still has outstanding
+exposure (`approvedCreditAmount - actualCreditedTotal > 0`) — zero or
+multiple qualifying candidates always resolves to `UNMATCHED`, never a
+guess, same conservative philosophy as Milestone 5's own
+`matchInvoiceLineToOrder()`.
+
+**Manual entry and CSV import write into one unified `CreditNote`
+model**, never two parallel tables. A manually-entered row is created
+already `MANUALLY_MATCHED` with `claimId` set directly (the sales
+manager picked the claim themselves, so there is no ambiguity to
+resolve); an imported row starts `UNMATCHED` and is resolved by the
+same automatic matcher, or by hand via the manual-match/cannot-link/
+reopen actions — the exact same three-action shape Milestone 5 already
+uses for its own unmatched invoice lines, deliberately reused rather
+than invented fresh (`lib/invoice-reconciliation/manual-actions.ts` was
+read in full before writing `lib/returns-credits/credit-notes.ts`'s
+own versions, and the two are structurally identical).
+
+## What was built
+
+- **Schema**: 2 new enums (`ReturnCondition`, `CreditNoteMatchStatus`)
+  and 3 new models (`ClaimReturn`, `CreditNote`,
+  `CreditNoteImportBatch`), reusing `InvoiceLineMatchMethod` (Milestone
+  5) as-is for `CreditNote.matchMethod`. Purely additive — see
+  CHANGES.md for the exact diff.
+- **`lib/returns-credits/`** (12 files): pure/impure pairs mirroring
+  Milestone 5's own split exactly —
+  `status-recompute.ts`/`apply-status-recompute.ts`,
+  `matching.ts`/`match-credit-note.ts`,
+  `csv.ts`/`plan-import.ts`/`execute-import.ts` — plus
+  `validation.ts`, `returns.ts`, `credit-notes.ts`, `display.ts`,
+  `queries.ts`. See CHANGES.md for what each file does.
+- **11 new API routes**, split exactly along the confirmed
+  authorization tiers: reading and recording a physical return are
+  open to any authenticated user (same tier as 6A's own
+  `createInvoiceClaim`/`recordClaimResolution`); every action that
+  asserts or changes a financial fact about a credit note (manual
+  entry, CSV import preview/confirm, manual match, cannot-link,
+  reopen) is `SALES_MANAGER`/`ADMINISTRATOR`-gated at the route layer.
+  The credit-note-recording route is structurally prevented from being
+  used against a different claim than its own URL names — the body's
+  `claimId`, if any, is always overwritten by the URL parameter before
+  validation.
+- **UI**: a new `/returns-credits` reconciliation queue,
+  `/returns-credits/[id]` detail + manual-reconciliation panel,
+  `/returns-credits/import` 3-stage CSV wizard, and
+  `/returns-credits/import-history`; a new `ReturnsCreditsPanel` client
+  island and two new read-only sections on the existing
+  `/invoice-claims/[id]` page, whose financial-exposure grid now shows
+  live figures in place of 6A's own placeholder text.
+- **`lib/invoice-claims/financial.ts` extended**:
+  `actualSapCreditedAmount`/`actualCreditDataAvailable` are no longer
+  6A's honest placeholder (`null`/`false`); two new fields,
+  `actualCreditShortfall` and `actualExceedsApproved`, surface the
+  approved-vs-actual relationship explicitly.
+- **`scripts/remove-demo-data.ts` extended** with a correctly leaves-
+  first-ordered deletion block for the three new tables.
+
+## Two real bugs found and fixed during this round's own verification (not sandbox artifacts, not user-reported)
+
+Running a targeted `npx tsc --noEmit` pass against every 6B-touched
+file (per the standing "always verify" rule, before moving on to the
+next task) surfaced two genuine `TS2367` errors in
+`lib/returns-credits/status-recompute.ts`'s
+`determineAutoAdvanceTarget()`: two comparisons of the shape
+`input.currentStatus !== "RESOLVED"`, at the `PHYSICAL_RETURN_REQUIRED`
+branch and the `FULL_CREDIT_RECOMMENDED`/`PRICING_CORRECTION_REQUIRED`
+full-credit branch. TypeScript correctly flagged both as impossible —
+`currentStatus` had already been narrowed to
+`"APPROVED" | "PARTIALLY_RESOLVED"` by the function's own top guard
+clause, several lines earlier in the same function, so neither
+comparison could ever evaluate to anything but vacuously true. Both
+were dead code, not wrong logic (removing them changes no observable
+behavior — the branches they gated were always taken), but leaving
+genuinely-impossible comparisons in a status-advance function that
+this project's standing rules call load-bearing ("no silent status-
+skipping") is exactly the kind of thing worth catching before
+delivery rather than after. Fixed by removing both comparisons and
+replacing them with an explanatory comment at each site; re-ran `tsc`
+on the same file afterward and confirmed both `TS2367` errors gone
+with zero new errors introduced.
+
+## Honest verification results
+
+- **`npx eslint .`** (full repo, every 6B file included) — **clean, 0
+  problems.** No fixes were needed this round; every new file was
+  written against the same lint configuration from the start.
+- **`npx tsc --noEmit`** — **257 errors, up from 241 at the end of
+  Milestone 6A and 251 after this round's own `lib`/API-route work**
+  (6 more from the UI build: `.map()` callbacks over Prisma query
+  results, the same category as every other row below). Every single
+  one of the 257 was individually checked by file and confirmed to
+  fall into the same three sub-categories this project has reproduced
+  and explained since Milestone 4, all caused by the one sandbox-only
+  root cause: `npx prisma generate` cannot run here (`binaries.prisma.sh`
+  blocked by this sandbox's network allowlist), so the installed
+  `@prisma/client` has zero knowledge of `ClaimReturn`/`CreditNote`/
+  `CreditNoteImportBatch`/their 2 new enums, or indeed of any model
+  from any prior milestone either:
+  - `TS7006` (166, up from ~160) — implicit-any on a Prisma query
+    result's callback parameter (`.map((line) => ...)`, a transaction
+    client `tx` parameter, etc.) — every new instance confirmed to sit
+    in a file that calls a Prisma query, none anywhere else.
+  - `TS2694`/`TS2339` (28 + 38) — `Prisma.Decimal`,
+    `Prisma.CreditNoteWhereInput`, and similar schema-derived members
+    reported missing from the degraded stub `Prisma` namespace/type.
+  - `TS2305`/`TS2322`/`TS2345`/`TS18046` (18 + 1 + 3 + 3, unchanged
+    from 6A) — pre-existing, confirmed unrelated to any file this
+    milestone touched.
+
+  Zero new error *categories* were introduced — confirmed by grepping
+  the full `tsc` output filtered to every file this milestone created
+  or modified (`lib/returns-credits/*`, the 11 new API routes, the new
+  UI files, `lib/invoice-claims/financial.ts`,
+  `scripts/remove-demo-data.ts`) and checking each line individually
+  against this same three-bucket explanation; none fell outside it.
+  **Run `npx prisma generate` on your own machine** (SETUP-WINDOWS.md
+  §23) and the stub-bucket errors resolve the same way every prior
+  milestone's schema-driven `tsc` errors have.
+- **`npx vitest run`** (full project suite) — **364 passed, 62
+  skipped, 0 failed** (up from 322 passed/54 skipped at the end of
+  Milestone 6A): +42 unconditional (the new pure test file,
+  `tests/returns-credits.test.ts`, run and confirmed passing in
+  isolation before the full-suite run too) and the new 8-test gated
+  file skips cleanly (confirmed: `npx vitest run tests/returns-credits-
+  db.integration.test.ts` reports `8 skipped`) since
+  `RUN_DB_INTEGRATION_TESTS` is unset here. One pre-existing 6A test's
+  assertions were updated in this round, not newly broken by it: its
+  `actualSapCreditedAmount`/`actualCreditDataAvailable` expectations
+  asserted 6A's own honest `null`/`false` placeholder, which this
+  milestone intentionally supersedes with a live `"0.0000"`/`true` for
+  a claim with no credit note recorded — this is a deliberate,
+  documented behavior change (see `lib/invoice-claims/financial.ts`'s
+  own updated module doc comment), not a regression, and the full
+  suite was re-run after the update to confirm it passes along with
+  everything else. Zero other regressions anywhere in the pre-existing
+  suite.
+- **`npm run build`** — hits this sandbox's pre-existing Google Fonts
+  network block in `app/layout.tsx` (`fonts.googleapis.com`,
+  unrelated to and untouched by this milestone — the same block every
+  prior round's build has hit, confirmed unchanged going back to
+  Milestone 1). As explained in detail in this document's Milestone 0
+  fix round 2 section (and reconfirmed in every milestone since):
+  working around the font block alone only reaches the TypeScript
+  phase, which then stops on the same Prisma-stub `tsc` errors
+  reported above; stacking a second workaround to get past that
+  immediately hits a harder wall in "Collecting page data" (the
+  `@prisma/client` stub throws when actually *constructed*, not just
+  when type-checked, and nearly every API route constructs it at
+  module scope). No claim about the build's static-generation/
+  prerendering phase for this milestone's new routes should be read as
+  sandbox-verified — what *is* verified in-sandbox is `tsc`
+  standalone, `lint`, and `vitest`, all of which were actually run
+  against this milestone's code with the results reported above.
+- **The one thing this sandbox genuinely cannot confirm**: that the
+  new 8-test gated file actually passes against a real, regenerated
+  Prisma client and a seeded database. It is written, follows this
+  project's established DB-integration-test conventions exactly, and
+  every function/field/signature it calls was independently checked
+  against the real `lib/returns-credits/*` source,
+  `lib/invoice-claims/create-claim.ts`/`claim-resolution.ts`, and
+  `prisma/schema.prisma` (not assumed) — but **run `npx prisma
+  generate` and then `RUN_DB_INTEGRATION_TESTS=1 npm test` for real**
+  (SETUP-WINDOWS.md §23) before treating this as verified, same as
+  every gated test in this project.
+
+### Acceptance-criterion confirmation
+
+The spec's own central requirements for this stage, confirmed one by
+one: SalesFlow never creates a credit note in SAP or marks goods
+returned on its own initiative — every write here only *records* a
+fact already established in SAP or the physical world, structurally
+(no SAP-write code path exists anywhere in this module, same as every
+prior milestone); an actual SAP-credited amount is now a live figure,
+summed only from real `CreditNote` rows a human or the importer
+entered, never estimated from the claim's own lines; a claim's status
+auto-advances through the *existing* 6A transition graph once actuals
+justify it, with the graph re-validated at write time rather than
+trusted blindly, so no new edge and no skipped step is possible; both
+confirmed design decisions on authorization (any user records a
+return; only `SALES_MANAGER`/`ADMINISTRATOR` records a credit note)
+and on import tooling (manual entry **and** a full CSV pipeline, per
+your explicit choice) are implemented exactly as confirmed, not as the
+alternative, lighter-weight option that was offered alongside them.
+
+**Implemented: yes**, within this stage's explicit, four-decision
+scope. **Tested: yes, with the one honest caveat already stated
+above** — the 42 unconditional tests cover every piece of pure logic
+directly, including the two real dead-code bugs this round's own
+`tsc` verification caught and fixed before delivery; the 8 gated DB
+tests walk the return/credit-note lifecycle (including the CSV import
+pipeline's auto-match and ambiguous-match paths) end to end against a
+real database but, as with every gated test in this project, have not
+been run against a real database from inside this sandbox, and that
+run is the one remaining step before this milestone can be called
+verified rather than merely written and type-consistent.
+
+**With this stage delivered, Milestones 6A and 6B together complete
+the full Invoice Claims Management & Returns/Credit Notes
+specification** as scoped across both stages.

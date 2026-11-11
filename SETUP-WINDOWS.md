@@ -1637,3 +1637,348 @@ rollback:
 ```powershell
 npx prisma migrate resolve --rolled-back 20261110190000_add_invoice_reconciliation
 ```
+
+## 22. Milestone 6A: Invoice Claims Management
+
+This migration is purely additive: 5 new enums and 4 new tables only.
+No existing table, column, or enum value is touched — every "new
+field" you'll see on `SapInvoice`/`SapInvoiceLine`/`CustomerOrder`/
+`Customer`/`User` in `prisma/schema.prisma` is a pure Prisma
+inverse-relation side with no new column of its own. As with every
+previous milestone's migration, it cannot be validated or generated in
+the build sandbox — run these for real on your machine.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_invoice_claims_management
+
+# 2. Regenerate the Prisma client so it knows about InvoiceClaim,
+#    InvoiceClaimLine, ClaimResolution, InvoiceClaimAttachment, and
+#    their 5 new enums
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+```
+
+If `prisma migrate dev` reports schema drift because you've been
+running against the hand-written SQL already, use `migrate deploy`
+instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the new `tests/invoice-claims-db.integration.test.ts` (claim
+creation with a quantity dispute, live-aggregate rejection of a second
+claim once a line's remaining quantity is exhausted, an amount-only
+dispute, the full resolution lifecycle — record → reject → record →
+approve — with append-only history asserted, direct transition-graph
+enforcement, and a financial summary confirming the actual-SAP-
+credited figure stays unavailable) alongside every pre-existing gated
+integration test. Everything it creates is marked `isDemo: true`;
+cleanup happens in `afterAll` in an order that respects every new
+foreign key (`InvoiceClaimAttachment` → `ClaimResolution` →
+`InvoiceClaimLine` → `InvoiceClaim`, then the pre-existing SAP-invoice/
+order/picking cleanup). The fixture builds its own
+`SapInvoiceImportBatch`/`SapInvoice`/`SapInvoiceLine` rows directly
+(not through Milestone 5's CSV import pipeline), so it needs only an
+admin user and the `DEMO-CUST-001` customer already seeded — if you're
+missing either, run `npm run db:seed` first.
+
+### Manual test script (via the UI)
+
+1. Open an existing reconciled or partially-reconciled SAP invoice from
+   `/invoice-reconciliation` for **TM Supermarket Borrowdale (Demo)**
+   (`DEMO-CUST-001`) — or import one via `/invoice-reconciliation/import`
+   per §21's manual test script first if you don't have one yet. Note
+   its invoice number (e.g. `INV-90001`) and the item/quantity on at
+   least one of its lines (e.g. item `8104`, 12.0000 units invoiced).
+2. Open **Invoice Claims** in the sidebar (`/invoice-claims`), then
+   **File a claim**. Search for and select the invoice from step 1,
+   select one of its lines, choose dispute type **Quantity**, enter an
+   accepted quantity and a rejected quantity that together do not
+   exceed what was invoiced (e.g. accepted `9`, rejected `3` against 12
+   invoiced), pick category **Quantity Discrepancy**, priority
+   **Medium**, today's date, and a description, then submit. Confirm
+   you land on the new claim's detail page with status **Open** and a
+   generated reference (`CLM-YYYYMMDD-XXXXXXXX`).
+3. On the claim detail page, use the actions panel to change status to
+   **Under Investigation**, then record a resolution: decision
+   **Partial Credit Recommended**, with an approved-credit-amount
+   placeholder notes field. Confirm the claim moves to **Awaiting
+   Internal Action** and the resolution appears in the (append-only)
+   history as pending.
+4. While signed in as a plain SALESPERSON, confirm the **Approve** /
+   **Reject** buttons on that resolution either do not appear or, if
+   you call the API directly
+   (`POST /api/invoice-claims/<id>/resolutions/<resolutionId>/approve`)
+   with that session's cookie, return `403`.
+5. Sign in as a SALES_MANAGER or ADMINISTRATOR and **Approve** the
+   resolution with an approved credit amount (e.g. equal to the
+   rejected quantity × the invoice line's unit price). Confirm the
+   claim's status advances to **Approved**, the resolution now shows
+   an approver and an approved amount, and the financial-exposure
+   section shows a non-zero **Approved credit exposure** while
+   **Actual SAP-credited amount** is explicitly labeled
+   unavailable/not yet recorded (this is correct — Milestone 6B is
+   where that figure will ever be populated).
+6. Try to file a second claim against the *same* invoice line for a
+   quantity that, combined with the first claim's accepted+rejected
+   total, would exceed what was invoiced (e.g. 12 invoiced, first claim
+   already used 9+3=12, so any further accepted/rejected quantity on
+   this line should be refused). Confirm the form/API rejects it with a
+   clear message rather than silently allowing it.
+7. File an amount-only dispute on a different line of the same or
+   another invoice (dispute type **Amount only**, a disputed amount at
+   or below that line's total), and confirm it is accepted and appears
+   correctly as **Amount only** on the disputed-lines table, with no
+   accepted/rejected quantity shown for that line.
+8. Upload a small file (e.g. a PDF or image) as an attachment on the
+   claim via the actions panel, confirm it appears in the attachments
+   list, and confirm clicking it downloads the original file correctly
+   (check the filename and that the content opens).
+9. Open **Dashboard** (`/invoice-claims/dashboard`) and confirm the
+   status/category/customer breakdowns, the exposure-by-currency table,
+   and average resolution time reflect what you just did. Click through
+   a customer's drill-down link and confirm it lands back on
+   `/invoice-claims` filtered to that customer.
+
+### 22a. Undoing this migration
+
+**This is destructive** — it drops the 4 new tables and the 5 new
+enum types. No existing enum was modified, so there's no "recreate the
+enum type" step needed. Back up first:
+
+```powershell
+pg_dump -Fc -d <your-database-name> -f backup-before-undo-milestone-6a.dump
+```
+
+```sql
+ALTER TABLE "InvoiceClaimAttachment" DROP CONSTRAINT "InvoiceClaimAttachment_claimId_fkey";
+ALTER TABLE "InvoiceClaimAttachment" DROP CONSTRAINT "InvoiceClaimAttachment_claimLineId_fkey";
+ALTER TABLE "InvoiceClaimAttachment" DROP CONSTRAINT "InvoiceClaimAttachment_uploadedById_fkey";
+ALTER TABLE "ClaimResolution" DROP CONSTRAINT "ClaimResolution_claimId_fkey";
+ALTER TABLE "ClaimResolution" DROP CONSTRAINT "ClaimResolution_recordedById_fkey";
+ALTER TABLE "ClaimResolution" DROP CONSTRAINT "ClaimResolution_approvedById_fkey";
+ALTER TABLE "ClaimResolution" DROP CONSTRAINT "ClaimResolution_rejectedById_fkey";
+ALTER TABLE "InvoiceClaimLine" DROP CONSTRAINT "InvoiceClaimLine_claimId_fkey";
+ALTER TABLE "InvoiceClaimLine" DROP CONSTRAINT "InvoiceClaimLine_sapInvoiceLineId_fkey";
+ALTER TABLE "InvoiceClaim" DROP CONSTRAINT "InvoiceClaim_sapInvoiceId_fkey";
+ALTER TABLE "InvoiceClaim" DROP CONSTRAINT "InvoiceClaim_orderId_fkey";
+ALTER TABLE "InvoiceClaim" DROP CONSTRAINT "InvoiceClaim_customerId_fkey";
+ALTER TABLE "InvoiceClaim" DROP CONSTRAINT "InvoiceClaim_reportedById_fkey";
+ALTER TABLE "InvoiceClaim" DROP CONSTRAINT "InvoiceClaim_assignedToId_fkey";
+
+DROP TABLE "InvoiceClaimAttachment";
+DROP TABLE "ClaimResolution";
+DROP TABLE "InvoiceClaimLine";
+DROP TABLE "InvoiceClaim";
+
+DROP TYPE "ClaimResolutionDecision";
+DROP TYPE "ClaimLineDisputeType";
+DROP TYPE "InvoiceClaimStatus";
+DROP TYPE "InvoiceClaimPriority";
+DROP TYPE "InvoiceClaimCategory";
+```
+
+Apply the reversible part the same way as previous rollbacks (`psql`,
+a GUI client, or `npx prisma db execute --file
+.\rollback-milestone-6a.sql --schema prisma/schema.prisma`), then
+revert `prisma/schema.prisma` to remove the same changes and run `npx
+prisma generate` again. Also tell Prisma's migration history about the
+rollback:
+
+```powershell
+npx prisma migrate resolve --rolled-back 20261111000000_add_invoice_claims_management
+```
+
+## 23. Milestone 6B: Returns & Credit Notes
+
+This migration is purely additive: 2 new enums and 3 new tables only
+(`ClaimReturn`, `CreditNote`, `CreditNoteImportBatch`). No existing
+table, column, or enum value is touched — `InvoiceLineMatchMethod`
+(Milestone 5) is reused as-is for `CreditNote.matchMethod`. As with
+every previous milestone's migration, it cannot be validated or
+generated in the build sandbox — run these for real on your machine.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_returns_credit_notes
+
+# 2. Regenerate the Prisma client so it knows about ClaimReturn,
+#    CreditNote, CreditNoteImportBatch, and their 2 new enums
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+```
+
+If `prisma migrate dev` reports schema drift because you've been
+running against the hand-written SQL already, use `migrate deploy`
+instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the new `tests/returns-credits-db.integration.test.ts`
+alongside every pre-existing gated integration test. It drives claims
+to `APPROVED` through the real Milestone 6A lifecycle
+(`createInvoiceClaim` → `recordClaimResolution` →
+`approveClaimResolution`, never by writing `InvoiceClaim.status` by
+hand) and then covers: a physical return auto-resolving a
+`PHYSICAL_RETURN_REQUIRED` claim; a manually-recorded credit note
+auto-resolving a `FULL_CREDIT_RECOMMENDED` claim, with the financial
+summary's `actualSapCreditedAmount`/`actualCreditShortfall`/
+`actualExceedsApproved` all checked against the real recorded amount;
+a `PARTIAL_CREDIT_RECOMMENDED` claim confirmed to move to
+`PARTIALLY_RESOLVED` and never silently escalate to `RESOLVED` even
+once the full approved amount has been credited; a
+`PRICING_CORRECTION_REQUIRED` claim credited for MORE than was
+approved, confirming the excess is flagged, never clamped; the full
+CSV import pipeline (`applyCreditNoteColumnMapping` →
+`groupIntoCreditNotes` → `planCreditNoteImport` →
+`executeCreditNoteImport`) auto-matching a credit note to its one
+outstanding candidate claim by resolved base invoice, and separately
+confirming it lands `UNMATCHED` (never a guess) when two claims
+against the same invoice both qualify; a full manual-reconciliation
+cycle (match → cannot-link → reopen-rejected-when-already-unmatched →
+reopen → re-match); and both `recordClaimReturn`/
+`recordCreditNoteManually` refusing to act on a claim with no approved
+resolution yet. Everything it creates is marked `isDemo: true` where
+the model supports it; cleanup happens in `afterAll` in an order that
+respects every new foreign key (`ClaimReturn`/`CreditNote`/
+`CreditNoteImportBatch` first, since they reference `InvoiceClaim`,
+then the pre-existing Milestone 6A/5 cleanup). The fixture builds its
+own `SapInvoiceImportBatch`/`SapInvoice`/`SapInvoiceLine` rows
+directly (not through Milestone 5's CSV import pipeline, and always
+setting `sapDocEntry`, unlike Milestone 6A's own fixture, since this
+milestone's CSV import resolves a credit note's base invoice by
+DocEntry preferentially), so it needs only an admin user and the
+`DEMO-CUST-001` customer already seeded.
+
+**Honesty note**: this test file, like every gated DB-integration test
+in this project, has not been run against a real database from inside
+this sandbox — `@prisma/client` here is a stub that throws when
+constructed (see PROGRESS.md's "Sandbox-only blocker"). It was written
+to the same standard as `tests/invoice-claims-db.integration.test.ts`
+and independently checked against the real source of every function/
+field/signature it calls (`lib/returns-credits/*`,
+`lib/invoice-claims/create-claim.ts`, `lib/invoice-claims/claim-
+resolution.ts`, `prisma/schema.prisma`) — but treat it as unverified
+until you actually run it.
+
+### Manual test script (via the UI)
+
+1. From an existing `APPROVED` or `PARTIALLY_RESOLVED` invoice claim
+   (file one per Milestone 6A's §22 manual test script if you don't
+   have one, and approve a resolution on it), open
+   `/invoice-claims/<id>`. Confirm you now see **Physical returns** and
+   **Credit notes** sections (empty at first) and a **Returns &
+   credit notes** panel with a **Record physical return** button.
+2. If the claim's approved resolution was **Physical Return Required**:
+   record a return (condition **Damaged**, received quantity matching
+   what was approved). Confirm the claim's status advances to
+   **Resolved** automatically — you never set that status yourself.
+3. If the approved resolution was a credit-bearing one (**Partial
+   Credit Recommended** / **Full Credit Recommended** / **Pricing
+   Correction Required**): while signed in as a plain SALESPERSON,
+   confirm the **Record credit note** button does not appear (or, if
+   you call the API directly, `POST /api/invoice-claims/<id>/credit-
+   notes` returns `403`). Sign in as a SALES_MANAGER or ADMINISTRATOR
+   and record a credit note for an amount matching the approved credit
+   amount. Confirm the claim auto-advances to **Partially Resolved**
+   (if the decision was Partial Credit) or **Resolved** (Full Credit/
+   Pricing Correction), and the claim's **Financial exposure** section
+   now shows a real, non-zero **Actual SAP credited** figure and a
+   **Credit shortfall** of `0.0000`.
+4. Open **Returns & Credits** in the sidebar (`/returns-credits`).
+   Confirm the credit note you just recorded appears, already
+   **Manually matched** to the claim from step 3.
+5. Go to `/returns-credits/import`, upload a small CSV with headers
+   `DocEntry,DocNum,BaseDocEntry,Amount` and one data row referencing
+   the `DocEntry` of a real imported SAP invoice (from
+   `/invoice-reconciliation`) that has exactly one outstanding
+   credit-bearing claim against it. Map the columns, validate, and
+   confirm the preview shows 1 new credit note with its base invoice
+   **Resolved**. Confirm and import; confirm the result shows
+   **Auto-matched to a claim: 1**.
+6. Repeat step 5 against a base invoice that has **two** outstanding
+   credit-bearing claims. Confirm the import succeeds but the credit
+   note lands **Unmatched** (visible in the `/returns-credits` queue
+   filtered to **Unmatched**) rather than being guessed.
+7. Open that unmatched credit note's detail page
+   (`/returns-credits/<id>`). As a SALES_MANAGER/ADMINISTRATOR, use
+   **Match to claim** to pick one of the two candidate claims by hand,
+   with a note explaining why. Confirm it becomes **Manually matched**
+   and the chosen claim's status reflects the newly-recorded amount.
+   Then use **Reopen (unlink)** and confirm it goes back to
+   **Unmatched**.
+8. Try to record a return or a credit note against a claim that is
+   still **Open** or **Under Investigation** (no approved resolution
+   yet). Confirm the UI/API refuses with a clear message rather than
+   silently allowing it.
+
+### 23a. Undoing this migration
+
+**This is destructive** — it drops the 3 new tables and the 2 new
+enum types. No existing enum was modified, so there's no "recreate the
+enum type" step needed. Back up first:
+
+```powershell
+pg_dump -Fc -d <your-database-name> -f backup-before-undo-milestone-6b.dump
+```
+
+```sql
+ALTER TABLE "ClaimReturn" DROP CONSTRAINT "ClaimReturn_claimId_fkey";
+ALTER TABLE "ClaimReturn" DROP CONSTRAINT "ClaimReturn_claimLineId_fkey";
+ALTER TABLE "ClaimReturn" DROP CONSTRAINT "ClaimReturn_creditNoteId_fkey";
+ALTER TABLE "ClaimReturn" DROP CONSTRAINT "ClaimReturn_receivedById_fkey";
+ALTER TABLE "CreditNote" DROP CONSTRAINT "CreditNote_importBatchId_fkey";
+ALTER TABLE "CreditNote" DROP CONSTRAINT "CreditNote_sapInvoiceId_fkey";
+ALTER TABLE "CreditNote" DROP CONSTRAINT "CreditNote_claimId_fkey";
+ALTER TABLE "CreditNote" DROP CONSTRAINT "CreditNote_recordedById_fkey";
+ALTER TABLE "CreditNote" DROP CONSTRAINT "CreditNote_matchedById_fkey";
+ALTER TABLE "CreditNoteImportBatch" DROP CONSTRAINT "CreditNoteImportBatch_uploadedById_fkey";
+
+DROP TABLE "ClaimReturn";
+DROP TABLE "CreditNote";
+DROP TABLE "CreditNoteImportBatch";
+
+DROP TYPE "CreditNoteMatchStatus";
+DROP TYPE "ReturnCondition";
+```
+
+Apply the reversible part the same way as previous rollbacks (`psql`,
+a GUI client, or `npx prisma db execute --file
+.\rollback-milestone-6b.sql --schema prisma/schema.prisma`), then
+revert `prisma/schema.prisma` to remove the same changes and run `npx
+prisma generate` again. Also tell Prisma's migration history about the
+rollback:
+
+```powershell
+npx prisma migrate resolve --rolled-back 20261111120000_add_returns_credit_notes
+```

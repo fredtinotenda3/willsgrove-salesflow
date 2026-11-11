@@ -36,6 +36,12 @@ export type ListSapInvoicesOptions = {
   includeDemo?: boolean;
   reconciliationStatus?: string;
   customerId?: string;
+  // Milestone 6A (Invoice Claims Management): a small, purely additive
+  // extension so the claim-creation form can look up a SAP invoice by
+  // its document number without a separate, duplicate query function.
+  // Optional and backward-compatible -- every existing caller that omits
+  // it sees unchanged behavior.
+  search?: string;
 };
 
 export type ParsedSapInvoiceListQuery = { ok: true; query: ListSapInvoicesOptions } | { ok: false; message: string };
@@ -56,8 +62,9 @@ export function parseSapInvoiceListQuery(params: URLSearchParams): ParsedSapInvo
 
   const customerId = params.get("customerId")?.trim() || undefined;
   const includeDemo = params.get("includeDemo") === "true";
+  const search = params.get("search")?.trim() || undefined;
 
-  return { ok: true, query: { page, pageSize, reconciliationStatus, customerId, includeDemo } };
+  return { ok: true, query: { page, pageSize, reconciliationStatus, customerId, includeDemo, search } };
 }
 
 export type SapInvoiceSummary = {
@@ -155,6 +162,13 @@ export async function listSapInvoices(options: ListSapInvoicesOptions): Promise<
   if (!options.includeDemo) where.isDemo = false;
   if (options.reconciliationStatus) where.reconciliationStatus = options.reconciliationStatus as Prisma.SapInvoiceWhereInput["reconciliationStatus"];
   if (options.customerId) where.matchedCustomerId = options.customerId;
+  if (options.search) {
+    where.OR = [
+      { sapDocNum: { contains: options.search, mode: "insensitive" } },
+      { customerName: { contains: options.search, mode: "insensitive" } },
+      { matchedCustomer: { name: { contains: options.search, mode: "insensitive" } } },
+    ];
+  }
 
   const [totalItems, rows] = await Promise.all([
     prisma.sapInvoice.count({ where }),

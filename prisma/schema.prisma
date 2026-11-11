@@ -249,6 +249,32 @@ model User {
   uploadedInvoiceImportBatches SapInvoiceImportBatch[] @relation("InvoiceImportUploader")
   matchedInvoiceLines          SapInvoiceLine[]        @relation("InvoiceLineMatcher")
 
+  // Milestone 6A (Invoice Claims Management). Same "no dedicated role"
+  // convention: any authenticated user can create a claim, record
+  // investigation findings/outcomes, or propose a resolution; only
+  // SALES_MANAGER/ADMINISTRATOR can approve or reject a resolution, or
+  // move a claim across an approval-weight status transition --
+  // enforced at the API route, see app/api/invoice-claims/*.
+  reportedClaims           InvoiceClaim[]           @relation("ClaimReporter")
+  assignedClaims           InvoiceClaim[]           @relation("ClaimAssignee")
+  recordedClaimResolutions ClaimResolution[]        @relation("ClaimResolutionRecorder")
+  approvedClaimResolutions ClaimResolution[]        @relation("ClaimResolutionApprover")
+  rejectedClaimResolutions ClaimResolution[]        @relation("ClaimResolutionRejecter")
+  uploadedClaimAttachments InvoiceClaimAttachment[]  @relation("ClaimAttachmentUploader")
+
+  // Milestone 6B (Returns & Credit Notes). Recording a credit note is
+  // SALES_MANAGER/ADMINISTRATOR only (confirmed design decision -- it
+  // asserts a completed financial fact, the same approval-weight tier as
+  // approving a ClaimResolution); recording a physical return has no
+  // dedicated role, same "no dedicated role" convention as every other
+  // investigation/recording-weight action in this project -- enforced at
+  // the API route, see app/api/invoice-claims/*/returns and
+  // app/api/returns-credits/*.
+  uploadedCreditNoteImportBatches CreditNoteImportBatch[] @relation("CreditNoteImportUploader")
+  recordedCreditNotes             CreditNote[]            @relation("CreditNoteRecorder")
+  matchedCreditNotes              CreditNote[]            @relation("CreditNoteMatcher")
+  receivedClaimReturns            ClaimReturn[]           @relation("ClaimReturnReceiver")
+
   @@index([isDemo])
 }
 
@@ -326,6 +352,9 @@ model Customer {
 
   // Milestone 5 (SAP Invoice Reconciliation).
   sapInvoices SapInvoice[]
+
+  // Milestone 6A (Invoice Claims Management).
+  invoiceClaims InvoiceClaim[]
 
   @@index([name])
   @@index([status])
@@ -588,6 +617,11 @@ model CustomerOrder {
   // invoices and vice versa (spec section 4).
   matchedSapInvoices     SapInvoice[]
   matchedSapInvoiceLines SapInvoiceLine[]
+
+  // Milestone 6A (Invoice Claims Management). Nullable on InvoiceClaim
+  // itself ("where possible, the original SalesFlow order") -- see that
+  // model's own comment.
+  invoiceClaims InvoiceClaim[]
 
   @@index([customerId])
   @@index([status])
@@ -1663,6 +1697,17 @@ model SapInvoice {
   matchedOrder    CustomerOrder?        @relation(fields: [matchedOrderId], references: [id], onDelete: SetNull)
   lines           SapInvoiceLine[]
 
+  // Milestone 6A (Invoice Claims Management). One SAP invoice may have
+  // several claims raised against it over time (spec section 1).
+  claims InvoiceClaim[]
+
+  // Milestone 6B (Returns & Credit Notes). Zero, one, or several actual
+  // SAP credit notes may be recorded against this invoice over time (one
+  // per settled claim, typically) -- resolved either by the operator's
+  // own selection at manual-entry time or by matching a CSV-imported
+  // credit note's base-invoice reference against this row.
+  creditNotes CreditNote[]
+
   @@index([importBatchId])
   @@index([matchedCustomerId])
   @@index([matchedOrderId])
@@ -1707,10 +1752,566 @@ model SapInvoiceLine {
   matchedOrderLine OrderLine?     @relation(fields: [matchedOrderLineId], references: [id], onDelete: Restrict)
   matchedBy        User?          @relation("InvoiceLineMatcher", fields: [matchedById], references: [id], onDelete: Restrict)
 
+  // Milestone 6A (Invoice Claims Management). Zero, one, or several
+  // claim lines may be raised against one SAP invoice line over time
+  // (e.g. two separate customer complaints about the same line, weeks
+  // apart) -- see InvoiceClaimLine's own comment for how the "accepted +
+  // rejected must not exceed invoiced" rule is enforced across all of
+  // them, not just within one claim.
+  claimLines InvoiceClaimLine[]
+
   @@index([sapInvoiceId])
   @@index([matchedOrderId])
   @@index([matchedOrderLineId])
   @@index([matchStatus])
   @@index([sapItemCode])
+  @@index([isDemo])
+}
+
+// ============================================================================
+// Milestone 6A -- Invoice Claims Management.
+//
+// Tracks what happens AFTER a customer receives a real SAP invoice
+// (Milestone 5's SapInvoice/SapInvoiceLine): acceptance, partial/full
+// rejection, complaints, disputed quantities/products, quality issues,
+// pricing disputes -- through investigation to a resolution recommendation
+// and (only once a manager approves it) an internally-approved outcome.
+//
+// What this milestone deliberately does NOT do (spec Part 1 section 6,
+// "a recommendation is not the same as an executed action"): it never
+// creates a physical return record, never marks a credit note as issued,
+// never alters SAP invoice data, and never computes an "actual credited
+// amount" -- those are Milestone 6B's job, built on top of this one.
+// ClaimResolution.decision is the explicit, structural hook 6B reads to
+// know what a claim's approved outcome implies it should do.
+//
+// Entirely additive: no existing table, column, or enum value changes.
+// The one two-way relationship with Milestones 0-5 is a set of pure FK
+// references FROM these new tables TO SapInvoice/SapInvoiceLine/
+// CustomerOrder/Customer/User -- nothing on the existing side of those
+// relations is ever written to by this milestone except the inverse-
+// relation array field itself (no new column).
+// ============================================================================
+
+// Fixed, controlled vocabulary (confirmed choice over a DB-configurable
+// list -- see docs/milestones/PROGRESS.md's Milestone 6A section):
+// matches every other controlled vocabulary in this codebase
+// (LostSaleReason, DecisionSource, CustomerDecisionType, ...). "OTHER"
+// is the explicit escape valve the spec's own list ends with.
+enum InvoiceClaimCategory {
+  QUALITY_ISSUE
+  DAMAGED_PRODUCTS
+  SPOILAGE
+  SHORT_DELIVERY
+  MISSING_PRODUCTS
+  WRONG_PRODUCT_SUPPLIED
+  QUANTITY_DISCREPANCY
+  PRICING_DISPUTE
+  INCORRECT_INVOICE
+  CUSTOMER_REJECTION
+  OTHER
+}
+
+enum InvoiceClaimPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+// Spec Part 1 section 5's own named lifecycle, verbatim. Legal transitions
+// (and which ones require SALES_MANAGER/ADMINISTRATOR) are enforced in
+// lib/invoice-claims/validation.ts's validateClaimStatusTransition(), not
+// just documented here -- see that file for the full transition table and
+// the rationale for each edge.
+enum InvoiceClaimStatus {
+  OPEN
+  UNDER_INVESTIGATION
+  AWAITING_CUSTOMER
+  AWAITING_INTERNAL_ACTION
+  APPROVED
+  PARTIALLY_RESOLVED
+  RESOLVED
+  REJECTED
+  CLOSED
+}
+
+// A claim line disputes EITHER a quantity (acceptedQuantity/
+// rejectedQuantity populated, disputedAmount null) OR a pure financial
+// amount (disputedAmount populated, both quantities null) -- never both,
+// enforced in validation.ts. Spec section 4's explicit "if the customer
+// disputes only a financial amount rather than quantity, support an
+// amount-based dispute without inventing a quantity."
+enum ClaimLineDisputeType {
+  QUANTITY
+  AMOUNT_ONLY
+}
+
+// Spec Part 1 section 6's own named list, verbatim (reworded to valid
+// enum identifiers). A RESOLUTION IS A RECOMMENDATION, not an executed
+// action -- see ClaimResolution's own comment. The mapping from a
+// decision to the claim's resulting status (once a manager approves it)
+// is an explicit, exhaustive function
+// (resolutionDecisionToClaimStatus() in validation.ts), never a free
+// choice at approval time -- this is what makes "do not allow arbitrary
+// status changes that bypass required investigation or approval steps"
+// (spec section 5) structurally true rather than merely a convention.
+enum ClaimResolutionDecision {
+  NO_ACTION_REQUIRED
+  CLAIM_REJECTED
+  REPLACEMENT_APPROVED
+  PHYSICAL_RETURN_REQUIRED
+  PARTIAL_CREDIT_RECOMMENDED
+  FULL_CREDIT_RECOMMENDED
+  PRICING_CORRECTION_REQUIRED
+  DELIVERY_INVESTIGATION_REQUIRED
+  OTHER
+}
+
+model InvoiceClaim {
+  id             String @id @default(cuid())
+  claimReference String @unique // human-facing, e.g. "CLM-20261111-A1B2C3D4" -- same date+random shape as generateOrderReference()/generateHandoverReference()
+
+  // Required: "A claim must always be linked to the relevant SAP
+  // invoice" (spec section 1). orderId is nullable: "and, where
+  // possible, the original SalesFlow order and invoice line" -- an
+  // invoice that Milestone 5 never matched to an order can still have a
+  // claim raised against it.
+  sapInvoiceId String
+  orderId      String?
+
+  // Required, and NOT always the same as sapInvoice.matchedCustomerId:
+  // Milestone 5 allows an invoice to import with no resolved customer
+  // match at all (an unmatched SAP customer code), but a real person
+  // filing a claim always knows who the customer actually is. Validated
+  // at creation (lib/invoice-claims/create-claim.ts): if the invoice
+  // already has a matchedCustomerId, this must equal it -- a claim can
+  // never silently contradict Milestone 5's own resolved match; it may
+  // only supply the identity Milestone 5 itself left unresolved.
+  customerId String
+
+  customerComplaintReference String? // the customer's own reference number, if they supplied one -- never invented
+  category                   InvoiceClaimCategory
+  description                String
+  reportedById                String
+  assignedToId                String? // "assigned person/team" -- a specific User; this codebase has no separate Team entity, so a team assignment is represented as a free-text note in customerCommunicationNotes/description if needed, not a new model
+  priority                    InvoiceClaimPriority @default(MEDIUM)
+
+  claimDate DateTime @db.Date // when the claim was reported -- distinct from sapInvoice.invoiceDate, which is read live, never duplicated here
+
+  status     InvoiceClaimStatus @default(OPEN)
+  resolvedAt DateTime?          @db.Timestamptz(6) // set once status first reaches RESOLVED/PARTIALLY_RESOLVED/REJECTED -- feeds "average resolution time" reporting without needing a full event-sourced history table
+  closedAt   DateTime?          @db.Timestamptz(6)
+
+  // Current value only, same convention as SapInvoice.reconciliationNotes
+  // -- the full history of every change lives in AuditEvent, not here.
+  customerCommunicationNotes String?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  sapInvoice SapInvoice     @relation(fields: [sapInvoiceId], references: [id], onDelete: Restrict)
+  order      CustomerOrder? @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  customer   Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  reportedBy User           @relation("ClaimReporter", fields: [reportedById], references: [id], onDelete: Restrict)
+  assignedTo User?          @relation("ClaimAssignee", fields: [assignedToId], references: [id], onDelete: Restrict)
+
+  lines       InvoiceClaimLine[]
+  resolutions ClaimResolution[]
+  attachments InvoiceClaimAttachment[]
+
+  // Milestone 6B (Returns & Credit Notes). Zero, one, or several actual
+  // credit notes/physical returns may be recorded against this claim over
+  // time -- never required to appear together (see ClaimReturn/CreditNote's
+  // own comments), and never implying this claim has reached a concluded
+  // status by themselves: only
+  // lib/returns-credits/status-recompute.ts's recomputeClaimStatusAfterActuals(),
+  // which still only ever moves the claim through
+  // validateClaimStatusTransition(), does that.
+  creditNotes CreditNote[]
+  returns     ClaimReturn[]
+
+  @@index([sapInvoiceId])
+  @@index([orderId])
+  @@index([customerId])
+  @@index([status])
+  @@index([category])
+  @@index([reportedById])
+  @@index([assignedToId])
+  @@index([claimDate])
+  @@index([isDemo])
+}
+
+model InvoiceClaimLine {
+  id      String @id @default(cuid())
+  claimId String
+
+  sapInvoiceLineId String
+
+  // Snapshotted at creation time for display without a join -- NEVER
+  // used for quantity/financial math, which always re-reads the live
+  // SapInvoiceLine row (same "snapshot for display, re-read live for
+  // math" split OrderLine.sapItemCodeSnapshot already established).
+  sapItemCodeSnapshot        String?
+  sapItemDescriptionSnapshot String?
+
+  disputeType ClaimLineDisputeType
+
+  // Populated when disputeType == QUANTITY; both null for AMOUNT_ONLY.
+  // Enforced live in lib/invoice-claims/validation.ts against the
+  // invoice line's own quantityInvoiced MINUS whatever every OTHER claim
+  // line against that same SapInvoiceLine has already accepted/rejected
+  // (a live aggregate, never a stored running total) -- spec section 4:
+  // "accepted quantity + rejected/disputed quantity must not exceed the
+  // invoiced quantity," read as a rule over the invoice line as a whole,
+  // not just within one claim.
+  acceptedQuantity Decimal? @db.Decimal(18, 4)
+  rejectedQuantity Decimal? @db.Decimal(18, 4)
+
+  // Populated when disputeType == AMOUNT_ONLY; null for QUANTITY.
+  disputedAmount Decimal? @db.Decimal(18, 4)
+
+  // What the CUSTOMER claims the price should have been -- informational
+  // only, NEVER applied to SapInvoiceLine.unitPrice or any other real
+  // invoice value (spec section 7's "never calculate an actual credit
+  // amount based only on an estimated claim").
+  disputedUnitPrice Decimal? @db.Decimal(18, 4)
+
+  reason               String
+  evidenceNotes        String? // free-text evidence description; file evidence goes through InvoiceClaimAttachment instead
+  investigationOutcome String? // mutable as investigation proceeds; audited via AuditEvent on every change, same convention as SapInvoice.reconciliationNotes
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  claim          InvoiceClaim   @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  sapInvoiceLine SapInvoiceLine @relation(fields: [sapInvoiceLineId], references: [id], onDelete: Restrict)
+
+  attachments InvoiceClaimAttachment[]
+
+  // Milestone 6B (Returns & Credit Notes). A physical return may
+  // optionally be scoped to this one disputed line rather than the claim
+  // as a whole (mirroring InvoiceClaimAttachment.claimLineId's own
+  // optional-scoping convention).
+  returns ClaimReturn[]
+
+  // Prevents the same invoice line being listed twice within the SAME
+  // claim by mistake -- a genuinely new dispute about an already-claimed
+  // line is always a new ClaimLine on a new or existing claim with its
+  // own reason, never a silent duplicate row.
+  @@unique([claimId, sapInvoiceLineId])
+  @@index([claimId])
+  @@index([sapInvoiceLineId])
+  @@index([isDemo])
+}
+
+// A recommendation, never an executed action (spec section 6, verbatim:
+// "do not mark an SAP credit note as issued merely because someone
+// recommends one"). Append-only: recording a new resolution never edits
+// or deletes a prior one, so a claim's full investigation history --
+// including a recommendation a manager did NOT approve -- is permanently
+// visible. approvedById/approvedAt are set ONLY by
+// lib/invoice-claims/claim-resolution.ts's approveClaimResolution(),
+// restricted to SALES_MANAGER/ADMINISTRATOR at the route layer (the lib
+// function itself stays role-agnostic, same two-tier convention as every
+// prior milestone's approval-weight action).
+model ClaimResolution {
+  id      String @id @default(cuid())
+  claimId String
+
+  findings               String?
+  responsibleDepartment  String? // free text -- this codebase has no separate Department entity, and inventing one was not asked for
+  rootCause              String?
+  correctiveAction       String?
+  customerResponse       String?
+
+  decision       ClaimResolutionDecision
+  decisionDetail String? // required when decision == OTHER, same "Other requires detail" rule as LostSaleReason
+
+  resolutionDate DateTime? @db.Date
+
+  recordedById String
+  recordedAt   DateTime  @default(now()) @db.Timestamptz(6)
+
+  // Set only by approveClaimResolution(). approvedCreditAmount is the
+  // manager's own explicit, entered figure for how much internal credit
+  // exposure this resolution approves -- NEVER auto-computed from the
+  // claim lines' disputed value, because a manager approving a PARTIAL
+  // credit may legitimately approve less than what was disputed (spec
+  // section 7: "distinguish ... potential credit exposure [from]
+  // approved credit exposure"). Null for a decision that implies no
+  // credit at all (e.g. NO_ACTION_REQUIRED, CLAIM_REJECTED).
+  approvedById         String?
+  approvedAt           DateTime?
+  approvedCreditAmount Decimal?  @db.Decimal(18, 4)
+
+  // Set only by rejectClaimResolution() -- a manager explicitly declining
+  // THIS recommendation (with a required reason), as distinct from it
+  // simply being superseded by a newer one. Mutually exclusive with
+  // approvedById/approvedAt in practice (enforced in
+  // lib/invoice-claims/claim-resolution.ts, not by a DB constraint,
+  // since Postgres has no simple "these columns are mutually exclusive"
+  // check across nullable columns without a trigger). Rejecting a
+  // resolution does NOT by itself change the claim's own status --
+  // someone still records a new resolution or moves the claim's status
+  // explicitly.
+  rejectedById    String?
+  rejectedAt      DateTime?
+  rejectionReason String?
+
+  isDemo Boolean @default(false)
+
+  claim      InvoiceClaim @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  recordedBy User         @relation("ClaimResolutionRecorder", fields: [recordedById], references: [id], onDelete: Restrict)
+  approvedBy User?        @relation("ClaimResolutionApprover", fields: [approvedById], references: [id], onDelete: Restrict)
+  rejectedBy User?        @relation("ClaimResolutionRejecter", fields: [rejectedById], references: [id], onDelete: Restrict)
+
+  @@index([claimId])
+  @@index([decision])
+  @@index([isDemo])
+}
+
+// Reuses the existing generic StorageDriver (lib/storage/) exactly as
+// OrderDocument/OrderHandover already do -- same key-based, no-client-
+// visible-path security boundary, no new storage concept introduced.
+// Attachable either to the claim as a whole (claimLineId null) or to one
+// specific disputed line.
+model InvoiceClaimAttachment {
+  id          String  @id @default(cuid())
+  claimId     String
+  claimLineId String?
+
+  originalFileName String
+  storageKey       String  @unique
+  mimeType         String
+  fileSize         BigInt
+  checksum         String?
+
+  uploadedById String
+  uploadedAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  isDemo Boolean @default(false)
+
+  claim      InvoiceClaim      @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  claimLine  InvoiceClaimLine? @relation(fields: [claimLineId], references: [id], onDelete: Restrict)
+  uploadedBy User              @relation("ClaimAttachmentUploader", fields: [uploadedById], references: [id], onDelete: Restrict)
+
+  @@index([claimId])
+  @@index([claimLineId])
+  @@index([isDemo])
+}
+
+// ============================================================================
+// Milestone 6B -- Returns & Credit Notes.
+//
+// Builds on Milestone 6A's ClaimResolution.decision (a RECOMMENDATION) by
+// recording what actually happened afterward: goods physically returned to
+// the warehouse (ClaimReturn) and/or an SAP credit note SAP Business One
+// itself actually issued (CreditNote). SalesFlow never creates the credit
+// note in SAP -- it only records that one was issued, exactly as SAP B1
+// reported it, carrying forward the same "SAP remains the sole system of
+// record" rule Milestones 5 and 6A already established. Recording either
+// of these can now finally advance a claim's status, but strictly through
+// the SAME validated transition graph Milestone 6A already built
+// (lib/invoice-claims/validation.ts's CLAIM_STATUS_TRANSITIONS) -- 6B adds
+// no new status and no new transition edge; it only adds a second caller
+// (lib/returns-credits/status-recompute.ts) of the one graph that already
+// existed, via a shared helper factored out of
+// lib/invoice-claims/claim-lifecycle.ts (applyValidatedClaimStatusChange)
+// so the resolvedAt/closedAt bookkeeping can never drift between the two
+// callers.
+//
+// Confirmed design decisions (see docs/milestones/PROGRESS.md's Milestone
+// 6B section):
+//  - A physical return is tracked as its own model (ClaimReturn), not just
+//    a free-text note on a credit note.
+//  - Recording an actual CreditNote is SALES_MANAGER/ADMINISTRATOR only --
+//    it asserts a completed financial fact, the same approval-weight tier
+//    as approving a ClaimResolution, not the open-to-any-user tier
+//    recording a resolution recommendation itself uses. Recording a
+//    physical return has no dedicated role, matching every other
+//    investigation/recording-weight action in this project.
+//  - Recording either a return or a credit note auto-advances the claim's
+//    status when it now justifies that, never skipping a step the
+//    transition graph disallows.
+//  - A CSV import pipeline exists for bulk-reconciling credit notes
+//    (mirroring Milestone 5's SapInvoice importer), alongside manual
+//    single-record entry -- the same CreditNote model serves both; a
+//    manually-entered row is created already MANUALLY_MATCHED (the
+//    recording user picks the claim explicitly), an imported row starts
+//    UNMATCHED and is resolved by the same "exact identity, never guess
+//    ambiguity" matching rule Milestone 5 established.
+//
+// Entirely additive: no existing table, column, or enum value changes.
+// ============================================================================
+
+// A customer's own stated reason the goods are unsellable as received --
+// never inferred from ClaimResolution.decision, since that is a different
+// fact (what was internally decided to do) from this one (what the
+// warehouse actually found when the goods came back).
+enum ReturnCondition {
+  GOOD_RESALABLE
+  DAMAGED
+  EXPIRED
+  OTHER
+}
+
+// Mirrors InvoiceLineMatchStatus's shape (Milestone 5) but scoped to its
+// own entity -- see CreditNote's own comment for exactly how a row reaches
+// each state.
+enum CreditNoteMatchStatus {
+  UNMATCHED
+  AUTO_MATCHED
+  MANUALLY_MATCHED
+  CANNOT_LINK
+}
+
+// One row per confirmed credit-note CSV upload -- same stateless-preview,
+// write-only-on-confirm shape as SapInvoiceImportBatch (Milestone 5): the
+// file is re-parsed and re-planned at confirm time, so the preview step
+// never writes anything either.
+model CreditNoteImportBatch {
+  id               String @id @default(cuid())
+  originalFileName String
+  uploadedById     String
+
+  columnMapping Json
+
+  totalRows               Int
+  importedCreditNoteCount Int
+  duplicateRowCount       Int
+  invalidRowCount         Int
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  uploadedBy  User         @relation("CreditNoteImportUploader", fields: [uploadedById], references: [id], onDelete: Restrict)
+  creditNotes CreditNote[]
+
+  @@index([uploadedById])
+  @@index([isDemo])
+}
+
+// An actual SAP-issued credit note (AR Credit Memo), recorded against the
+// InvoiceClaim it settles -- either typed in by a SALES_MANAGER/
+// ADMINISTRATOR who sees it on their own SAP B1 screen (importBatchId
+// null, created already MANUALLY_MATCHED) or reconciled from a bulk CSV
+// export (importBatchId set, starts UNMATCHED). Either way, SalesFlow
+// NEVER creates this document in SAP -- it only records that SAP already
+// did.
+model CreditNote {
+  id            String  @id @default(cuid())
+  importBatchId String?
+
+  // The credit note's own SAP identity. sapCreditNoteDocEntry mirrors
+  // SapInvoice.sapDocEntry's "unique only when provided" convention;
+  // sapCreditNoteDocNum is always required (typed by a human for manual
+  // entry, or read from the CSV for an import -- never invented).
+  sapCreditNoteDocEntry String? @unique
+  sapCreditNoteDocNum   String
+
+  // The ORIGINAL invoice this credit note is crediting, resolved (never
+  // guessed) either from the operator's own selection at manual-entry time
+  // (denormalized from the chosen claim's own sapInvoiceId) or from the
+  // CSV's base-invoice reference columns matched against an already-
+  // imported SapInvoice (lib/returns-credits/plan-import.ts). Null means
+  // genuinely unresolved -- a human must supply the matching claim (whose
+  // sapInvoiceId then fills this in) via the manual-match action.
+  sapInvoiceId String?
+
+  // The claim this credit note settles. Null until matched (import path);
+  // always set immediately at creation for a manually-entered row.
+  claimId String?
+
+  matchStatus CreditNoteMatchStatus  @default(UNMATCHED)
+  matchMethod InvoiceLineMatchMethod?
+  matchNote   String?
+  matchedById String?
+  matchedAt   DateTime?
+
+  creditNoteDate DateTime? @db.Date
+  currencyCode   String?
+
+  // The actual amount SAP credited -- required; a credit note with no
+  // amount is meaningless. Never derived from ClaimResolution.
+  // approvedCreditAmount (the internally-approved figure, a different fact
+  // -- see lib/invoice-claims/financial.ts's actualExceedsApproved flag
+  // for how the two are compared, never merged into one number).
+  amount Decimal @db.Decimal(18, 4)
+
+  notes String?
+
+  // Preserved verbatim for an imported row (carrying forward Milestone 5's
+  // "do not invent missing SAP fields" rule); null for a manually-entered
+  // row, since there is no source file row to preserve.
+  rawSourceData Json?
+
+  recordedById String
+  recordedAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  importBatch CreditNoteImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: Restrict)
+  sapInvoice  SapInvoice?            @relation(fields: [sapInvoiceId], references: [id], onDelete: Restrict)
+  claim       InvoiceClaim?          @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  recordedBy  User                   @relation("CreditNoteRecorder", fields: [recordedById], references: [id], onDelete: Restrict)
+  matchedBy   User?                  @relation("CreditNoteMatcher", fields: [matchedById], references: [id], onDelete: Restrict)
+
+  returns ClaimReturn[]
+
+  @@index([importBatchId])
+  @@index([sapInvoiceId])
+  @@index([claimId])
+  @@index([matchStatus])
+  @@index([isDemo])
+}
+
+// Physical goods actually received back at the warehouse against a claim
+// -- a warehouse/operational fact, open to any authenticated user to
+// record (same tier as recording a ClaimResolution's investigation
+// findings), distinct from and never required to accompany a CreditNote
+// (a straight exchange/replacement may involve a return with no credit at
+// all; a pricing correction may involve a credit with no physical return).
+model ClaimReturn {
+  id          String  @id @default(cuid())
+  claimId     String
+  claimLineId String?
+
+  // Optional: set once this return has been matched to the CreditNote
+  // that actually credits it. Most of this milestone's resolutions need
+  // no credit at all for their return (REPLACEMENT_APPROVED/
+  // PHYSICAL_RETURN_REQUIRED), so this is never required.
+  creditNoteId String?
+
+  returnReference String @unique // "RET-YYYYMMDD-8HEX", same shape as generateClaimReference()
+
+  receivedQuantity Decimal         @db.Decimal(18, 4)
+  condition        ReturnCondition
+  conditionDetail  String? // required when condition == OTHER, same "Other requires detail" rule as everywhere else in this codebase
+  conditionNotes   String?
+
+  receivedDate DateTime @db.Date
+  receivedById String
+  receivedAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  claim      InvoiceClaim      @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  claimLine  InvoiceClaimLine? @relation(fields: [claimLineId], references: [id], onDelete: Restrict)
+  creditNote CreditNote?       @relation(fields: [creditNoteId], references: [id], onDelete: Restrict)
+  receivedBy User              @relation("ClaimReturnReceiver", fields: [receivedById], references: [id], onDelete: Restrict)
+
+  @@index([claimId])
+  @@index([claimLineId])
+  @@index([creditNoteId])
   @@index([isDemo])
 }

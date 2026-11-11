@@ -34,6 +34,25 @@
  *     pattern, not an FK), so it can be deleted independently at any
  *     point.
  *
+ * Milestone 6A (Invoice Claims Management) added four more models
+ * (InvoiceClaim, InvoiceClaimLine, ClaimResolution,
+ * InvoiceClaimAttachment), each with its own isDemo flag and every FK
+ * onDelete: Restrict -- cleaned up as their own leaves-first group,
+ * before the SapInvoice/SapInvoiceLine/CustomerOrder/Customer/User rows
+ * they reference (see that block's own comment below for the exact
+ * order).
+ *
+ * Milestone 6B (Returns & Credit Notes) added three more models
+ * (ClaimReturn, CreditNote, CreditNoteImportBatch), each with its own
+ * isDemo flag and every FK onDelete: Restrict. Deleted as their own
+ * leaves-first group BEFORE the Milestone 6A block above's InvoiceClaim/
+ * InvoiceClaimLine deletes (ClaimReturn.claimLineId and CreditNote.claimId
+ * both reference them) and BEFORE the Milestone 5 block below's
+ * SapInvoice delete (CreditNote.sapInvoiceId references it): ClaimReturn
+ * first (it references CreditNote itself, as well as InvoiceClaim/
+ * InvoiceClaimLine), then CreditNote, then CreditNoteImportBatch (which
+ * CreditNote references).
+ *
  * Milestone 0 fix (round 4): this is 12 sequential round trips over one
  * connection to a pooled Neon endpoint, and Prisma's *default* interactive
  * transaction timeout is 5000ms -- comfortably exceeded under real network
@@ -83,6 +102,50 @@ async function main() {
 
       const documents = await tx.orderDocument.deleteMany({
         where: { order: { isDemo: true } },
+      });
+
+      // Milestone 6B (Returns & Credit Notes). Must come before the
+      // Milestone 6A block immediately below (ClaimReturn/CreditNote both
+      // reference InvoiceClaim and/or InvoiceClaimLine, Restrict) and
+      // before the Milestone 5 SapInvoice delete further below
+      // (CreditNote.sapInvoiceId, Restrict). ClaimReturn before CreditNote
+      // (ClaimReturn.creditNoteId, Restrict); CreditNote before its own
+      // CreditNoteImportBatch (Restrict).
+      const claimReturns = await tx.claimReturn.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const creditNotes = await tx.creditNote.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const creditNoteImportBatches = await tx.creditNoteImportBatch.deleteMany({
+        where: { isDemo: true },
+      });
+
+      // Milestone 6A (Invoice Claims Management). Every FK off these four
+      // new tables is onDelete: Restrict, so every leaf must go before
+      // its parent, and the whole group must go before SapInvoiceLine/
+      // SapInvoice/CustomerOrder/Customer/User below (all of which
+      // InvoiceClaim and/or InvoiceClaimLine reference). Attachments and
+      // resolutions are both children of InvoiceClaim only (no deeper
+      // dependents), so either order between them is safe; lines must
+      // come after both (an attachment may reference a specific
+      // claimLineId) and before the claim itself.
+      const invoiceClaimAttachments = await tx.invoiceClaimAttachment.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const claimResolutions = await tx.claimResolution.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const invoiceClaimLines = await tx.invoiceClaimLine.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const invoiceClaims = await tx.invoiceClaim.deleteMany({
+        where: { isDemo: true },
       });
 
       // Milestone 5 (SAP Invoice Reconciliation). Lines before their
@@ -179,6 +242,13 @@ async function main() {
             sapInvoiceLines: sapInvoiceLines.count,
             sapInvoices: sapInvoices.count,
             sapInvoiceImportBatches: sapInvoiceImportBatches.count,
+            invoiceClaimAttachments: invoiceClaimAttachments.count,
+            claimResolutions: claimResolutions.count,
+            invoiceClaimLines: invoiceClaimLines.count,
+            invoiceClaims: invoiceClaims.count,
+            claimReturns: claimReturns.count,
+            creditNotes: creditNotes.count,
+            creditNoteImportBatches: creditNoteImportBatches.count,
           },
         },
       });
@@ -197,6 +267,13 @@ async function main() {
         sapInvoiceLines: sapInvoiceLines.count,
         sapInvoices: sapInvoices.count,
         sapInvoiceImportBatches: sapInvoiceImportBatches.count,
+        invoiceClaimAttachments: invoiceClaimAttachments.count,
+        claimResolutions: claimResolutions.count,
+        invoiceClaimLines: invoiceClaimLines.count,
+        invoiceClaims: invoiceClaims.count,
+        claimReturns: claimReturns.count,
+        creditNotes: creditNotes.count,
+        creditNoteImportBatches: creditNoteImportBatches.count,
       };
     },
     {
@@ -219,6 +296,13 @@ async function main() {
   console.log(`  SAP invoice lines: ${result.sapInvoiceLines}`);
   console.log(`  SAP invoices:     ${result.sapInvoices}`);
   console.log(`  SAP invoice import batches: ${result.sapInvoiceImportBatches}`);
+  console.log(`  Invoice claims:   ${result.invoiceClaims}`);
+  console.log(`  Invoice claim lines: ${result.invoiceClaimLines}`);
+  console.log(`  Claim resolutions: ${result.claimResolutions}`);
+  console.log(`  Invoice claim attachments: ${result.invoiceClaimAttachments}`);
+  console.log(`  Claim returns:    ${result.claimReturns}`);
+  console.log(`  Credit notes:     ${result.creditNotes}`);
+  console.log(`  Credit note import batches: ${result.creditNoteImportBatches}`);
 }
 
 main()
