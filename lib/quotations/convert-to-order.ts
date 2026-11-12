@@ -85,6 +85,13 @@ export async function convertQuotationToOrder(
     customerId: quotation.customerId,
     customerLocationId: input.customerLocationId ?? null,
     customerPoReference: input.customerPoReference ?? null,
+    // Milestone 11 (Operational BI). The converted order inherits the
+    // quotation's own assigned salesperson (not actorId, the person who
+    // clicked "convert" -- often a manager converting on a salesperson's
+    // behalf) so sales-pipeline reporting can follow one salesperson's
+    // deal continuously from quotation through order. See CustomerOrder.
+    // salespersonId's own schema comment.
+    salespersonId: quotation.salespersonId,
     source: "QUOTATION",
     orderDate: today,
     requestedDeliveryDate: input.requestedDeliveryDate ?? null,

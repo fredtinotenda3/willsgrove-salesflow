@@ -220,6 +220,10 @@ model User {
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
   createdOrders     CustomerOrder[]       @relation("OrderCreator")
+  // Milestone 11 (Operational BI). The assigned salesperson for an order --
+  // see CustomerOrder.salespersonId's own comment for why this is distinct
+  // from OrderCreator and how it's populated.
+  assignedOrders    CustomerOrder[]       @relation("OrderSalesperson")
   uploadedDocuments OrderDocument[]       @relation("DocumentUploader")
   verifications     ProductVerification[] @relation("VerificationUser")
   priceDecisions    PriceDecision[]       @relation("PriceDecisionUser")
@@ -633,6 +637,27 @@ model CustomerOrder {
   customerLocationId String?
   createdById        String
 
+  // Milestone 11 (Operational BI). The assigned salesperson for sales-
+  // pipeline/performance reporting (spec section 4/8's "salesperson"
+  // filter dimension) -- deliberately a separate field from createdById,
+  // the same distinction Quotation already draws between salespersonId
+  // and preparedById ("the assigned salesperson -- may differ from
+  // preparedById (a manager can prepare on a salesperson's behalf)").
+  // Nullable (unlike Quotation.salespersonId, which is required) because
+  // this field did not exist before this milestone and every pre-existing
+  // order had no assigned-salesperson concept at all -- this migration
+  // backfills every existing row to its own createdById as the best
+  // available approximation, and lib/orders.ts's createOrderCore defaults
+  // every NEW order the same way unless the caller supplies a better
+  // value. lib/quotations/convert-to-order.ts is the one caller that
+  // does: an order converted from a quotation inherits that quotation's
+  // own salespersonId, not the id of whoever clicked "convert," so
+  // pipeline continuity from quotation through order stays attached to
+  // the salesperson who actually owns the deal. See docs/milestones/
+  // m11-metric-definitions.md for how reporting treats this as an
+  // approximation on orders not sourced from a quotation.
+  salespersonId String?
+
   customerPoReference String?
   source              OrderSource
   status              OrderStatus @default(DRAFT)
@@ -683,6 +708,7 @@ model CustomerOrder {
   customer         Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
   customerLocation CustomerLocation? @relation(fields: [customerLocationId], references: [id], onDelete: SetNull)
   createdBy        User              @relation("OrderCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  salesperson      User?             @relation("OrderSalesperson", fields: [salespersonId], references: [id], onDelete: Restrict)
 
   lines          OrderLine[]
   documents      OrderDocument[]
@@ -757,6 +783,13 @@ model CustomerOrder {
   @@index([orderDate])
   @@index([createdAt])
   @@index([isDemo])
+  @@index([salespersonId])
+  // Milestone 11 (Operational BI). Composite index for the operational
+  // dashboard/pipeline reports' most common query shape -- "count/list
+  // non-demo orders in a given status" -- rather than relying on the
+  // isDemo and status single-column indexes to be combined by the planner
+  // for every dashboard query.
+  @@index([isDemo, status])
 }
 
 model OrderLine {

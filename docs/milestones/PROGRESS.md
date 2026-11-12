@@ -5389,3 +5389,276 @@ convention but not run against a real database from inside this
 sandbox; nothing in this milestone has ever been tested against a
 real email provider or a real WhatsApp Business Account, and nothing
 here claims otherwise.
+
+# Milestone 11 — Operational Business Intelligence (BI)
+
+Built from your attached 17-section full specification, delivered
+silently per your "return only changed files" instruction, after four
+approved `AskUserQuestion` decisions resolved the spec's own approval
+gate (spec §0/§17): (1) both `app/page.tsx` and `app/reports/page.tsx`'s
+existing mock data are replaced with real M11-backed data; (2) the four
+operational views stay open to all three roles, while the 9 named
+management reports are `SALES_MANAGER`/`ADMINISTRATOR`-only; (3) a real
+`salespersonId` column was added to `CustomerOrder` via an additive
+migration, rather than approximating "salesperson" from `createdById`;
+(4) exports are CSV plus browser-print, with no new PDF-generation
+dependency.
+
+## Investigation: what already exists, and what M11 must not duplicate
+
+Read directly before designing anything: `prisma/schema.prisma` in full;
+`lib/orders.ts`, `lib/quotations/{issue,respond,convert-to-order}.ts`;
+`lib/picking/{start-picking,complete-picking,authorize-picking}.ts`;
+`lib/dispatch/*`, `lib/delivery/*`; `lib/invoice-claims/*`,
+`lib/invoice-reconciliation/*`; `lib/returns-credits/*`;
+`lib/communications/*` (M10); `lib/lost-sales/*` (M4);
+`docs/milestones/{PROGRESS,ROADMAP}.md`;
+`MILESTONE-9-DELIVERY-REPORT.md`/`MILESTONE-10-DELIVERY-REPORT.md`.
+
+**The single most important finding**: every underlying data source the
+spec asks this milestone to surface — the request→quotation→order
+funnel, picking/dispatch/delivery quantities, invoice claims and
+reconciliation, returns/credit notes, communications intake/outbound —
+**already exists** as real, working lib functions and Prisma models from
+Milestones 2–10. Nothing in M11 invents a new transactional concept; the
+entire milestone is a **reporting layer** over data that is already
+correctly recorded. This reframes the real risk: it is not "will the
+numbers be right" (the underlying writes are already correct, tested,
+and shipped) but "will the *reporting layer itself* introduce a new way
+to be wrong" — by mixing two differently-dated cohorts into one rate, by
+treating a dispatched quantity as a delivered one, or by double-counting
+a claim across claims-dashboard and reconciliation-report. The spec's
+own §2 names this risk explicitly, which is why its data-quality
+labelling (`Actual`/`Calculated`/`Provisional`/`Missing`) and its
+explicit list of things never to conflate became this milestone's actual
+design center, not an afterthought bolted on at the end.
+
+**Other load-bearing findings**:
+- `CustomerOrder` had no `salespersonId` column at all before this
+  milestone — `Quotation.salespersonId` already existed (required, M7)
+  but nothing carried that attribution forward once a quotation
+  converted into an order, and an order created directly (not via
+  quotation conversion) had no salesperson concept whatsoever. Approved
+  via `AskUserQuestion` decision 3 above: add the column as a genuine,
+  additive schema change, with every *new* order (direct or via
+  quotation conversion) carrying a real, non-approximated salesperson
+  going forward. For orders that already existed before this migration,
+  there is no reliable record of who the actual salesperson was, so the
+  migration backfills them with `createdById` (whoever created the
+  record — not necessarily the true owning salesperson, since a manager
+  can create an order on a salesperson's behalf, the same distinction
+  `Quotation` already draws between `salespersonId` and `preparedById`)
+  as the best available, non-invented approximation, documented as such
+  in the migration's own comment and applied identically going forward
+  by `lib/orders.ts`'s `createOrderCore` whenever no better value is
+  supplied.
+- `lib/prisma.ts` executes `export const prisma = globalForPrisma.prisma
+  ?? new PrismaClient(...)` at module top level. In this sandbox's
+  stale/stub `@prisma/client`, that line throws immediately — so any
+  file that imports `@/lib/prisma`, even transitively, cannot be
+  imported inside a test here without the project's established
+  `RUN_DB_INTEGRATION_TESTS` gate with a dynamic `await import(...)`
+  inside the test body. Of this milestone's 11 `lib/reporting/*.ts`
+  files, exactly one — `filters.ts` — has no `@prisma/client` dependency
+  anywhere in its import graph, so it alone could carry unconditional
+  test coverage; the other 10 all needed the gate.
+- `startPickingSession` moves `CustomerOrder.status` to `PICKING`
+  unconditionally (unless `CANCELLED`/`REJECTED`), and
+  `authorizePickingSession` moves it to `READY_TO_INVOICE`
+  unconditionally, regardless of whether the pick had a shortage. A full
+  pick→complete→authorize flow therefore never leaves an order sitting
+  at `APPROVED`/`PICKING` — a test needing an order in that status range
+  (for `ordersAwaitingFulfilment`/`listOrdersAwaitingFulfilment`
+  reporting) must create the order directly at that status instead.
+  Caught by reading these three files before trusting a superficially-
+  similar fixture pattern copied from this project's own prior test
+  files, and fixed before any test was run (see "One real bug found and
+  fixed this round" below).
+
+## What was actually built
+
+- **`lib/reporting/types.ts`** — the shared `ReportFilters`/
+  `PaginationParams`/`PaginatedResult<T>`/`DataQuality`/
+  `QualifiedMetric<T>` contract every other file in this module builds
+  on, with the per-field comments stating exactly which filters a given
+  report honors.
+- **`lib/reporting/filters.ts`** — the one central, synchronous filter/
+  pagination parser every report route calls before touching Prisma at
+  all. `orderStatus`/`quotationStatus`/`claimStatus` are validated here
+  against their real schema enums (a garbage value becomes a clean 400,
+  never an unhandled 500 downstream); `fulfilmentStatus`/
+  `communicationStatus` are deliberately passed through unvalidated
+  because each maps onto more than one schema enum depending on which
+  report consumes it — validating it centrally would mean rejecting a
+  value that is perfectly valid for a *different* report.
+- **`lib/reporting/filter-options.ts`** — customer/salesperson dropdown
+  option lists, capped at 500 rows; product gets a plain exact-ID text
+  input instead of a dropdown (7,500+ catalogue rows), per the spec's
+  explicit "never load an entire table into the browser."
+- **`lib/reporting/export-csv.ts`** — `buildCsv`, `recordReportExport`,
+  `flattenToKeyValueRows` (reused directly by the management-report
+  detail UI, so the on-screen table and the CSV export are guaranteed to
+  show literally the same numbers through the same function rather than
+  two independently-written renderers that could drift apart).
+- **`lib/reporting/access.ts`** — `requireManagementReportAccess`, the
+  single server-side role gate every management-report route and page
+  calls, matching the existing `app/approvals/policies/page.tsx`
+  precedent rather than inventing a new access-control pattern.
+- **`lib/reporting/sales-pipeline.ts`** — the full request→quotation→
+  order funnel. Every rate in this file divides two counts from the
+  *same* cohort, anchored to one date field — never two independently-
+  dated populations (the spec's own worked counter-example:
+  `(quotations issued this week) / (requests received this week)` is a
+  meaningless ratio because a quotation issued this week was very
+  possibly a request received *last* week).
+- **`lib/reporting/fulfilment-intelligence.ts`** — six distinct
+  quantities (ordered/available/shortage/dispatched/accepted+rejected/
+  outstanding-in-transit), never blended: a dispatched quantity is
+  structurally never reported as delivered, and a completed pick is
+  never reported as a completed delivery.
+- **`lib/reporting/financial-exposure.ts`** — wraps the existing M6A
+  invoice-claims dashboard and M5 invoice-reconciliation reports (both
+  whole-business right-now totals by original design — only
+  `includeDemo` affects them) and adds a genuinely date/customer-
+  filterable returns-and-credit-notes summary. `exposureByCurrency[]` is
+  kept strictly per-currency, never summed across currencies (this
+  project's real-world currencies are USD and ZWG — summing them would
+  produce a number with no real-world meaning).
+- **`lib/reporting/communications-monitoring.ts`** — intake/outbound
+  monitoring where `totalReceived` and `byChannel[]` always share the
+  identical `where` clause (structurally guaranteed not to drift apart),
+  and `deliveryReceiptsSupported` is always `false` — this project's
+  send adapters (mock and real) model only "the send attempt itself
+  succeeded or failed," never a provider-side delivery receipt, so
+  `sent`/`failed` are reported honestly under their own name rather than
+  mislabelled "delivered."
+- **`lib/reporting/operational-dashboard.ts`** — the combined feed
+  behind the home dashboard, replacing its previous mock data.
+- **`lib/reporting/management-reports.ts`** — the 9-report catalogue
+  (`MANAGEMENT_REPORT_CATALOGUE`), `runManagementReport` dispatcher, and
+  `applicableEnumFilter` (an enum value that doesn't apply to a given
+  report's underlying model is treated as "not applicable" — silently
+  not applied, never a thrown error and never a filter that forces zero
+  rows by accident).
+- **12 new API routes** under `app/api/reports/*` (list + export for
+  sales-pipeline, fulfilment, financial-exposure, communications, plus
+  the operational-dashboard feed and the management catalogue + per-
+  report detail/export, the latter gated by `requireManagementReportAccess`).
+- **10 UI files** under `app/reports/*`: 3 shared `_components` (filter
+  bar, page-chrome building blocks, search-params helpers), 4
+  operational-view pages, the management catalogue page, and the
+  generic management-report detail/viewer page (one page handles all 9
+  reports via a per-report filter config rather than 9 near-duplicate
+  pages).
+- **`app/page.tsx`/`app/reports/page.tsx`** — both rewritten to real
+  data per decision 1 above.
+- **`lib/orders.ts`/`lib/quotations/convert-to-order.ts`** — threaded
+  the new `salespersonId` through order creation and quotation→order
+  conversion, so pipeline attribution survives the whole funnel.
+
+### Documented scope decisions (not deviations — resolved at the approval gate)
+
+- Status-equality filters (`orderStatus`/`fulfilmentStatus`/
+  `quotationStatus`/`claimStatus`/`communicationStatus`) are wired into
+  a report only when that report's own output does not already break
+  every row down by that exact status. See
+  `docs/milestones/m11-metric-definitions.md` §6 for the full,
+  one-time-documented rationale and the exact per-report matrix.
+- `scripts/remove-demo-data.ts` needed **no change**: checked
+  explicitly — `CustomerOrder.salespersonId` is a nullable,
+  `onDelete: Restrict` FK onto `User`; demo-data removal deletes
+  `CustomerOrder` rows, never `User` rows, so this FK can never block
+  that deletion order.
+
+## One real bug found and fixed this round
+
+Self-caught during test design, before any test was run (no user report
+involved): my first draft of `tests/reporting-db.integration.test.ts`
+used a full pick→complete→authorize fixture (`createPartiallyPickedOrder`)
+for 4 tests whose assertions actually needed an order sitting at
+`APPROVED`/`PICKING`. Reading `lib/picking/start-picking.ts` and
+`lib/picking/authorize-picking.ts` directly (rather than trusting the
+fixture pattern copied from this project's own
+`tests/fulfilment-db.integration.test.ts`) showed that
+`authorizePickingSession` unconditionally advances the order to
+`READY_TO_INVOICE` regardless of whether a shortage occurred — meaning
+those 4 tests' fixtures would never actually land inside the
+`{APPROVED, PICKING}` status range the assertions were testing against,
+and would have failed for the wrong reason (a fixture-design bug
+masquerading as a filter-logic bug). Fixed by introducing a second,
+simpler fixture helper, `createOrderWithStatus(status, requestedQuantity)`
+— a direct `prisma.customerOrder.create` at the requested status,
+bypassing the picking lifecycle entirely — and rewiring all 4 affected
+tests to use it. A secondary, much smaller issue (placeholder currency
+`"ZAR"` used before checking the schema; this codebase's own documented
+real-world convention is `"USD"`/`"ZWG"`) was also caught and fixed the
+same way, by reading `prisma/schema.prisma` before trusting an assumed
+value.
+
+## Honest verification results
+
+- **`npx eslint .`** (via `npm run lint`) — clean across the whole
+  project, including every file this milestone added or edited.
+- **`npx tsc --noEmit`** — 488 errors, up from 412 at the end of
+  Milestone 10 (+76, all 76 inside this milestone's own genuinely new
+  files — `lib/reporting/*.ts`, `app/reports/*`, `app/api/reports/*`,
+  `tests/reporting-*.test.ts`). Every one of the 76 was checked by error
+  code: 57 `TS7006` (implicit `any` from an untyped Prisma delegate
+  result), 14 `TS2694` (a `Prisma.*WhereInput`/`*Select`/`*GetPayload`
+  namespace member the stale generated client doesn't know exists), 5
+  `TS2305` (`OrderStatus`/`PickingSessionStatus`/`DeliveryOutcome`/
+  `ClaimResolutionDecision` not exported from `@prisma/client`) — the
+  identical three categories already present, in the identical
+  proportions, in every pre-existing file that touches Prisma types
+  across Milestones 0–10 (confirmed again this round: `lib/orders.ts`
+  and `lib/quotations/convert-to-order.ts`, both modified rather than
+  new this milestone, contribute 12 of the errors in the *baseline*
+  412, not the +76 delta — their errors predate this milestone and are
+  unchanged by it). This is a sandbox-only `@prisma/client`-generation
+  limitation; `npx prisma generate` against a real network is expected
+  to clear essentially all of it, exactly as for every prior milestone.
+  (One genuine defect was found and fixed during this same pass — see
+  "One real bug found and fixed this round" above — and is not part of
+  this count; it was a test-fixture design error, not a type error.)
+- **`npx prisma generate`** — not possible in this sandbox, same
+  `binaries.prisma.sh` proxy block documented in every prior milestone;
+  not re-attempted this round since nothing about that limitation has
+  changed.
+- **`npx vitest run`** — 613 passed, 112 skipped (35 files passed, 16
+  skipped, 51 total), zero failed. Unchanged from the count already
+  confirmed earlier this same round, re-run once more after all
+  documentation edits to confirm doc-only changes didn't regress
+  anything. Of this milestone's own 35 new tests: 21 unconditional
+  (`tests/reporting-filters.test.ts`, covering filter/pagination
+  parsing, the centrally-validated enums, and the date-range helpers'
+  inclusive/exclusive-bound behaviour) all passing, and 14 gated
+  (`tests/reporting-db.integration.test.ts`, `RUN_DB_INTEGRATION_TESTS`)
+  confirmed to self-skip cleanly rather than silently passing or
+  erroring (this sandbox has no `DATABASE_URL`, so the gate can never
+  be true here). Re-running just these two files in isolation
+  (`npx vitest run tests/reporting-filters.test.ts
+  tests/reporting-db.integration.test.ts`) independently confirms
+  21 passed / 14 skipped.
+- **`npm run build`** — re-attempted this round (not merely assumed
+  stale from a prior milestone): fails at the identical pre-existing
+  `next/font/google` block already documented in every prior milestone
+  — `app/layout.tsx`'s Geist/Geist Mono fonts cannot reach
+  `fonts.googleapis.com` through this sandbox's proxy. Confirmed, by
+  re-running it, to be unrelated to any file this milestone touched
+  (the failure is in font loading during the root layout's module
+  evaluation, before any `/reports/*` route is ever reached).
+- **Not run in this sandbox** (same honest caveat as every prior
+  milestone): `npx prisma generate`/`validate`, and this milestone's 14
+  gated DB-integration tests against a real database.
+
+**Implemented: yes**, across all 17 of the spec's numbered sections,
+with the scope decisions resolved at the approval gate (listed above)
+rather than silent deviations. **Tested: yes, with the same honest,
+layered caveat as every prior milestone** — 21 unconditional tests
+cover the one Prisma-independent module directly and completely; 14
+gated DB-integration tests walk every report's actual query logic
+(including the status-filter-applicability matrix and the never-summed
+per-currency exposure) against the real, unmodified lib functions,
+written to this project's own established convention but not run
+against a real database from inside this sandbox; nothing here claims
+otherwise.

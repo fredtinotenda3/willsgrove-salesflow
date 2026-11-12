@@ -2518,3 +2518,123 @@ found and fixed, and honest verification results.
 | `docs/milestones/PROGRESS.md` | Modified | Added the "What was actually built" section (correcting the plan's model count and three route/UI deviations), "One real bug found and fixed this round" (two bugs), and honest verification results. |
 | `CHANGES.md` | Modified | This section. |
 | `SETUP-WINDOWS.md` | Modified | Added §27 — apply the new migration, regenerate the Prisma client, configure the channel environment variables, run the new gated test files, and a manual test script walking through intake review, outbound messaging, and the dispatch/delivery lifecycle. |
+
+## Milestone 11 — Operational Business Intelligence (BI)
+
+Built from your attached 17-section full specification, after four
+approved `AskUserQuestion` decisions at the architecture gate: (1) both
+`app/page.tsx` and `app/reports/page.tsx`'s mock data are replaced with
+real M11-backed data; (2) the operational views (`/reports/pipeline`,
+`/reports/fulfilment`, `/reports/financial-exposure`,
+`/reports/communications`) stay open to all three roles, while the 9
+named management reports under `/reports/management` are
+`SALES_MANAGER`/`ADMINISTRATOR`-only, enforced server-side; (3) a real
+`salespersonId` column was added to `CustomerOrder` (additive migration)
+rather than approximating "salesperson" from `createdById`; (4) exports
+are CSV plus browser-print, with no PDF-generation dependency added.
+
+The one architectural decision this milestone turned on, documented once
+in `docs/milestones/m11-metric-definitions.md` §6 rather than re-derived
+per file: a status-equality filter (`orderStatus`/`fulfilmentStatus`/
+`quotationStatus`/`claimStatus`/`communicationStatus`) is wired into a
+report only when that report's own output does not already break every
+row down by that exact status — applied for real on the four list-shaped
+management reports that need it (`outstanding-orders`,
+`awaiting-fulfilment`, `picking-shortages`, `delivery-exceptions`),
+deliberately withheld from every aggregate/funnel report and the other
+five management-report summaries, where it would silently collapse an
+already-visible breakdown to one number. A second, narrower fix was
+self-caught before any test ran: `startPickingSession`/
+`authorizePickingSession` always move an order's status forward
+(to `PICKING`, then unconditionally to `READY_TO_INVOICE`) regardless of
+whether a shortage occurred, so a test needing an order parked at
+`APPROVED`/`PICKING` cannot be built by running the full picking lifecycle
+and must create the order directly at that status instead — the DB
+integration test fixtures below were rewritten accordingly before they
+were ever run.
+
+No fabricated or estimated figures appear anywhere in this surface: every
+number is either a real aggregate/count (`Actual`), a derivation of two
+or more real numbers (`Calculated`), a real-but-not-yet-settled figure
+(`Provisional`), or reported honestly as absent (`Missing`) — never
+defaulted to zero. `docs/milestones/m11-metric-definitions.md` is the
+single authoritative definition of every figure the `/reports/*` surface
+shows.
+
+### Schema / migration
+
+| File | Change | Reason |
+|---|---|---|
+| `prisma/schema.prisma` | Modified | Added `CustomerOrder.salespersonId String?` (nullable — unlike `Quotation.salespersonId`, which is required, because the column is new and the schema allows `NULL` for defensive/future-proofing purposes only; no code path in this codebase creates a `CustomerOrder` without one after this migration), its `salesperson User?` relation (`onDelete: Restrict`, named `OrderSalesperson` to avoid colliding with `Quotation`'s own `QuotationSalesperson` relation), and two supporting indexes: `@@index([salespersonId])` and `CustomerOrder_isDemo_status_idx` on `(isDemo, status)` (the operational-dashboard/pipeline reports' most common query shape). |
+| `prisma/migrations/20261112080000_add_order_salesperson/migration.sql` | Added | Additive-only: one nullable column, two indexes, one FK, plus a one-time data backfill — `UPDATE "CustomerOrder" SET "salespersonId" = "createdById" WHERE "salespersonId" IS NULL`. There is no reliable record of who the *actual* assigned salesperson was for orders created before this migration, so `createdById` (whoever created the order record) is used as the best available, non-invented approximation — exactly the same default `lib/orders.ts`'s `createOrderCore` now applies to every *new* order when no better value is supplied, so old and new orders populate the column the same way. No existing column, constraint, or table is altered or dropped. |
+
+### lib/reporting/ (new module)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/reporting/types.ts` | Added | Shared `ReportFilters`, `PaginationParams`, `PaginatedResult<T>`, `DataQuality` and `QualifiedMetric<T>` types, with the per-field comments that say exactly which filters a given report honors and why — the single place that contract is stated instead of re-derived per function. |
+| `lib/reporting/filters.ts` | Added | `parseReportFilters`/`parsePagination` (the one central, synchronous, zero-Prisma-dependency validation point for every report route — a malformed query string becomes a clean 400 here, never an unhandled 500 downstream); `defaultDateRange`, `dateRangeToTimestampFilter` (exclusive upper bound, for `@db.Timestamp` columns), `dateRangeToDateOnlyFilter` (inclusive both ends, for `@db.Date` columns), `demoWhere`. `orderStatus`/`quotationStatus`/`claimStatus` are validated here against their real enums; `fulfilmentStatus`/`communicationStatus` are deliberately passed through unvalidated because each maps onto more than one schema enum depending on which report consumes it. |
+| `lib/reporting/filter-options.ts` | Added | Builds the shared customer/salesperson dropdown option lists (capped at `FILTER_OPTION_CAP` = 500 rows) for `ReportFilterBar`. Product is deliberately given no dropdown at all (7,500+ catalogue rows) and a plain exact-ID text input instead, per the spec's "never load an entire table into the browser." |
+| `lib/reporting/export-csv.ts` | Added | `csvField`/`buildCsv` (RFC 4180-safe field quoting), `recordReportExport` (export audit logging), `flattenToKeyValueRows` (turns a nested summary object into metric/value rows — reused as-is by the management-report detail UI so the CSV and the on-screen table are guaranteed to show literally the same figures), `csvResponseHeaders`. |
+| `lib/reporting/access.ts` | Added | `requireManagementReportAccess` = `requireUserOrResponse(["SALES_MANAGER", "ADMINISTRATOR"])`, the one server-side role gate every `/api/reports/management/*` route and the `/reports/management/*` pages both call — never a UI-only restriction. |
+| `lib/reporting/sales-pipeline.ts` | Added | `getSalesPipelineReport` — the full request→quotation→order funnel, every rate computed within one single, consistently-dated cohort (never two independently-dated populations divided against each other — see the file's own top comment for the worked counter-example the spec explicitly warns against), plus lifecycle-transition bottleneck averages computed only over records that have both of the relevant timestamps. |
+| `lib/reporting/fulfilment-intelligence.ts` | Added | `getFulfilmentIntelligenceReport` — six distinct quantities (ordered/available/shortage/dispatched/accepted+rejected/outstanding-in-transit) never blended into each other, so dispatched is structurally never reported as delivered and a completed pick is never reported as a completed delivery. |
+| `lib/reporting/financial-exposure.ts` | Added | `getFinancialExposureReport` — wraps the existing M6A invoice-claims dashboard and M5 invoice-reconciliation reports (both whole-business, right-now totals by their own original design) plus a new, genuinely filterable returns-and-credit-notes summary; `exposureByCurrency[]` is kept per-currency and never summed across currencies. |
+| `lib/reporting/communications-monitoring.ts` | Added | `getCommunicationsMonitoringReport` — intake and outbound-message monitoring where `totalReceived` and `byChannel[]` always share the identical `where` clause (structurally guaranteed never to drift apart), and `deliveryReceiptsSupported` is always reported as `false` rather than mislabelling a successful send attempt as a confirmed delivery. |
+| `lib/reporting/operational-dashboard.ts` | Added | `getOperationalDashboardSummary` — the single combined feed behind `app/page.tsx`'s home dashboard, replacing its previous mock data. |
+| `lib/reporting/management-reports.ts` | Added | The 9-report catalogue (`MANAGEMENT_REPORT_CATALOGUE`), `isManagementReportId`, `runManagementReport` dispatcher, `applicableEnumFilter`/`asAndClauses` helpers (an out-of-range enum value for a given report's status filter is treated as "not applicable" — silently not applied, never a thrown error and never a filter that forces zero rows), and the 5 list-shaped reports' own query/pagination/CSV-column logic (`LIST_REPORT_CSV_COLUMNS`). |
+
+### API routes (new)
+
+| Route | Method | Access |
+|---|---|---|
+| `app/api/reports/sales-pipeline/route.ts` + `.../export/route.ts` | GET | All 3 roles |
+| `app/api/reports/fulfilment/route.ts` + `.../export/route.ts` | GET | All 3 roles |
+| `app/api/reports/financial-exposure/route.ts` + `.../export/route.ts` | GET | All 3 roles |
+| `app/api/reports/communications/route.ts` + `.../export/route.ts` | GET | All 3 roles |
+| `app/api/reports/operational-dashboard/route.ts` | GET | All 3 roles |
+| `app/api/reports/management/route.ts` | GET | `SALES_MANAGER`/`ADMINISTRATOR` only |
+| `app/api/reports/management/[reportId]/route.ts` + `.../export/route.ts` | GET | `SALES_MANAGER`/`ADMINISTRATOR` only, via `requireManagementReportAccess` |
+
+### UI (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/reports/_components/ui.tsx` | Added | Shared `PageHeader`, `SectionCard`, `MetricCard`, `EmptyState`, `Pagination` building blocks reused by every report page, matching the existing dashboard visual language rather than inventing a new one. |
+| `app/reports/_components/filter-bar.tsx` | Added | `ReportFilterBar` — the one reusable, zero-client-JS (`<form method="GET">`) filter bar (date range, customer, product, salesperson, status) every report page composes from, each page opting in only to the filters its own report actually honors. |
+| `app/reports/_components/search-params.ts` | Added | `toFlatSearchParams`/`toURLSearchParams`/`ReportSearchParams` helpers shared by every page's plain-link pagination and CSV-export-link construction. |
+| `app/reports/pipeline/page.tsx` | Added | Sales pipeline/order-intelligence operational view (spec §4). |
+| `app/reports/fulfilment/page.tsx` | Added | Picking/fulfilment intelligence operational view (spec §5). |
+| `app/reports/financial-exposure/page.tsx` | Added | Invoice claims/financial-exposure operational view (spec §6) — KPI tiles, claims-by-status, exposure-by-currency (never summed), invoice reconciliation, returns & credit notes. |
+| `app/reports/communications/page.tsx` | Added | Communications/exception-monitoring operational view (spec §7) — channel-mode cards, intake-by-channel, outbound KPIs, exception drill-down links. |
+| `app/reports/management/page.tsx` | Added | The 9-report management catalogue, role-gated identically to the existing `app/approvals/policies/page.tsx` precedent. |
+| `app/reports/management/[reportId]/page.tsx` | Added | The generic management-report viewer — a per-report filter config stating exactly which filters apply and why, a period selector for `operational-summary`, and either a `flattenToKeyValueRows`-driven metric table (summary-kind reports) or a paginated, CSV-column-driven table with order drill-down links (list-kind reports). |
+| `app/reports/page.tsx` | Modified | Mock data replaced with the real reports index/landing page, linking out to the 4 operational views and (role-permitting) the management catalogue. |
+| `app/page.tsx` | Modified | Home dashboard's mock data replaced with `getOperationalDashboardSummary`. |
+
+### Other changes
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/orders.ts` | Modified | `OrderCreationInput` gained an optional `salespersonId`; `createOrder` now persists it (`input.salespersonId ?? createdById`, preserving the pre-M11 fallback behaviour for any caller that doesn't pass one). |
+| `lib/quotations/convert-to-order.ts` | Modified | A converted order now threads the source quotation's own `salespersonId` through to the new `CustomerOrder`, so pipeline continuity (`requests → quotations → orders`) stays attributed to the same salesperson across the whole funnel rather than silently resetting to whoever clicked "convert." |
+| `scripts/remove-demo-data.ts` | No change | Checked explicitly: `CustomerOrder.salespersonId` is a nullable, `onDelete: Restrict` FK onto `User`. Demo-data removal deletes `CustomerOrder` rows, never `User` rows, so this FK can never block that deletion order — no update needed. |
+| `lib/reporting/management-reports.ts`, `app/api/reports/management/route.ts` | Modified | Caught while writing this documentation set: both files' own header comments said "the 11 named management reports" — stale from an earlier draft of the catalogue; `MANAGEMENT_REPORT_CATALOGUE` has always actually had 9 entries. Corrected the comment text in both files (no behavioural change). |
+
+### Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/reporting-filters.test.ts` | Added | 21 unconditional unit tests (no `RUN_DB_INTEGRATION_TESTS` gate needed — `lib/reporting/filters.ts` is the one `lib/reporting/*.ts` file with no `@prisma/client` import anywhere in its graph) covering full/partial/malformed filter parsing, the centrally-validated `orderStatus`/`quotationStatus`/`claimStatus` enums, the deliberately-unvalidated `fulfilmentStatus`/`communicationStatus` pass-through, pagination bounds, and the date-range helpers' inclusive/exclusive-bound behaviour. All 21 passing. |
+| `tests/reporting-db.integration.test.ts` | Added | 14 tests gated behind `RUN_DB_INTEGRATION_TESTS=1` (every other `lib/reporting/*.ts` file imports `@/lib/prisma`, whose module-top-level `new PrismaClient()` call cannot run against this sandbox's stub client) — covering `export-csv` helpers, the sales-pipeline/fulfilment-intelligence quantity vocabulary, the 4 list-reports' status-filter applicability (including the "not applicable" no-op case and demo-data exclusion), communications-monitoring consistency, and financial-exposure's never-summed per-currency exposure. Confirmed to self-skip cleanly (14 skipped) with the flag unset, rather than silently passing or erroring. One fixture bug was caught and fixed before any test ran: 4 of the tests originally used a full pick→complete→authorize fixture for assertions that actually needed an order parked at `APPROVED`/`PICKING`, which `authorizePickingSession` always moves past — replaced with a direct `createOrderWithStatus` fixture that bypasses the picking lifecycle entirely. |
+
+### Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/m11-metric-definitions.md` | Added | The authoritative catalogue of every figure the `/reports/*` surface shows — the four data-quality labels, the never-mix-date-cohorts principle, each report module's quantity/rate definitions, and the status-filter-applicability decision rationale, referenced by short comments in `lib/reporting/*.ts` rather than re-explained at each call site. |
+| `docs/milestones/ROADMAP.md` | Modified | Milestone 11's row added as "✅ Done"; the stale "6+ Reporting/funnel metrics — Deferred" row removed (superseded); 4 new "never conflate" entries (date-cohort mixing, dispatched-vs-delivered, picking-completion-vs-delivery-completion, per-currency exposure summing); change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the Milestone 11 section: design rationale, what was built, the self-discovered status-filter-applicability architecture decision, the picking-status fixture bug caught before any test ran, and honest verification results (test counts, tsc/eslint results, and the unverifiable `npm run build`/`prisma generate`/DB-integration-test caveats, each explicitly named rather than silently skipped). |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §28 — apply the new `20261112080000_add_order_salesperson` migration, regenerate the Prisma client, run the two new test files, and a manual test script walking through the `/reports/*` surface (operational views, CSV export, the management catalogue and a drill-down). |
+| `MILESTONE-11-DELIVERY-REPORT.md` | Added | The spec-structured delivery report. |

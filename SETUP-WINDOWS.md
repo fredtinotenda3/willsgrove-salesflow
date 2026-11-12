@@ -2860,3 +2860,178 @@ rollback:
 ```powershell
 npx prisma migrate resolve --rolled-back 20261111220000_add_communications_and_fulfilment
 ```
+
+## 28. Milestone 11: Operational Business Intelligence (BI)
+
+This migration is purely additive: one new nullable column
+(`CustomerOrder.salespersonId`), its FK onto `User`, two new indexes
+(`CustomerOrder_salespersonId_idx` and `CustomerOrder_isDemo_status_idx`),
+and a one-time data backfill of **existing** rows only (`UPDATE
+"CustomerOrder" SET "salespersonId" = "createdById" WHERE "salespersonId"
+IS NULL` — there is no reliable record of who the true assigned
+salesperson was for orders created before this migration, so
+`createdById` is used as the best available, non-invented approximation;
+every *new* order gets a real, non-approximated value). No existing
+table, column, enum, or constraint is removed or changed, and no
+environment variables are added — this milestone introduces no new
+external integration.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_order_salesperson
+
+# 2. Regenerate the Prisma client so it knows about
+#    CustomerOrder.salespersonId
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+
+# 4. Confirm a real production build succeeds (the sandbox could not
+#    get past its own Google Fonts network block to even reach this
+#    phase -- see PROGRESS.md's Milestone 11 honest verification results)
+npm run build
+```
+
+If `prisma migrate dev` reports schema drift because you've been
+running against the hand-written SQL already, use `migrate deploy`
+instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the new gated test file, `tests/reporting-db.integration.test.ts`
+(14 tests), alongside every pre-existing gated integration test:
+
+- `export-csv` helpers — pure `buildCsv`/`flattenToKeyValueRows`/
+  `csvResponseHeaders` assertions against synthetic data (no database
+  fixtures needed, but gated here to keep the file's imports simple).
+- Sales-pipeline/fulfilment-intelligence — `ordersAwaitingFulfilment`
+  only counting orders actually at `APPROVED`/`PICKING` (never an order
+  already moved past that window by picking authorization), and the
+  dispatched-quantity-≠-delivered-quantity invariant on a partially-
+  picked, partially-dispatched order.
+- The 5 list-shaped management reports' status-filter applicability —
+  `listOrdersAwaitingFulfilment`'s `orderStatus` narrowing *within* its
+  own status definition; `listPickingShortages`'/`listDeliveryExceptions`'
+  `fulfilmentStatus` applied as `PickingSessionStatus`/`DeliveryOutcome`
+  respectively, including the "value from the wrong enum is a silent
+  no-op, never a thrown error" case; demo-data exclusion; pagination.
+- Communications-monitoring — `intake.totalReceived` structurally equal
+  to the sum of `intake.byChannel[].count`, and `outbound.failed`
+  incrementing consistently with `listCommunicationFailures`.
+- Financial-exposure — a USD claim and a ZWG claim kept as two separate,
+  never-summed rows in `exposureByCurrency[]`.
+
+It needs only an `ADMINISTRATOR` user already seeded (same precondition
+as every other gated test file in this project). Everything either test
+creates is marked `isDemo: true`.
+
+**Honesty note**: this test file, like every gated DB-integration test
+in this project, has not been run against a real database from inside
+this sandbox — `@prisma/client` here is a stale stub that does not know
+`CustomerOrder.salespersonId` or several of this milestone's own query
+shapes exist at all (see PROGRESS.md's "Honest verification results").
+It was written to the same standard as `tests/fulfilment-db.integration.
+test.ts`/`tests/invoice-claims-db.integration.test.ts` and independently
+checked against the real source of every function/field/signature it
+calls (`lib/picking/*`, `lib/reporting/*.ts`, `prisma/schema.prisma`) —
+but treat it as unverified until you actually run it. The 21 tests in
+the companion file, `tests/reporting-filters.test.ts`, have no such
+caveat: they are unconditional and were actually run in this sandbox
+(21/21 passing).
+
+### Manual test script (via the UI)
+
+1. Log in as a `SALESPERSON` and open the home dashboard (`/`). Confirm
+   it now shows real figures (not the previous milestone's hardcoded
+   mock numbers) — pull a KPI from it and cross-check it by eye against
+   `/orders` or `/quotations`.
+2. Open **Reports** in the sidebar (`/reports`). Confirm all 4
+   operational view cards are visible (Sales pipeline, Fulfilment,
+   Financial exposure, Communications) and, as a `SALESPERSON`, that
+   the "Management reports" card is **absent**.
+3. Open `/reports/pipeline`. Set a date range covering some seeded
+   orders; confirm the funnel counts (`requestsReceived` →
+   `quotationsIssued` → `ordersReceived`) and that no conversion rate
+   looks like it is dividing two different-dated populations against
+   each other (check a known pair of figures by hand against `/orders`
+   if unsure).
+4. Open `/reports/fulfilment`. Confirm `dispatchedQuantity` and any
+   `outstandingDeliveryQuantity` are reported as separate figures, never
+   one standing in for "delivered."
+5. Open `/reports/financial-exposure`. Confirm the "Exposure by
+   currency" table shows USD and ZWG (if both exist in your seed data)
+   as two separate rows, never summed into one total.
+6. Open `/reports/communications`. Confirm the channel-mode cards show
+   `MOCK` (unless you've configured real `CHANNEL_EMAIL_PROVIDER`/
+   `CHANNEL_WHATSAPP_PROVIDER` values from Milestone 10) and that
+   `intake.byChannel[]`'s counts sum to the header total.
+7. On any of the 4 operational pages, apply a filter via the filter bar
+   (date range, customer, or — on pipeline/fulfilment — salesperson),
+   submit, and confirm the URL's query string updates and the results
+   narrow accordingly with **no page reload flash of unfiltered data**
+   (this surface has zero client JS — it's a plain `<form method="GET">`
+   per page load). Click **Export CSV**; confirm a CSV downloads with a
+   `recordReportExport` audit row (check `/admin` or your audit log
+   viewer if you want to confirm the write).
+8. Log in as an `ADMINISTRATOR` or `SALES_MANAGER`. Open
+   `/reports/management`; confirm all 9 report rows are listed. Open
+   **Outstanding orders**; confirm its first column links to
+   `/orders/[id]` for a real order. Apply the `orderStatus` filter to
+   one specific status and confirm every remaining row actually has
+   that status.
+9. Still as `SALES_MANAGER`/`ADMINISTRATOR`, open **Operational summary**
+   and switch between the Daily/Weekly/Monthly period links; confirm the
+   figures change and the URL's `period` query parameter updates.
+10. Log back in as a `SALESPERSON` and try navigating directly to
+    `/reports/management` and `/reports/management/outstanding-orders`
+    by URL. Confirm both redirect to `/reports` — the restriction is
+    enforced by the page itself (and by the underlying
+    `/api/reports/management/*` routes), not just by hiding the sidebar
+    link.
+11. Create a new order (not via quotation conversion) as a
+    `SALESPERSON`; confirm it is assigned that salesperson as its
+    `salespersonId` (check `/reports/pipeline` filtered to that
+    salesperson, or inspect the order record directly). Convert a
+    quotation that has a *different* salesperson into an order; confirm
+    the resulting order's `salespersonId` matches the **quotation's**
+    salesperson, not whoever clicked "Convert."
+
+### 28a. Undoing this migration
+
+This migration is additive-only and easy to reverse — one column, two
+indexes, one FK:
+
+```powershell
+pg_dump -Fc -d <your-database-name> -f backup-before-undo-milestone-11.dump
+```
+
+```sql
+ALTER TABLE "CustomerOrder" DROP CONSTRAINT "CustomerOrder_salespersonId_fkey";
+DROP INDEX "CustomerOrder_salespersonId_idx";
+DROP INDEX "CustomerOrder_isDemo_status_idx";
+ALTER TABLE "CustomerOrder" DROP COLUMN "salespersonId";
+```
+
+Apply it the same way as previous rollbacks (`psql`, a GUI client, or
+`npx prisma db execute --file .\rollback-milestone-11.sql --schema
+prisma/schema.prisma`), then revert `prisma/schema.prisma` to remove the
+same `salespersonId` field/relation/indexes and run `npx prisma generate`
+again. Also tell Prisma's migration history about the rollback:
+
+```powershell
+npx prisma migrate resolve --rolled-back 20261112080000_add_order_salesperson
+```

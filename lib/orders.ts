@@ -26,7 +26,16 @@ export type CreateOrderResult =
 // creates an order from a reviewed intake document and legitimately needs
 // source values like "EXCEL"/"PDF" that manual entry must never accept --
 // see lib/order-validation.ts's comment on why that restriction exists).
-export type OrderCreationInput = Omit<CreateOrderInput, "source"> & { source: OrderSource };
+// Milestone 11 (Operational BI). salespersonId is optional here (not on
+// the base CreateOrderInput / createOrderSchema) deliberately -- no
+// order-creation UI changes this round. createOrderCore below defaults
+// it to createdById when omitted, which is every HTTP-facing creation
+// path (manual entry, PO-intake review) today. The one caller that
+// supplies a real value is lib/quotations/convert-to-order.ts, which
+// passes the source quotation's own salespersonId so pipeline continuity
+// survives the quotation-to-order conversion. See CustomerOrder.
+// salespersonId's own schema comment for the full rationale.
+export type OrderCreationInput = Omit<CreateOrderInput, "source"> & { source: OrderSource; salespersonId?: string | null };
 
 export type OrderCreationCoreResult = {
   id: string;
@@ -87,6 +96,10 @@ export async function createOrderCore(
       customerId: input.customerId,
       customerLocationId: input.customerLocationId ?? null,
       createdById,
+      // Milestone 11. Defaults to the creator when the caller doesn't
+      // supply a real assigned salesperson -- see OrderCreationInput's
+      // own comment above.
+      salespersonId: input.salespersonId ?? createdById,
       customerPoReference: input.customerPoReference ?? null,
       source: input.source,
       status: OrderStatus.RECEIVED,
@@ -143,6 +156,7 @@ export async function createOrderCore(
         lineCount: input.lines.length,
         hasOriginalSourceText: Boolean(input.originalSourceText),
         idempotencyKey: input.idempotencyKey ?? null,
+        salespersonId: input.salespersonId ?? createdById,
       },
     },
   });
