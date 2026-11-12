@@ -94,6 +94,15 @@ export const createOrderSchema = z.object({
   customerId: z.string().trim().min(1, "Customer is required.").max(64),
   customerLocationId: z.string().trim().min(1).max(64).nullable().optional(),
   customerPoReference: z.string().trim().max(100).nullable().optional(),
+
+  // Milestone 12 (Sales Performance Intelligence). Explicit only -- no
+  // default is applied here or anywhere downstream (lib/orders.ts's
+  // createOrderCore no longer has a `?? createdById` fallback). Omitted
+  // or null both mean "leave this order's salesperson unassigned
+  // (NULL)"; a real user id is the only way to produce a non-null
+  // value. See CustomerOrder.salespersonId's own schema comment and
+  // docs/milestones/m12-metric-definitions.md for the full rationale.
+  salespersonId: z.string().trim().min(1).max(64).nullable().optional(),
   source: z.enum(MANUAL_ENTRY_ORDER_SOURCES, { message: "source must be EMAIL, WHATSAPP or MANUAL." }),
   orderDate: dateOnlyString,
   requestedDeliveryDate: dateOnlyString,

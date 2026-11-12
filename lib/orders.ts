@@ -26,15 +26,17 @@ export type CreateOrderResult =
 // creates an order from a reviewed intake document and legitimately needs
 // source values like "EXCEL"/"PDF" that manual entry must never accept --
 // see lib/order-validation.ts's comment on why that restriction exists).
-// Milestone 11 (Operational BI). salespersonId is optional here (not on
-// the base CreateOrderInput / createOrderSchema) deliberately -- no
-// order-creation UI changes this round. createOrderCore below defaults
-// it to createdById when omitted, which is every HTTP-facing creation
-// path (manual entry, PO-intake review) today. The one caller that
-// supplies a real value is lib/quotations/convert-to-order.ts, which
-// passes the source quotation's own salespersonId so pipeline continuity
-// survives the quotation-to-order conversion. See CustomerOrder.
-// salespersonId's own schema comment for the full rationale.
+// Milestone 11 (Operational BI) introduced this field; Milestone 12
+// (Sales Performance Intelligence) removed the `?? createdById` default
+// createOrderCore used to apply -- see that function's own comment. Now
+// also present on the base CreateOrderInput/createOrderSchema (the
+// order-creation and PO-intake-review pickers), so this type's own
+// `salespersonId` is kept only for the one caller whose input shape
+// genuinely isn't a CreateOrderInput at all: lib/review/confirm-review.ts
+// (a ConfirmReviewInput, a different shape entirely). See
+// CustomerOrder.salespersonId's own schema comment for the full
+// rationale, and lib/reporting/attribution.ts for how reporting
+// classifies the confidence of whatever ends up stored here.
 export type OrderCreationInput = Omit<CreateOrderInput, "source"> & { source: OrderSource; salespersonId?: string | null };
 
 export type OrderCreationCoreResult = {
@@ -96,10 +98,15 @@ export async function createOrderCore(
       customerId: input.customerId,
       customerLocationId: input.customerLocationId ?? null,
       createdById,
-      // Milestone 11. Defaults to the creator when the caller doesn't
-      // supply a real assigned salesperson -- see OrderCreationInput's
-      // own comment above.
-      salespersonId: input.salespersonId ?? createdById,
+      // Milestone 12 (Sales Performance Intelligence). NO LONGER
+      // defaults to createdById -- that silent default was identified as
+      // a data-integrity concern during M12's architecture review (it
+      // conflated "who typed this order in" with "whose deal this is,"
+      // and could silently misattribute an order a manager/admin entered
+      // on a salesperson's behalf). NULL is preserved whenever the
+      // caller supplies no explicit value; see OrderCreationInput's own
+      // comment above and docs/milestones/m12-metric-definitions.md.
+      salespersonId: input.salespersonId ?? null,
       customerPoReference: input.customerPoReference ?? null,
       source: input.source,
       status: OrderStatus.RECEIVED,
@@ -156,7 +163,23 @@ export async function createOrderCore(
         lineCount: input.lines.length,
         hasOriginalSourceText: Boolean(input.originalSourceText),
         idempotencyKey: input.idempotencyKey ?? null,
-        salespersonId: input.salespersonId ?? createdById,
+        salespersonId: input.salespersonId ?? null,
+        // Milestone 12 (Sales Performance Intelligence). Provenance for
+        // lib/reporting/attribution.ts's confidence classification.
+        // Distinguishes a caller that explicitly supplied a value from
+        // one that didn't -- the resolved salespersonId value ALONE can
+        // never do this (a salesperson who deliberately picks themselves
+        // in the new picker produces the identical value a pre-fix
+        // default would have). The ABSENCE of this whole sub-object on
+        // an older row (every row created before this fix shipped) IS
+        // the signal attribution.ts relies on to identify a pre-fix
+        // row -- never backfilled onto historical AuditEvent rows, and
+        // never re-derived from them after the fact.
+        salespersonAssignment: {
+          salespersonId: input.salespersonId ?? null,
+          source: input.salespersonId ? "explicit" : "unassigned",
+          assignedById: createdById,
+        },
       },
     },
   });

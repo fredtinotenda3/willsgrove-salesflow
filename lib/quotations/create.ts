@@ -225,7 +225,30 @@ export async function createQuotation(input: CreateQuotationInput, actorId: stri
             action: "QUOTATION_CREATED",
             entityType: "Quotation",
             entityId: quotation.id,
-            afterData: { quotationNumber: quotation.quotationNumber, customerId: input.customerId, lineCount: resolvedLines.lines.length, total: totals.total.toString() },
+            afterData: {
+              quotationNumber: quotation.quotationNumber,
+              customerId: input.customerId,
+              lineCount: resolvedLines.lines.length,
+              total: totals.total.toString(),
+              // Milestone 12 (Sales Performance Intelligence). Same
+              // provenance shape as lib/orders.ts's ORDER_CREATE event,
+              // read by lib/reporting/attribution.ts's
+              // classifyQuotationSourcedAttribution for any order later
+              // converted from this quotation. Unlike the order case,
+              // `salespersonId` here is NEVER null (Quotation.salespersonId
+              // is a required field -- see that model's own schema
+              // comment), so "source: unassigned" means "defaulted to
+              // the preparer, not a confirmed deliberate pick" rather
+              // than "literally no value" -- app/quotations/new/
+              // new-quotation-form.tsx's picker now loads with nothing
+              // selected (no more pre-fill-to-self) so this distinction
+              // is actually meaningful going forward.
+              salespersonAssignment: {
+                salespersonId,
+                source: input.salespersonId ? "explicit" : "unassigned",
+                assignedById: actorId,
+              },
+            },
           },
         });
 

@@ -29,7 +29,15 @@ export default async function NewQuotationPage() {
           </div>
         </header>
         <div className="p-8">
-          <NewQuotationForm defaultSalespersonId={user.id} />
+          {/* Milestone 12 (Sales Performance Intelligence). No longer
+              passes defaultSalespersonId={user.id} -- the form's own
+              picker now starts blank, never pre-filled to the preparer,
+              so a submission actually reflects a deliberate choice (or
+              the deliberate absence of one) rather than an unconfirmed
+              default. See new-quotation-form.tsx and
+              lib/quotations/create.ts's salespersonAssignment audit
+              provenance. */}
+          <NewQuotationForm />
         </div>
       </main>
     </div>

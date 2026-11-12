@@ -24,7 +24,7 @@ const FIELD_INPUT_CLASS =
   "h-[38px] w-full rounded-lg border border-[#E1E7E2] bg-white px-3 text-sm text-[#17251E] outline-none focus:border-[#78964A]";
 
 export type StatusFilterConfig = {
-  queryKey: "orderStatus" | "quotationStatus" | "fulfilmentStatus" | "claimStatus" | "communicationStatus";
+  queryKey: "orderStatus" | "quotationStatus" | "fulfilmentStatus" | "claimStatus" | "communicationStatus" | "lostSalesReason";
   label: string;
   options: { value: string; label: string }[];
 };
@@ -38,6 +38,7 @@ export function ReportFilterBar({
   showCustomer = true,
   showProduct = false,
   showSalesperson = false,
+  showCurrency = false,
   statusFilter,
 }: {
   viewAction: string;
@@ -48,6 +49,8 @@ export function ReportFilterBar({
   showCustomer?: boolean;
   showProduct?: boolean;
   showSalesperson?: boolean;
+  /** Milestone 12. A free-text 3-letter currency code field, same "no dropdown, honest about it" treatment as the Product ID field -- there is no bounded currency-option list anywhere in this codebase to populate a <select> from (CustomerOrder.currency/SapInvoice.currencyCode are both free-form strings, not a schema enum). */
+  showCurrency?: boolean;
   statusFilter?: StatusFilterConfig;
 }) {
   const get = (key: string) => searchParams[key] ?? "";
@@ -97,6 +100,19 @@ export function ReportFilterBar({
         {showProduct && (
           <Field label="Product ID" hint="Exact SAP item ID -- no search yet">
             <input type="text" name="productId" defaultValue={get("productId")} placeholder="e.g. clxyz..." className={FIELD_INPUT_CLASS} />
+          </Field>
+        )}
+
+        {showCurrency && (
+          <Field label="Currency" hint="3-letter code, e.g. USD">
+            <input
+              type="text"
+              name="currency"
+              defaultValue={get("currency")}
+              placeholder="USD"
+              maxLength={3}
+              className={`${FIELD_INPUT_CLASS} uppercase`}
+            />
           </Field>
         )}
 

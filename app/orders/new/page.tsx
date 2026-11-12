@@ -43,6 +43,9 @@ type ProductSuggestion = {
   sapItemCode: string | null;
 };
 
+// Milestone 12 (Sales Performance Intelligence).
+type SalespersonOption = { id: string; name: string; role: string; status: string };
+
 type LineDraft = {
   key: string;
   originalProductDescription: string;
@@ -168,6 +171,28 @@ export default function NewOrderPage() {
   const [requestedDeliveryDate, setRequestedDeliveryDate] = useState("");
   const [deliveryAddress, setDeliveryAddress] = useState("");
   const [internalNotes, setInternalNotes] = useState("");
+
+  // Milestone 12 (Sales Performance Intelligence). Starts blank -- NEVER
+  // pre-filled to the current user -- with an explicit "Unassigned"
+  // option. See lib/orders.ts's createOrderCore (the `?? createdById`
+  // default this picker replaces) and CustomerOrder.salespersonId's own
+  // schema comment.
+  const [salespersonId, setSalespersonId] = useState("");
+  const [salespeople, setSalespeople] = useState<SalespersonOption[]>([]);
+
+  useEffect(() => {
+    fetch("/api/users", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success) {
+          const options: SalespersonOption[] = (data.users ?? []).filter(
+            (u: SalespersonOption) => u.status === "ACTIVE" && (u.role === "SALESPERSON" || u.role === "SALES_MANAGER")
+          );
+          setSalespeople(options);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const [lines, setLines] = useState<LineDraft[]>([newLine("initial-line")]);
 
@@ -535,6 +560,11 @@ export default function NewOrderPage() {
     };
 
     if (customerLocationId) body.customerLocationId = customerLocationId;
+    // Milestone 12 (Sales Performance Intelligence). Omitted entirely
+    // when blank -- never sent as "" -- so the server's own
+    // `?? null` resolution (lib/orders.ts's createOrderCore) is what
+    // actually decides "unassigned," not this client.
+    if (salespersonId) body.salespersonId = salespersonId;
     const poRef = blankToUndefined(customerPoReference);
     if (poRef) body.customerPoReference = poRef;
     if (orderDate) body.orderDate = orderDate;
@@ -940,6 +970,25 @@ export default function NewOrderPage() {
                 {fieldErrors.requestedDeliveryDate && (
                   <p className="mt-1 text-[11px] text-red-600">{fieldErrors.requestedDeliveryDate}</p>
                 )}
+              </div>
+
+              <div>
+                <label className="text-[11px] font-semibold text-gray-500">Salesperson</label>
+                <select
+                  value={salespersonId}
+                  onChange={(event) => setSalespersonId(event.target.value)}
+                  className="mt-1 h-10 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
+                >
+                  <option value="">— Unassigned —</option>
+                  {salespeople.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-[10px] text-gray-400">
+                  Who this order&apos;s deal belongs to, not who&apos;s typing it in -- left unassigned unless you pick someone.
+                </p>
               </div>
 
               <div className="col-span-2">

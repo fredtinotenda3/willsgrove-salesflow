@@ -2638,3 +2638,96 @@ shows.
 | `CHANGES.md` | Modified | This section. |
 | `SETUP-WINDOWS.md` | Modified | Added §28 — apply the new `20261112080000_add_order_salesperson` migration, regenerate the Prisma client, run the two new test files, and a manual test script walking through the `/reports/*` surface (operational views, CSV export, the management catalogue and a drill-down). |
 | `MILESTONE-11-DELIVERY-REPORT.md` | Added | The spec-structured delivery report. |
+
+## Milestone 12 — Sales Performance Intelligence
+
+Built after a dedicated architecture-assessment/spec-revision phase,
+presented and approved separately before implementation (per your
+explicit "STOP after presenting" instruction), resolving 6 open
+decisions: (1) management-only (`SALES_MANAGER`/`ADMINISTRATOR`) access
+tier for the new report, unlike every M11 operational view; (2) fixing
+**both** the order-side and quotation-side salesperson pickers now, not
+order-side only; (3) attribution confidence derived live, no schema
+migration; (4) `SapInvoice` (not `CustomerOrder`) as the repeat-customer
+basis; (5) a fully-credited invoice still counts as a qualifying
+transaction; (6) lost sales attributed to a salesperson via the matched
+order, with no new direct column.
+
+**The central finding this round**: Milestone 11's own `createOrderCore`
+default (`salespersonId: input.salespersonId ?? createdById`) was a real
+data-integrity gap, not a feature — it conflated "who typed the order
+in" with "whose deal this is," with no audit trail distinguishing a
+deliberate pick from the silent default. The quotation-creation path had
+an independent version of the same problem (`app/quotations/new/page.tsx`
+pre-filling its picker to the preparer). Both are fixed structurally this
+round, and a new `salespersonAssignment` provenance sub-object on the
+relevant `AuditEvent.afterData` — present only when the fix has actually
+shipped on that row — is what a new 6-tier confidence classifier reads
+to tell a real, audit-confirmed choice from a historical guess, rather
+than ever re-deriving "deliberate" from the field's resolved value.
+
+### Order/quotation attribution-provenance fix
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/orders.ts` | Modified | `createOrderCore` no longer applies the `?? createdById` default — a missing/null `salespersonId` now stays genuinely `null`. The `ORDER_CREATE` `AuditEvent.afterData` gained `salespersonAssignment: { salespersonId, source: "explicit" \| "unassigned", assignedById }`, never backfilled onto pre-fix rows and never re-derived from the field's resolved value after the fact. |
+| `lib/order-validation.ts` | Modified | `createOrderSchema`'s `salespersonId` is now `z.string().min(1).nullable().optional()`, with no implicit default applied by the schema itself. |
+| `lib/review/confirm-review.ts` | Modified | PO-intake review's own order-creation path (which can create more than one `CustomerOrder` per confirmation — the M2C multi-store split) threads the same never-defaulted `salespersonId` through, applied uniformly to every order a single confirmation creates, with the same `salespersonAssignment` provenance recorded on each. |
+| `lib/review/confirm-review-validation.ts` | Modified | Matching nullable/optional `salespersonId` schema change for the review-confirmation input shape. |
+| `lib/quotations/create.ts` | Modified | Quotation creation gained the same `salespersonAssignment` provenance sub-object on its `QUOTATION_CREATED` event. `Quotation.salespersonId` stays a required field (unlike `CustomerOrder.salespersonId`), so the server still falls back to `actorId` when the picker is left blank — what changed is that the audit record now honestly says `source: "unassigned"` rather than looking identical to a real pick. |
+| `app/orders/new/page.tsx` | Modified | Salesperson picker now starts genuinely blank (never pre-filled to the current user); omits the field entirely from the request body when left blank rather than sending the preparer's own id. |
+| `app/orders/intake/[id]/review/page.tsx` | Modified | Same never-pre-filled picker treatment for the PO-intake review confirmation form. |
+| `app/quotations/new/page.tsx` | Modified | No longer passes `defaultSalespersonId={user.id}` to `<NewQuotationForm />`. |
+| `app/quotations/new/new-quotation-form.tsx` | Modified | Picker starts blank rather than pre-filled to the preparer; `""` maps to `undefined` in the request body (never to `actorId` client-side), so the server's own fallback is what actually decides "unassigned." |
+
+### lib/reporting/ (new M12 modules)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/reporting/attribution.ts` | Added | Pure (no `@prisma/client` import), unconditionally unit-tested. The 6-tier attribution-confidence model (`VERIFIED`/`QUOTATION_SOURCED_LEGACY`/`UNVERIFIED_LIKELY`/`UNVERIFIED_SUSPECT`/`UNVERIFIED_NO_PROVENANCE`/`UNASSIGNED`), computed live from the `salespersonAssignment` provenance above (or its honest absence) — never from the field's resolved value alone. A quotation-sourced order is classified from its **source quotation's own** `QUOTATION_CREATED` event, never from the converted order's own `ORDER_CREATE` event (which always looks "explicit" after conversion regardless of the source quotation's real provenance). |
+| `lib/reporting/attribution-queries.ts` | Added | Prisma-backed half. `classifyOrdersMatching` bulk-fetches exactly the `AuditEvent`/`Quotation` rows a batch of orders needs (two extra round trips regardless of batch size, never one query per order) and delegates every classification decision to the pure functions above. |
+| `lib/reporting/customer-activity.ts` | Added | Pure. `classifyCustomerPeriodActivity` — NEW (all-time-first qualifying invoice falls inside the period) vs. REPEAT (qualifying invoice in period, and an earlier one strictly before it), inclusive boundaries on both ends. |
+| `lib/reporting/customer-activity-queries.ts` | Added | Prisma-backed half. `getCustomerActivityReport` — qualifying invoice = `SapInvoice` with `isCancelledOrReversed: false`, resolved `matchedCustomerId`, non-null `invoiceDate`; a fully-credited invoice still counts, by explicit decision. Basis is `SapInvoice`, never `CustomerOrder` — a single invoice can span multiple orders/salespeople, so this metric is reported whole-business only, never split by salesperson. |
+| `lib/reporting/sales-revenue.ts` | Added | Pure. `currencyKey` (explicit `UNKNOWN_CURRENCY` bucket, never merged into a real currency), `sumMoneyRows` (excludes null rows from the sum entirely, never coerces to 0), `groupRevenueByCurrencyAndSalesperson` (currency first, salesperson within it, carrying each salesperson's attribution-bucket breakdown through). Labelled **"SAP invoice line value,"** deliberately never "revenue" — `SapInvoiceLine.lineTotal`'s VAT inclusive/exclusive treatment cannot be established anywhere in this codebase, confirmed by a repository-wide search before writing this file. |
+| `lib/reporting/sales-revenue-queries.ts` | Added | Prisma-backed half. `getSalesRevenueReport`, attributing every `SapInvoiceLine` at LINE level (`matchedOrderId`/`matchedOrderLineId`), never invoice-header level (`null` for any invoice spanning multiple orders — see `SapInvoice.matchedOrderId`'s own schema comment). A genuine completeness gap was self-found and fixed while authoring this file: `filters.currency` was accepted in `ReportFilters` but never actually applied to the query — fixed with an explicit `currencyFilter` spread into the invoice `where` clause. |
+| `lib/reporting/sales-performance.ts` | Added | Composite report. The attribution breakdown; lost-sales-by-salesperson (anchored on `LostSaleRecord.confirmedAt`, joined via `UnfulfilledDemand.orderId` → `CustomerOrder.salespersonId`/`currency`, bulk-fetched); per-salesperson quotation→order conversion funnel (one call to M11's own `getSalesPipelineReport` per active salesperson, reusing — never re-deriving — its cohort/rate math). |
+| `lib/reporting/types.ts` | Modified | Two new `ReportFilters` fields: `currency` (free-form 3-letter code, shape-checked, not validated against a fixed list — this schema has none) and `lostSalesReason` (maps onto exactly one schema enum, `LostSaleReason`). |
+| `lib/reporting/filters.ts` | Modified | `parseReportFilters` extended to parse/validate the two new fields — `lostSalesReason` centrally validated against `LostSaleReason`'s keys, like `orderStatus`/`quotationStatus`/`claimStatus`; `currency` uppercased and length-checked (3 letters) but not checked against a fixed list. |
+
+### API routes (new)
+
+| Route | Method | Access |
+|---|---|---|
+| `app/api/reports/sales-performance/route.ts` | GET | `SALES_MANAGER`/`ADMINISTRATOR` only, via `requireManagementReportAccess` |
+| `app/api/reports/sales-performance/export/route.ts` | GET | Same. CSV export concatenating 5 blocks (attribution, revenue, lost sales, pipeline, flattened summary); records the export via `recordReportExport`. |
+
+### UI
+
+| File | Change | Reason |
+|---|---|---|
+| `app/reports/sales-performance/page.tsx` | Added | Management-only page (redirects non-management roles to `/reports`): attribution-confidence table, revenue-by-currency/salesperson, lost-sales panel, per-salesperson conversion funnel, and a footer note that customer-activity is whole-business only. |
+| `app/reports/_components/filter-bar.tsx` | Modified | Extended `StatusFilterConfig.queryKey` to include `"lostSalesReason"`; added a `showCurrency?: boolean` free-text 3-letter currency field — the same "no dropdown, be honest about it" treatment already given the Product ID field. |
+| `app/reports/page.tsx` | Modified | Added a "Sales Performance" tile, gated by `canSeeManagementReports`, placed immediately before the existing "Management Reports" tile. |
+
+### Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/attribution.test.ts` | Added | Full unconditional unit-test suite for `lib/reporting/attribution.ts` — every classification branch, provenance edge cases, and a bucket/label/definition internal-consistency check. |
+| `tests/customer-activity.test.ts` | Added | Full unconditional unit-test suite for `classifyCustomerPeriodActivity` — NEW/REPEAT, inclusive boundaries, single-day period. |
+| `tests/sales-revenue.test.ts` | Added | Full unconditional unit-test suite for `currencyKey`, `sumMoneyRows`, `groupRevenueByCurrencyAndSalesperson`. |
+| `tests/reporting-filters.test.ts` | Modified | Extended the full-valid-filter-set test and the absent-optional-filter test for `currency`/`lostSalesReason`; added 4 new cases (uppercase normalization, invalid-length rejection, whitespace→null, invalid-enum rejection). |
+| `tests/m12-acceptance-criteria.test.ts` | Added | Source-level regression guard: `createOrderCore` no longer defaults `salespersonId` to `createdById` (and does default to `null`); `createOrderSchema` has the nullable/optional field; the actual `<NewQuotationForm />` JSX invocation has no `defaultSalespersonId` prop (checked against the real JSX, not the file's own explanatory prose, after an initial false-positive match against that prose). |
+| `tests/sales-performance-db.integration.test.ts` | Added | Gated behind `RUN_DB_INTEGRATION_TESTS=1` (same sandbox blocker as every other Prisma-backed reporting file). Covers attribution via a real DB round trip, the full picking→authorize→decision→confirm-lost-sale lifecycle attributed to a salesperson, a `getSalesPerformanceReport` plumbing smoke test, and the `currency` filter regression. Confirmed to self-skip cleanly with the flag unset. |
+| `tests/reporting-db.integration.test.ts` | Modified | Self-found during this round's own `tsc --noEmit` re-verification pass: extending `ReportFilters` with `currency`/`lostSalesReason` broke this Milestone 11 file's own hand-built filter literals (3 call sites via `baseFilters()`/`filtersWith()`, producing 5 genuine `TS2345` errors — a real regression, not a pre-existing stub-category error) plus a 4th occurrence that happened not to surface an error only because it was already behind an `as never` cast. Fixed by adding `currency: null, lostSalesReason: null` to all four occurrences. Type-only fix — re-run confirms the same 657 passed / 118 skipped / 0 failed as before. |
+
+### Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/m12-metric-definitions.md` | Added | The authoritative catalogue of every figure `/reports/sales-performance` shows — the attribution-provenance mechanism and 6-tier confidence model, the new/repeat qualifying-invoice algorithm, the "SAP invoice line value" labelling decision, the never-summed-across-currency rule, the lost-sales anchor-date decision, and the per-salesperson pipeline-funnel reuse approach and its documented limitation. |
+| `docs/milestones/ROADMAP.md` | Modified | Milestone 12's row added as "✅ Done"; the "Things to never conflate" bullet about `CustomerOrder.salespersonId` vs. `createdById` corrected (not silently rewritten — marked "Corrected by Milestone 12") to reflect that the old default was a data-integrity gap, not a documented feature; change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the Milestone 12 section: the attribution-provenance finding that drove the whole milestone, what was built, the documented scope decisions, the two real issues found and fixed this round (the unapplied `currency` filter; the false-positive acceptance-test regex), and honest verification results. |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §29 — no new migration to apply; regenerate the Prisma client so it knows about the `salespersonAssignment` shape on `AuditEvent.afterData` (structurally, no schema change — a JSON field already held arbitrary shapes); run the 5 new test files; a manual test script walking through both never-pre-filled pickers, the attribution-confidence table, and the `/reports/sales-performance` CSV export. |
+| `MILESTONE-12-DELIVERY-REPORT.md` | Added | The spec-structured delivery report. |

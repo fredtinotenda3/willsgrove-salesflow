@@ -90,6 +90,17 @@ export type ReportFilters = {
    */
   communicationStatus: string | null;
   includeDemo: boolean;
+  /**
+   * Milestone 12 (Sales Performance Intelligence). A 3-letter currency
+   * code (e.g. "USD", "ZWG") or null for "no restriction." Added
+   * because sales-revenue/customer-activity money figures are reported
+   * PER CURRENCY and never summed across them (see lib/reporting/
+   * sales-revenue.ts's own module comment) -- this lets a user pin the
+   * filter bar/export to one currency's figures.
+   */
+  currency: string | null;
+  /** Milestone 12. LostSaleReason enum value or null -- applied by lib/reporting/sales-performance.ts's lost-sales-by-salesperson breakdown. */
+  lostSalesReason: string | null;
 };
 
 export type PaginationParams = {

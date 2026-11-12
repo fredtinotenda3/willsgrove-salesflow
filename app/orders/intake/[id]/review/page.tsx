@@ -193,6 +193,29 @@ export default function ReviewWorkspacePage() {
     internalNotes: "",
   });
 
+  // Milestone 12 (Sales Performance Intelligence). Same "starts blank,
+  // never pre-filled" picker as app/orders/new/page.tsx -- see that
+  // file's own comment and CustomerOrder.salespersonId's schema
+  // comment. Applied uniformly to every order this confirm creates
+  // (there can be more than one -- Milestone 2C's multi-store split).
+  const [salespersonId, setSalespersonId] = useState("");
+  const [salespeople, setSalespeople] = useState<{ id: string; name: string; role: string; status: string }[]>([]);
+
+  useEffect(() => {
+    fetch("/api/users", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success) {
+          setSalespeople(
+            (data.users ?? []).filter(
+              (u: { role: string; status: string }) => u.status === "ACTIVE" && (u.role === "SALESPERSON" || u.role === "SALES_MANAGER")
+            )
+          );
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   const [lineEdits, setLineEdits] = useState<Record<string, LineEditState>>({});
   const [acknowledgeDuplicate, setAcknowledgeDuplicate] = useState(false);
 
@@ -282,6 +305,11 @@ export default function ReviewWorkspacePage() {
       customerId,
       customerLocationId: null,
       customerAliasText: customerAliasText.trim() === "" ? null : customerAliasText.trim(),
+      // Milestone 12 (Sales Performance Intelligence). "" maps to null --
+      // never omitted as undefined and never actorId -- so the server
+      // always receives an explicit "leave unassigned" when nothing was
+      // picked, same as app/orders/new/page.tsx.
+      salespersonId: salespersonId === "" ? null : salespersonId,
       header: {
         customerPoReference: headerFields.customerPoReference.trim() === "" ? null : headerFields.customerPoReference.trim(),
         orderDate: headerFields.orderDate.trim() === "" ? null : headerFields.orderDate.trim(),
@@ -541,6 +569,21 @@ export default function ReviewWorkspacePage() {
                       value={headerFields.currency}
                       onChange={(value) => setHeaderFields((prev) => ({ ...prev, currency: value }))}
                     />
+                    <div>
+                      <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-[#89948D]">Salesperson</label>
+                      <select
+                        value={salespersonId}
+                        onChange={(event) => setSalespersonId(event.target.value)}
+                        className="w-full rounded-lg border border-[#E5EAE4] px-3 py-2 text-sm"
+                      >
+                        <option value="">— Unassigned —</option>
+                        {salespeople.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                     <HeaderInput
                       label="Delivery address"
                       value={headerFields.deliveryAddress}

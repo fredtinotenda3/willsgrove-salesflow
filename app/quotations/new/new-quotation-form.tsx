@@ -82,7 +82,7 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
   }
 }
 
-export default function NewQuotationForm({ defaultSalespersonId }: { defaultSalespersonId: string }) {
+export default function NewQuotationForm() {
   const router = useRouter();
 
   const [customerQuery, setCustomerQuery] = useState("");
@@ -94,7 +94,14 @@ export default function NewQuotationForm({ defaultSalespersonId }: { defaultSale
   const [validUntil, setValidUntil] = useState("");
   const [currency, setCurrency] = useState("USD");
   const [customerReference, setCustomerReference] = useState("");
-  const [salespersonId, setSalespersonId] = useState(defaultSalespersonId);
+  // Milestone 12 (Sales Performance Intelligence). Starts blank -- NEVER
+  // pre-filled to the preparer -- so a submission with this left
+  // untouched is honestly distinguishable (in lib/quotations/create.ts's
+  // QUOTATION_CREATED audit event) from one where a human actually
+  // picked someone. The server still defaults to actorId when this is
+  // left blank (Quotation.salespersonId is a required DB field -- see
+  // that model's own schema comment), but the audit record now says so.
+  const [salespersonId, setSalespersonId] = useState("");
   const [users, setUsers] = useState<UserOption[]>([]);
   const [internalNotes, setInternalNotes] = useState("");
   const [customerNotes, setCustomerNotes] = useState("");
@@ -321,7 +328,8 @@ export default function NewQuotationForm({ defaultSalespersonId }: { defaultSale
           </label>
           <label className="space-y-1">
             <span className="font-medium text-gray-600">Salesperson</span>
-            <select value={salespersonId} onChange={(event) => setSalespersonId(event.target.value)} className="w-full rounded-lg border border-gray-200 px-2 py-2">
+            <select value={salespersonId} onChange={(event) => setSalespersonId(event.target.value)} required className="w-full rounded-lg border border-gray-200 px-2 py-2">
+              <option value="" disabled>— Select salesperson —</option>
               {users.map((u) => (
                 <option key={u.id} value={u.id}>{u.name}</option>
               ))}

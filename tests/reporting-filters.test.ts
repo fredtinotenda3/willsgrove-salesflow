@@ -45,6 +45,8 @@ describe("parseReportFilters", () => {
         fulfilmentStatus: "AUTHORIZED",
         claimStatus: "OPEN",
         communicationStatus: "FAILED",
+        currency: "usd",
+        lostSalesReason: "PRODUCT_UNAVAILABLE",
         includeDemo: "true",
       })
     );
@@ -61,8 +63,37 @@ describe("parseReportFilters", () => {
       fulfilmentStatus: "AUTHORIZED",
       claimStatus: "OPEN",
       communicationStatus: "FAILED",
+      currency: "USD",
+      lostSalesReason: "PRODUCT_UNAVAILABLE",
       includeDemo: true,
     });
+  });
+
+  it("Milestone 12: uppercases a lowercase/mixed-case currency code", () => {
+    const result = parseReportFilters(params({ currency: "zWg" }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.filters.currency).toBe("ZWG");
+  });
+
+  it("Milestone 12: rejects a currency code that isn't exactly 3 letters", () => {
+    expect(parseReportFilters(params({ currency: "US" })).ok).toBe(false);
+    expect(parseReportFilters(params({ currency: "USDD" })).ok).toBe(false);
+    expect(parseReportFilters(params({ currency: "US1" })).ok).toBe(false);
+  });
+
+  it("Milestone 12: trims a whitespace-only currency down to null rather than rejecting it", () => {
+    const result = parseReportFilters(params({ currency: "   " }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.filters.currency).toBeNull();
+  });
+
+  it("Milestone 12: rejects a lostSalesReason value outside the LostSaleReason enum, the same centrally-validated treatment as orderStatus/quotationStatus/claimStatus", () => {
+    const result = parseReportFilters(params({ lostSalesReason: "NOT_A_REAL_REASON" }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toMatch(/lostSalesReason must be one of/);
   });
 
   it("defaults includeDemo to false when absent, and treats anything other than the literal string \"true\" as false", () => {
@@ -84,6 +115,8 @@ describe("parseReportFilters", () => {
     expect(result.filters.orderStatus).toBeNull();
     expect(result.filters.fulfilmentStatus).toBeNull();
     expect(result.filters.communicationStatus).toBeNull();
+    expect(result.filters.currency).toBeNull();
+    expect(result.filters.lostSalesReason).toBeNull();
   });
 
   it("trims whitespace-only values down to null", () => {

@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   AlertCircle,
   CheckCircle2,
+  Users,
 } from "lucide-react";
 
 // Reads the session and live report data directly, same reason as
@@ -77,6 +78,8 @@ export default async function ReportsHubPage() {
     fulfilmentStatus: null,
     claimStatus: null,
     communicationStatus: null,
+    currency: null,
+    lostSalesReason: null,
     includeDemo: false,
   };
 
@@ -171,6 +174,25 @@ export default async function ReportsHubPage() {
 
               {canSeeManagementReports && (
                 <Link
+                  href="/reports/sales-performance"
+                  className="group flex items-start gap-4 rounded-2xl border border-[#E7ECE7] bg-white p-5 shadow-sm transition hover:border-[#C9D4C6] hover:shadow"
+                >
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#F2F6F1] text-[#496A42]">
+                    <Users size={20} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-bold text-[#17251E]">Sales Performance</p>
+                    <p className="mt-1 text-xs leading-5 text-[#849087]">
+                      Salesperson attribution confidence, revenue, customer activity and lost-sales breakdowns.
+                      Sales Manager / Administrator only.
+                    </p>
+                  </div>
+                  <ArrowRight size={16} className="mt-1 shrink-0 text-[#A6AFA4] transition group-hover:text-[#17251E]" />
+                </Link>
+              )}
+
+              {canSeeManagementReports && (
+                <Link
                   href="/reports/management"
                   className="group flex items-start gap-4 rounded-2xl border border-[#E7ECE7] bg-white p-5 shadow-sm transition hover:border-[#C9D4C6] hover:shadow"
                 >
@@ -180,7 +202,7 @@ export default async function ReportsHubPage() {
                   <div className="min-w-0 flex-1">
                     <p className="font-bold text-[#17251E]">Management Reports</p>
                     <p className="mt-1 text-xs leading-5 text-[#849087]">
-                      11 named reports -- daily/weekly/monthly summaries, outstanding orders, picking shortages,
+                      9 named reports -- daily/weekly/monthly summaries, outstanding orders, picking shortages,
                       delivery exceptions and more. Sales Manager / Administrator only.
                     </p>
                   </div>

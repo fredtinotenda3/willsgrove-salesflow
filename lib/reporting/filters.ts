@@ -3,6 +3,7 @@ import { isValidDateOnlyString, dateOnlyStringToUtcDate, utcDateToDateOnlyString
 import { ORDER_STATUSES } from "@/lib/order-display";
 import { QUOTATION_STATUS_LABELS } from "@/lib/quotations/display";
 import { CLAIM_STATUS_LABELS } from "@/lib/invoice-claims/display";
+import { LOST_SALE_REASON_LABELS } from "@/lib/lost-sales/display";
 import type { ReportFilters, PaginationParams } from "@/lib/reporting/types";
 
 /**
@@ -111,6 +112,18 @@ export function parseReportFilters(params: URLSearchParams): ParsedReportFilters
   if (!quotationStatusResult.ok) return quotationStatusResult;
   const claimStatusResult = readEnumFilter(params.get("claimStatus"), Object.keys(CLAIM_STATUS_LABELS), "claimStatus");
   if (!claimStatusResult.ok) return claimStatusResult;
+  // Milestone 12 (Sales Performance Intelligence). lostSalesReason maps
+  // onto exactly one schema enum (LostSaleReason), so -- unlike
+  // fulfilmentStatus/communicationStatus above -- it IS centrally
+  // validated here, the same precedent orderStatus/quotationStatus/
+  // claimStatus already set.
+  const lostSalesReasonResult = readEnumFilter(params.get("lostSalesReason"), Object.keys(LOST_SALE_REASON_LABELS), "lostSalesReason");
+  if (!lostSalesReasonResult.ok) return lostSalesReasonResult;
+
+  const currencyRaw = (params.get("currency") ?? "").trim().toUpperCase();
+  if (currencyRaw !== "" && !/^[A-Z]{3}$/.test(currencyRaw)) {
+    return { ok: false, message: "currency must be a 3-letter code." };
+  }
 
   return {
     ok: true,
@@ -131,6 +144,8 @@ export function parseReportFilters(params: URLSearchParams): ParsedReportFilters
       // every existing dashboard (invoice claims, quotations, lost sales,
       // invoice reconciliation, approvals) already uses.
       includeDemo: params.get("includeDemo") === "true",
+      currency: currencyRaw === "" ? null : currencyRaw,
+      lostSalesReason: lostSalesReasonResult.value,
     },
   };
 }

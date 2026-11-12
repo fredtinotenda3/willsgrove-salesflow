@@ -358,6 +358,13 @@ export async function confirmReviewSession(
             // group's order is created with no location.
             customerLocationId: groupCustomerId === primaryCustomerId ? input.customerLocationId ?? null : null,
             customerPoReference: resolvedCustomerPoReference ?? null,
+            // Milestone 12 (Sales Performance Intelligence). Applied to
+            // EVERY group's order uniformly -- same "one default for the
+            // whole document" convention as every other header field
+            // above. Omitted/null preserved as NULL (createOrderCore no
+            // longer defaults this to createdById); never derived from
+            // actorId or from any per-line decision.
+            salespersonId: input.salespersonId ?? null,
             source,
             orderDate: resolvedOrderDate ?? null,
             requestedDeliveryDate: resolvedRequestedDeliveryDate ?? null,

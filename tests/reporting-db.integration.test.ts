@@ -280,6 +280,11 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       fulfilmentStatus: null,
       claimStatus: null,
       communicationStatus: null,
+      // Milestone 12 (Sales Performance Intelligence) added these two
+      // fields to ReportFilters; kept null here since this describe
+      // block's reports don't consume either one.
+      currency: null,
+      lostSalesReason: null,
       includeDemo: true,
     });
 
@@ -344,6 +349,11 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       fulfilmentStatus: null,
       claimStatus: null,
       communicationStatus: null,
+      // Milestone 12 (Sales Performance Intelligence) added these two
+      // fields to ReportFilters; kept null here since this describe
+      // block's reports don't consume either one.
+      currency: null,
+      lostSalesReason: null,
       includeDemo: true,
       ...overrides,
     });
@@ -458,6 +468,11 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       fulfilmentStatus: null,
       claimStatus: null,
       communicationStatus: null,
+      // Milestone 12 (Sales Performance Intelligence) added these two
+      // fields to ReportFilters; kept null here since this describe
+      // block's reports don't consume either one.
+      currency: null,
+      lostSalesReason: null,
       includeDemo: true,
     });
 
@@ -621,6 +636,11 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
         fulfilmentStatus: null,
         claimStatus: null,
         communicationStatus: null,
+        // Milestone 12 (Sales Performance Intelligence) added these two
+        // fields to ReportFilters; kept null here since this report
+        // doesn't consume either one.
+        currency: null,
+        lostSalesReason: null,
         includeDemo: true,
       } as never);
 

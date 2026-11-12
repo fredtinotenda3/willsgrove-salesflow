@@ -3035,3 +3035,129 @@ again. Also tell Prisma's migration history about the rollback:
 ```powershell
 npx prisma migrate resolve --rolled-back 20261112080000_add_order_salesperson
 ```
+
+## 29. Milestone 12: Sales Performance Intelligence
+
+**No new migration this milestone.** Every column and table this
+milestone's reporting logic depends on (`CustomerOrder.salespersonId`,
+`Quotation.salespersonId`, `AuditEvent.afterData`) already existed after
+Milestone 11 — attribution confidence is derived live from them, never
+stored. The one schema-adjacent change is that `AuditEvent.afterData`
+(already a free-form `Json` column) now sometimes carries a new
+`salespersonAssignment` sub-object on `ORDER_CREATE`/`QUOTATION_CREATED`
+events; this needs no migration since the column's type never changed.
+
+```powershell
+# 1. Regenerate the Prisma client (picks up nothing new in the schema
+#    itself, but keeps the client in step with every other milestone's
+#    convention of regenerating after a round of changes)
+npx prisma generate
+
+# 2. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+
+# 3. Confirm a real production build succeeds (the sandbox could not
+#    get past its own Google Fonts network block to even reach this
+#    phase -- see PROGRESS.md's Milestone 12 honest verification results)
+npm run build
+```
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the new gated test file, `tests/sales-performance-db.integration.test.ts`,
+alongside every pre-existing gated integration test:
+
+- Attribution classification via a real DB round trip — an order with a
+  real `salespersonAssignment` provenance record classifies as
+  `VERIFIED`; one with none classifies as one of the `UNVERIFIED_*`
+  tiers depending on the creator's role at creation time; a quotation-
+  converted order is classified from its **source quotation's own**
+  event, not its own `ORDER_CREATE` event.
+- The full lost-sales confirmation lifecycle (picking → authorize →
+  record decision → confirm lost sale) attributed back to the order's
+  salesperson and currency via the real `UnfulfilledDemand`/
+  `LostSaleRecord` join.
+- A `getSalesPerformanceReport` plumbing smoke test — confirms the
+  composite report actually assembles without error against a small
+  real fixture set.
+- The `currency` filter regression test — confirms
+  `getSalesRevenueReport` now actually narrows by `SapInvoice.currencyCode`
+  (the gap this milestone found and fixed in `lib/reporting/sales-revenue-queries.ts`).
+
+It needs only an `ADMINISTRATOR` user already seeded (same precondition
+as every other gated test file in this project). Everything either test
+creates is marked `isDemo: true`.
+
+**Honesty note**: this test file, like every gated DB-integration test
+in this project, has not been run against a real database from inside
+this sandbox — this sandbox's `@prisma/client` is a stale stub (see
+PROGRESS.md's "Honest verification results"). It was written to the
+same standard as `tests/reporting-db.integration.test.ts` and
+independently checked against the real source of every function/field/
+signature it calls (`lib/lost-sales/*`, `lib/reporting/*.ts`,
+`prisma/schema.prisma`) — including correcting two wrong field names
+caught by reading the schema directly (`SapInvoiceImportBatch`'s real
+required fields, and `SapInvoice.sapDocNum`/`rawSourceData`, not
+`sapInvoiceNumber`) — but treat it as unverified until you actually run
+it. The 84 unconditional unit tests added this milestone
+(`tests/attribution.test.ts`, `tests/customer-activity.test.ts`,
+`tests/sales-revenue.test.ts`, the extended `tests/reporting-filters.test.ts`,
+and `tests/m12-acceptance-criteria.test.ts`) have no such caveat: they
+were actually run in this sandbox and pass (full suite: 657 passed, 118
+skipped, 0 failed).
+
+### Manual test script (via the UI)
+
+1. Log in as a `SALESPERSON` and open `/orders/new`. Confirm the
+   **Salesperson** picker starts genuinely blank (no name pre-selected)
+   with an explicit "Unassigned" option, rather than defaulting to your
+   own name. Submit an order with the picker left blank; confirm the
+   created order's `salespersonId` is `null` (check it directly, or
+   confirm it does not appear under any salesperson's figures on
+   `/reports/sales-performance`).
+2. Create a second order, this time explicitly picking a salesperson
+   from the dropdown (even if it's yourself). Confirm this order's
+   `salespersonId` is set and that, as shown in step 6 below, it
+   classifies as `VERIFIED` rather than one of the `UNVERIFIED_*` tiers.
+3. Open `/quotations/new`. Confirm the **Salesperson** field also starts
+   blank (no longer pre-filled to your own name) and is a required
+   dropdown (`Quotation.salespersonId` stays a required DB field).
+4. Open the PO-intake review flow (`/orders/intake/[id]/review` for a
+   pending intake) and confirm its own Salesperson picker is also
+   blank, not pre-filled.
+5. Log in as an `ADMINISTRATOR` or `SALES_MANAGER` and open
+   `/reports/sales-performance`. Confirm it is **not** visible in the
+   Reports index, and the `/reports/sales-performance` URL itself
+   redirects away, when visited as a `SALESPERSON`.
+6. On the management account, open `/reports/sales-performance` and
+   check the **Attribution confidence** table: confirm the order from
+   step 2 (explicit pick) counts toward `VERIFIED`, and the order from
+   step 1 (left blank) counts toward `UNASSIGNED`.
+7. Check the **SAP invoice line value by currency and salesperson**
+   table: confirm USD and ZWG (if both exist in your seed data) appear
+   as two separate top-level sections, never summed into one total, and
+   that the label reads "SAP invoice line value," never "revenue."
+8. Check the **Lost sales by salesperson** panel: confirm quantities are
+   the headline figures and the estimated-value-by-currency rows are
+   clearly marked as estimates, with rows missing an estimate excluded
+   from the sum rather than shown as zero.
+9. Check the **Quotation-to-order conversion by salesperson** table:
+   confirm the rates shown match what you'd get by filtering
+   `/reports/pipeline` to that one salesperson directly (same
+   underlying `getSalesPipelineReport` call, just run once per
+   salesperson here).
+10. Apply the new **Currency** filter (type a 3-letter code into the
+    free-text field, e.g. `USD`) on `/reports/sales-performance` and
+    confirm the revenue and lost-sales-value tables narrow to that
+    currency. Apply the new **Lost sale reason** status filter and
+    confirm only matching lost-sale rows remain. Click **Export CSV**
+    and confirm the download contains all 5 sections (attribution,
+    revenue, lost sales, pipeline, summary).

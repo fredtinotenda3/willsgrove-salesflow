@@ -54,6 +54,17 @@ export const confirmReviewSchema = z.object({
   // already an alias hit with nothing to re-learn.
   customerAliasText: z.string().trim().max(300).nullable().optional(),
 
+  // Milestone 12 (Sales Performance Intelligence). The assigned
+  // salesperson for every order this confirm action creates (there can
+  // be more than one -- see Milestone 2C's multi-store splitting above).
+  // Applied uniformly across every group's order, same as every other
+  // `header` field's "one default for the whole document" convention.
+  // Omitted or null both mean "leave unassigned (NULL)" -- never
+  // defaulted to actorId or to any per-line creator; see
+  // lib/review/confirm-review.ts and CustomerOrder.salespersonId's own
+  // schema comment.
+  salespersonId: z.string().trim().min(1).max(64).nullable().optional(),
+
   header: z
     .object({
       customerPoReference: z.string().trim().max(100).nullable().optional(),
