@@ -4,6 +4,7 @@ import { verifyCsrfOrigin } from "@/lib/auth/csrf";
 import { requireUserOrResponse } from "@/lib/auth/current-user";
 import { respondToQuotationSchema } from "@/lib/quotations/validation";
 import { respondToQuotation } from "@/lib/quotations/respond";
+import { queueQuotationResponseAcknowledgedMessage } from "@/lib/communications/send";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -46,6 +47,16 @@ export async function POST(request: NextRequest, context: RouteContext) {
     if (!result.ok) {
       return NextResponse.json({ success: false, message: result.message }, { status: result.status });
     }
+
+    // Milestone 10. See the issue route's identical comment -- a
+    // notification failure is never surfaced as a failure of recording the
+    // customer's response.
+    try {
+      await queueQuotationResponseAcknowledgedMessage(id, user.id);
+    } catch (notifyError) {
+      console.error(`Failed to queue quotation-response-acknowledged message for quotation ${id}:`, notifyError);
+    }
+
     return NextResponse.json({ success: true }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Quotation response recording failed:", error);

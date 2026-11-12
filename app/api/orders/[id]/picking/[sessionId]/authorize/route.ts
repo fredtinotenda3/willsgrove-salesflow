@@ -3,8 +3,9 @@ import { isValidId } from "@/lib/http";
 import { verifyCsrfOrigin } from "@/lib/auth/csrf";
 import { requireUserOrResponse } from "@/lib/auth/current-user";
 import { authorizePickingSession } from "@/lib/picking/authorize-picking";
+import { queuePickingUpdateMessage } from "@/lib/communications/send";
 
-type RouteContext = { params: Promise<{ sessionId: string }> };
+type RouteContext = { params: Promise<{ id: string; sessionId: string }> };
 
 /**
  * Milestone 3A (SAP Invoice Handover Specification -- warehouse picking).
@@ -24,8 +25,8 @@ export async function POST(request: NextRequest, context: RouteContext) {
   if (!auth.ok) return auth.response;
   const { user } = auth;
 
-  const { sessionId } = await context.params;
-  if (!isValidId(sessionId)) {
+  const { id: orderId, sessionId } = await context.params;
+  if (!isValidId(sessionId) || !isValidId(orderId)) {
     return Response.json({ success: false, message: "Invalid session id." }, { status: 400 });
   }
 
@@ -34,6 +35,18 @@ export async function POST(request: NextRequest, context: RouteContext) {
     if (!result.ok) {
       return Response.json({ success: false, message: result.message }, { status: result.status });
     }
+
+    // Milestone 10. See app/api/quotations/[id]/issue/route.ts's identical
+    // comment -- a notification failure never affects this response. The
+    // order id comes from this route's own URL segment, not from
+    // authorizePickingSession's return value, so lib/picking/authorize-
+    // picking.ts (Milestone 3A, already shipped) stays untouched.
+    try {
+      await queuePickingUpdateMessage(orderId, user.id);
+    } catch (notifyError) {
+      console.error(`Failed to queue picking-update message for order ${orderId}:`, notifyError);
+    }
+
     return Response.json({ success: true, session: result.session }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Authorizing a picking session failed:", error);

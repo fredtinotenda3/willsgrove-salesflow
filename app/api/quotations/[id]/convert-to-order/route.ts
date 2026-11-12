@@ -4,6 +4,7 @@ import { verifyCsrfOrigin } from "@/lib/auth/csrf";
 import { requireUserOrResponse } from "@/lib/auth/current-user";
 import { convertQuotationToOrderSchema } from "@/lib/quotations/validation";
 import { convertQuotationToOrder } from "@/lib/quotations/convert-to-order";
+import { queueOrderConfirmationMessage } from "@/lib/communications/send";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -51,6 +52,20 @@ export async function POST(request: NextRequest, context: RouteContext) {
     if (!result.ok) {
       return NextResponse.json({ success: false, message: result.message, fieldErrors: result.fieldErrors }, { status: result.status });
     }
+
+    // Milestone 10. See the issue route's identical comment. Skipped on a
+    // repeat/idempotent conversion (alreadyConverted) -- the confirmation
+    // for the real, original conversion was already queued/sent then, and
+    // queueOrderConfirmationMessage's own idempotencyKey would no-op a
+    // second call anyway, so this is purely to avoid redundant work.
+    if (!result.alreadyConverted) {
+      try {
+        await queueOrderConfirmationMessage(result.orderId, user.id);
+      } catch (notifyError) {
+        console.error(`Failed to queue order-confirmation message for order ${result.orderId}:`, notifyError);
+      }
+    }
+
     return NextResponse.json(
       { success: true, orderId: result.orderId, orderReference: result.orderReference, alreadyConverted: result.alreadyConverted },
       { headers: { "Cache-Control": "no-store" } }

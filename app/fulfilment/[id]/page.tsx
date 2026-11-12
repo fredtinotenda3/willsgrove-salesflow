@@ -13,6 +13,7 @@ import {
 } from "@/lib/order-display";
 import { ArrowLeft, ExternalLink, Ban } from "lucide-react";
 import PickingPanel from "./picking-panel";
+import DispatchPanel from "./dispatch-panel";
 
 /**
  * Milestone 3B (SAP Invoice Handover Specification -- warehouse
@@ -130,6 +131,13 @@ export default async function FulfilmentOrderPage({ params }: RouteParams) {
               }))}
             />
           )}
+
+          {/* Milestone 10 (Communication Channels & Fulfilment). Dispatch
+              and delivery -- shown regardless of pickability, since an
+              order's dispatch history stays relevant even once picking
+              itself is done; the panel's own empty state covers "nothing
+              outstanding yet." */}
+          <DispatchPanel orderId={order.id} />
 
           <footer className="flex items-center justify-between pb-2 text-[10px] text-gray-400">
             <p>Willsgrove SalesFlow © 2026</p>

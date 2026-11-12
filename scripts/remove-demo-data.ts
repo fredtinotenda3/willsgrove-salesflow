@@ -107,6 +107,32 @@
  * milestone) has no isDemo column at all -- it is a singleton
  * configuration row, not demo data, and is never touched by this script.
  *
+ * Milestone 10 (Communication Channels & Fulfilment) added four more
+ * models with their own isDemo flag (MessageIntake, OutboundMessage,
+ * DispatchRecord, DeliveryRecord). This group is deleted FIRST, before
+ * even the Milestone 8 group below: MessageIntake.linkedOrderId/
+ * linkedQuotationId/resultingOrderDocumentId are all Restrict FKs onto
+ * CustomerOrder/Quotation/OrderDocument, and DispatchRecord.orderId is a
+ * Restrict FK onto CustomerOrder -- all three are deleted much further
+ * down (OrderDocument in the legacy-M0 block, Quotation in the Milestone
+ * 7 block, CustomerOrder near the bottom), so this whole group must go
+ * first or those deletes would be blocked. MessageAttachment has no
+ * isDemo column of its own and needs no explicit delete here -- it
+ * carries onDelete: Cascade from MessageIntake, so it is removed
+ * automatically. Within the group, DeliveryRecord must go before
+ * DispatchRecord (DeliveryRecord.dispatchRecordId is Restrict);
+ * DispatchLine/DeliveryLine likewise need no explicit delete (Cascade
+ * from DispatchRecord/DeliveryRecord respectively). OutboundMessage's own
+ * FKs to CustomerOrder/Quotation/DispatchRecord/DeliveryRecord are all
+ * SetNull (never blocking), but OutboundMessage.customerId -> Customer IS
+ * Restrict (Customer is deleted much further down), so it is included in
+ * this same top-of-transaction group rather than left until later.
+ * MessageIntake's own self-referential duplicateOfId FK needs no special
+ * handling, for the same reason Quotation's revision chain and
+ * ApprovalRequest's resubmission chain don't elsewhere in this file:
+ * deleteMany issues one SQL DELETE statement, and Postgres checks FK
+ * constraints only after the whole statement completes, not row-by-row.
+ *
  * Milestone 0 fix (round 4): this is 12 sequential round trips over one
  * connection to a pooled Neon endpoint, and Prisma's *default* interactive
  * transaction timeout is 5000ms -- comfortably exceeded under real network
@@ -138,6 +164,29 @@ async function main() {
 
   const result = await prisma.$transaction(
     async (tx) => {
+      // Milestone 10 (Communication Channels & Fulfilment). Deleted
+      // before everything else, including the Milestone 8 group
+      // immediately below -- see the file-level comment above for why
+      // (MessageIntake/DispatchRecord hold Restrict FKs onto
+      // CustomerOrder/Quotation/OrderDocument, all deleted much further
+      // down). MessageAttachment/DispatchLine/DeliveryLine cascade-delete
+      // with their parent and need no explicit call here.
+      const messageIntakes = await tx.messageIntake.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const outboundMessages = await tx.outboundMessage.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const deliveryRecords = await tx.deliveryRecord.deleteMany({
+        where: { isDemo: true },
+      });
+
+      const dispatchRecords = await tx.dispatchRecord.deleteMany({
+        where: { isDemo: true },
+      });
+
       // Milestone 8 (Validation and Approvals). Deleted before everything
       // else, including the Milestone 7 group below -- see the file-level
       // comment above for why (ApprovalRequest.quotationId/customerOrderId
@@ -332,6 +381,10 @@ async function main() {
           entityType: "System",
           entityId: "demo-data-removal",
           afterData: {
+            messageIntakes: messageIntakes.count,
+            outboundMessages: outboundMessages.count,
+            deliveryRecords: deliveryRecords.count,
+            dispatchRecords: dispatchRecords.count,
             approvalEvents: approvalEvents.count,
             approvalRequests: approvalRequests.count,
             approvalPolicies: approvalPolicies.count,
@@ -372,6 +425,10 @@ async function main() {
       });
 
       return {
+        messageIntakes: messageIntakes.count,
+        outboundMessages: outboundMessages.count,
+        deliveryRecords: deliveryRecords.count,
+        dispatchRecords: dispatchRecords.count,
         approvalEvents: approvalEvents.count,
         approvalRequests: approvalRequests.count,
         approvalPolicies: approvalPolicies.count,
@@ -410,6 +467,10 @@ async function main() {
   );
 
   console.log("Demo data removed:");
+  console.log(`  Message intakes: ${result.messageIntakes}`);
+  console.log(`  Outbound messages: ${result.outboundMessages}`);
+  console.log(`  Delivery records: ${result.deliveryRecords}`);
+  console.log(`  Dispatch records: ${result.dispatchRecords}`);
   console.log(`  Approval events:  ${result.approvalEvents}`);
   console.log(`  Approval requests: ${result.approvalRequests}`);
   console.log(`  Approval policies: ${result.approvalPolicies}`);

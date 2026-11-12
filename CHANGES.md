@@ -2394,3 +2394,127 @@ design rationale and honest verification results.
 | `CHANGES.md` | Modified | This section. |
 | `SETUP-WINDOWS.md` | Modified | Added §26 — apply the new migration, regenerate the Prisma client, run the new gated test file, and a manual test script walking through connection configuration, a mock sync, and a quotation-converted order's SAP submission. |
 | `MILESTONE-9-DELIVERY-REPORT.md` | Added | The spec-structured delivery report with the 15 required disclosures: architecture, adapter contract, security/config model, sync behaviour, outbox/idempotency design, RBAC matrix, API routes, UI, tests + results, known limitations (including the SAP-submission-eligibility scope boundary and the never-verified-against-real-SAP caveat), the discovery checklist, and exact Windows PowerShell commands. |
+
+## Milestone 10 — Communication Channels & Fulfilment
+
+Built from your attached full specification in one pass, delivered
+silently per your "return only changed files" instruction. No external
+WhatsApp/email integration is invented or pretended to be connected —
+both real send adapters and both webhook signature-verification paths
+fail safe to mock/refused by default. Three concrete deviations from
+the original plan sketch (routes nested under `/orders/[id]` rather
+than a top-level `/dispatches` collection; the inbox and the outbound
+log built as two separate pages rather than one page with panels
+embedded on `/quotations/[id]`/`/orders/[id]`; no
+`/communications/settings` page) are documented, not hidden. See
+`docs/milestones/PROGRESS.md`'s Milestone 10 section for the full
+design rationale, what was actually built vs. planned, two real bugs
+found and fixed, and honest verification results.
+
+## Schema / migration
+
+| File | Change | Reason |
+|---|---|---|
+| `prisma/schema.prisma` | Modified | 6 new enums (`MessageChannel`, `MessageIntakeStatus`, `OutboundMessageType`, `OutboundMessageStatus`, `DispatchStatus`, `DeliveryOutcome`), 2 new values on the existing `NotificationType` enum (`CHANNEL_INTAKE_RECEIVED`, `OUTBOUND_MESSAGE_FAILED`), 7 new models (`MessageIntake`, `MessageAttachment`, `OutboundMessage`, `DispatchRecord`, `DispatchLine`, `DeliveryRecord`, `DeliveryLine`), and new inverse-relation fields on `User`/`Customer`/`CustomerContact`/`CustomerOrder`/`Quotation`/`OrderDocument`/`PickingSession`. No existing table, column, or enum value removed, renamed, or retyped. |
+| `prisma/migrations/20261111220000_add_communications_and_fulfilment/migration.sql` | Added | Hand-authored (this sandbox cannot run `prisma migrate dev`), matching the schema exactly: 6 enum types, 2 `ALTER TYPE ... ADD VALUE` statements, 7 `CREATE TABLE`s, their indexes and foreign keys. No existing table/column/enum value removed or changed. |
+
+## `lib/channels/` (new module — inbound intake)
+
+| File | Change | Reason |
+|---|---|---|
+| `types.ts` | Added | The send-only `ChannelAdapter` contract, mirroring `lib/integrations/sap/types.ts`'s own shape. No `@prisma/client` import. |
+| `config.ts` | Added | `server-only`. The two-channel deployment-mode/credential resolution (`getEmailDeploymentMode`, `getWhatsAppDeploymentMode`, `resolveEmailLiveCredentials`, `resolveWhatsAppLiveCredentials`, `canUseLiveEmailAdapter`, `canUseLiveWhatsAppAdapter`), webhook-secret getters, `sanitizeChannelErrorMessage`. |
+| `get-adapter.ts` | Added | `server-only`. The single choke point every caller uses to get the email/WhatsApp adapter, mock-by-default. |
+| `webhook-security.ts` | Added | HMAC verification for the generic email provider's shared-secret scheme and WhatsApp's `X-Hub-Signature-256`. |
+| `email/mock-adapter.ts` / `email/real-adapter.ts` | Added | Deterministic mock (records + returns success) and a Postmark/SendGrid-shaped, **unverified against any real provider** real adapter. |
+| `whatsapp/mock-adapter.ts` / `whatsapp/real-adapter.ts` | Added | Deterministic mock and a WhatsApp Business Cloud API-shaped, **unverified against any real Meta app** real adapter. |
+| `whatsapp/media.ts` | Added | `server-only`. `fetchWhatsAppMedia` — downloads an inbound WhatsApp attachment via the real API only when live credentials are configured; otherwise never called (the webhook records a placeholder note instead, per spec's "never pretend WhatsApp is connected"). |
+| `match-customer.ts` | Added | `server-only`, DB, read-only. `matchCustomerForAddress` — exact email match against `Customer.email`/`CustomerContact.email`, normalized-phone match for WhatsApp; suggested only, never auto-linked. |
+| `intake-review.ts` | Added | `server-only`, DB. `recordInboundMessage` (idempotent on `externalMessageId`, stores attachments via the existing `lib/storage`), `convertMessageIntakeToPoIntake` (calls the EXISTING, unmodified `createPoIntake` — see Milestone 2A), `linkMessageIntakeToOrder`/`linkMessageIntakeToQuotation`/`ignoreMessageIntake`/`markMessageIntakeDuplicate`. Every review action refuses once a message has left `RECEIVED`. |
+| `queries.ts` | Added | `server-only`, DB, read-only. `listMessageIntakes`. |
+
+## `lib/communications/` (new module — outbound log)
+
+| File | Change | Reason |
+|---|---|---|
+| `templates.ts` | Added | Pure plain-text message-body renderers, one per `OutboundMessageType`. No `@prisma/client` import. |
+| `dispatcher.ts` | Added | `server-only`, DB. `attemptSend` — resolves the adapter via `get-adapter.ts`, sends, records `SENT`/`FAILED` + `lastErrorMessage` (sanitized), never throws out of a route. |
+| `send.ts` | Added | `server-only`, DB. `resolveRecipient`, the 6 `queue*Message` functions (one per customer-facing event this milestone sends), `resendOutboundMessage`, `sweepStuckQueuedMessages` (documented as available but not scheduled anywhere). Every queue function is idempotent via a deterministic `idempotencyKey`. |
+| `queries.ts` | Added | `server-only`, DB, read-only. `listOutboundMessages`, `getOutboundMessageDetail`. |
+
+## `lib/fulfilment/` (new module — dispatch/delivery)
+
+| File | Change | Reason |
+|---|---|---|
+| `decimal.ts` | Added | Pure, exact bigint-scaled decimal arithmetic (`sumDecimalStrings`, `formatScaledDecimal`, `clampedDifference`), extending `lib/picking/validation.ts`'s own convention unchanged (imported, not copied). No `@prisma/client` import. |
+| `validation.ts` | Added | zod request schemas for the dispatch/delivery API routes, reusing `decimalStringSchema` from `lib/picking/validation.ts`. No `@prisma/client` import. |
+| `queries.ts` | Added | `server-only`, DB, read-only. `getOrderFulfilmentStatus` (the one additive outstanding-quantity definition, summed across every `AUTHORIZED` `PickingSession` and every non-`CANCELLED` `DispatchRecord`), `listDispatchRecordsForOrder`, `getDispatchRecordDetail`, `listDispatchQueue` (builds out the previously-dead `/deliveries` link). |
+| `dispatch.ts` | Added | `server-only`, DB. `createDispatchRecord` (validates against live outstanding quantity), `departDispatchRecord`, `cancelDispatchRecord` (only before departure — a departed dispatch is resolved via delivery, never cancelled). |
+| `delivery.ts` | Added | `server-only`, DB. `recordDelivery` — one `DeliveryRecord` per `DispatchRecord` (`@unique`), enforces `accepted + rejected === dispatched` per line and a rejection reason wherever `rejectedQuantity > 0`; moves the dispatch to `DELIVERED` in the same transaction. Never creates an `InvoiceClaim`. |
+
+## API routes (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/api/channels/email/webhook/route.ts` | Added | `POST` — inbound email, signature-verified only when `CHANNEL_EMAIL_WEBHOOK_SECRET` is set; refuses with 503 while unset. |
+| `app/api/channels/whatsapp/webhook/route.ts` | Added | `GET` (Meta's one-time subscription handshake) + `POST` (inbound message), `X-Hub-Signature-256`-verified; refuses with 503 while `CHANNEL_WHATSAPP_WEBHOOK_SECRET` is unset. |
+| `app/api/channels/manual-intake/route.ts` | Added | `POST` (any authenticated role) — the always-available manual-logging fallback. |
+| `app/api/channels/intake/route.ts` | Added | `GET` (any authenticated role) — the review queue list, filterable by status. |
+| `app/api/channels/intake/[id]/route.ts` | Added | `GET` (any authenticated role) — one message's full detail; converts `MessageAttachment.fileSize` (`BigInt`) to `Number` before responding. |
+| `app/api/channels/intake/[id]/attachments/[attachmentId]/route.ts` | Added | `GET` (any authenticated role) — downloads one attachment's stored bytes. |
+| `app/api/channels/intake/[id]/{convert,link,ignore,duplicate}/route.ts` | Added | `POST` (any authenticated role) — the four review actions. |
+| `app/api/communications/route.ts` | Added | `GET` (any authenticated role) — the outbound log, filterable by status/channel. |
+| `app/api/communications/[id]/route.ts` | Added | `GET` (any authenticated role) — one `OutboundMessage`'s detail. |
+| `app/api/communications/[id]/resend/route.ts` | Added | `POST` (`SALES_MANAGER`/`ADMINISTRATOR`) — resends a `FAILED` row's immutable rendered body. |
+| `app/api/orders/[id]/fulfilment/route.ts` | Added | `GET` (any authenticated role) — `getOrderFulfilmentStatus` for one order. |
+| `app/api/orders/[id]/dispatch/route.ts` | Added | `POST` (any authenticated role) — creates a dispatch. |
+| `app/api/orders/[id]/dispatch/[dispatchId]/route.ts` | Added | `GET` (any authenticated role) — one dispatch's detail, including its delivery outcome if recorded. |
+| `app/api/orders/[id]/dispatch/[dispatchId]/depart/route.ts` | Added | `POST` (any authenticated role) — records departure; triggers `queueDispatchNotificationMessage`. |
+| `app/api/orders/[id]/dispatch/[dispatchId]/cancel/route.ts` | Added | `POST` (any authenticated role) — cancels a `PLANNED` (not yet departed) dispatch. |
+| `app/api/orders/[id]/dispatch/[dispatchId]/delivery/route.ts` | Added | `POST`, multipart/form-data (any authenticated role) — records the delivery outcome with optional proof photo/signature; triggers `queueDeliveryOutcomeMessage`. |
+| Every route above | — | `requireUserOrResponse()` with the role array noted; `verifyCsrfOrigin` on every mutating route; `isValidId` on every path param. |
+| `app/api/quotations/[id]/issue/route.ts` | Modified | Non-blocking `queueQuotationIssuedMessage` call after the existing `issueQuotation` succeeds — the existing lib transaction is untouched. |
+| `app/api/quotations/[id]/respond/route.ts` | Modified | Non-blocking `queueQuotationResponseAcknowledgedMessage` call, same pattern. |
+| `app/api/quotations/[id]/convert-to-order/route.ts` | Modified | Non-blocking `queueOrderConfirmationMessage` call, guarded on `!result.alreadyConverted`. |
+| `app/api/orders/[id]/picking/[sessionId]/authorize/route.ts` | Modified | Non-blocking `queuePickingUpdateMessage` call after authorization succeeds; `RouteContext` widened to carry the order id alongside the session id. |
+
+## UI (new)
+
+| File | Change | Reason |
+|---|---|---|
+| `app/communications/inbox/page.tsx` | Added | Server Component: the `MessageIntake` review queue, filterable by status, with the manual-intake form. |
+| `app/communications/inbox/manual-intake-form.tsx` | Added | Client island — the always-available "Log a message manually" form. |
+| `app/communications/inbox/[id]/page.tsx` | Added | Server shell for one message's review page. |
+| `app/communications/inbox/[id]/review-panel.tsx` | Added | Client island — the full review-action UI (convert/link/duplicate/ignore). |
+| `app/communications/page.tsx` | Added | Server Component: the outbound `OutboundMessage` log, filterable by status. |
+| `app/communications/resend-button.tsx` | Added | Client island — the Resend action on a `FAILED` row. |
+| `app/deliveries/page.tsx` | Added | Server Component: builds out the previously-dead sidebar link — the dispatch/delivery queue. |
+| `app/fulfilment/[id]/dispatch-panel.tsx` | Added | Client island — create/depart/cancel a dispatch, record a delivery outcome with proof upload. |
+| `app/fulfilment/[id]/page.tsx` | Modified | Renders `DispatchPanel` after the existing `PickingPanel` conditional block. |
+| `app/components/sidebar.tsx` | Modified | New "Message Inbox" entry (WORKSPACE) and "Communications" entry (OPERATIONS); the pre-existing "Dispatch & Delivery" → `/deliveries` entry is now a live link rather than a dead one. |
+
+## Other changes
+
+| File | Change | Reason |
+|---|---|---|
+| `scripts/remove-demo-data.ts` | Modified | New `messageIntakes`/`outboundMessages`/`deliveryRecords`/`dispatchRecords` deletion group, placed FIRST in the transaction (ahead of even the Milestone 8 group) since `MessageIntake`/`DispatchRecord` carry `Restrict` FKs onto `CustomerOrder`/`Quotation`/`OrderDocument`, all deleted later in the script. Added to the audit event and summary output. |
+| `.env.example` | Modified | Documents `CHANNEL_EMAIL_PROVIDER`/`CHANNEL_WHATSAPP_PROVIDER` (kill switches), `CHANNEL_EMAIL_API_KEY`/`CHANNEL_EMAIL_FROM_ADDRESS`, `CHANNEL_WHATSAPP_PHONE_NUMBER_ID`/`CHANNEL_WHATSAPP_ACCESS_TOKEN`, and `CHANNEL_EMAIL_WEBHOOK_SECRET`/`CHANNEL_WHATSAPP_WEBHOOK_SECRET`. |
+
+## Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/fulfilment-decimal.test.ts` | Added | 16 unconditional tests: exact-sum/round-trip/clamping behavior of `lib/fulfilment/decimal.ts`, including a genuine `BigInt`-literal/ES2017-target bug this suite's own `tsc` run caught and drove the fix for (see PROGRESS.md). All passing. |
+| `tests/fulfilment-validation.test.ts` | Added | 14 unconditional tests: every zod schema's accept/reject boundary in `lib/fulfilment/validation.ts`. All passing. |
+| `tests/communications-templates.test.ts` | Added | 9 unconditional tests: every message-body renderer in `lib/communications/templates.ts`, asserting the facts that matter (identifiers/amounts present, correct branch wording) rather than exact prose. All passing. |
+| `tests/fulfilment-db.integration.test.ts` | Added | 4 gated tests against a real database: the full dispatch→depart→deliver lifecycle, `getOrderFulfilmentStatus`'s additive outstanding-quantity math across a partial dispatch and a cancellation, and `recordDelivery`'s accepted+rejected validation. Follows this project's established DB-integration-test convention exactly; not yet run against a real database from this sandbox. |
+| `tests/channels-intake-review-db.integration.test.ts` | Added | 4 gated tests against a real database: `recordInboundMessage`'s idempotent dedup on `externalMessageId`, every review action's "already reviewed" refusal, and `convertMessageIntakeToPoIntake` actually calling the existing `createPoIntake` pipeline and producing a real `OrderDocument` attributed to the reviewer. Not yet run against a real database from this sandbox. |
+
+## Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/ROADMAP.md` | Modified | Milestone 10's row added as "✅ Done"; the old "6+ Dispatch & delivery — Deferred" row removed (superseded); 4 new "never conflate" entries; the stale `/deliveries` dead-link note corrected; change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the "What was actually built" section (correcting the plan's model count and three route/UI deviations), "One real bug found and fixed this round" (two bugs), and honest verification results. |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §27 — apply the new migration, regenerate the Prisma client, configure the channel environment variables, run the new gated test files, and a manual test script walking through intake review, outbound messaging, and the dispatch/delivery lifecycle. |

@@ -324,6 +324,22 @@ model User {
   integrationConnectionsUpdated IntegrationConnection[] @relation("IntegrationConnectionUpdater")
   integrationSyncJobsTriggered  IntegrationSyncJob[]    @relation("IntegrationSyncJobTrigger")
 
+  // Milestone 10 (Communication Channels & Fulfilment). No dedicated role
+  // for inbox review/convert/ignore, dispatch creation/departure, or
+  // delivery recording (same "no dedicated role" convention as picking
+  // and lost-sales recording above -- any authenticated user can do
+  // these; enforced at the API route, not here). Resending a FAILED
+  // OutboundMessage and cancelling a DispatchRecord ARE restricted to
+  // SALES_MANAGER/ADMINISTRATOR -- see app/api/communications/* and
+  // app/api/dispatches/*.
+  reviewedMessageIntakes     MessageIntake[]   @relation("MessageIntakeReviewer")
+  outboundMessagesTriggered  OutboundMessage[] @relation("OutboundMessageTrigger")
+  outboundMessagesResent     OutboundMessage[] @relation("OutboundMessageResender")
+  createdDispatchRecords     DispatchRecord[]  @relation("DispatchRecordCreator")
+  departedDispatchRecords    DispatchRecord[]  @relation("DispatchRecordDeparter")
+  cancelledDispatchRecords   DispatchRecord[]  @relation("DispatchRecordCanceller")
+  recordedDeliveryRecords    DeliveryRecord[]  @relation("DeliveryRecordRecorder")
+
   @@index([isDemo])
 }
 
@@ -408,6 +424,10 @@ model Customer {
   // Milestone 7 (Quotations Management).
   quotations Quotation[]
 
+  // Milestone 10 (Communication Channels & Fulfilment).
+  messageIntakes    MessageIntake[]
+  outboundMessages  OutboundMessage[]
+
   @@index([name])
   @@index([status])
   @@index([isDemo])
@@ -440,6 +460,10 @@ model CustomerContact {
   // available" -- a quotation may name which of the customer's contacts
   // it was prepared for/sent to.
   quotations Quotation[]
+
+  // Milestone 10 (Communication Channels & Fulfilment).
+  messageIntakes   MessageIntake[]
+  outboundMessages OutboundMessage[]
 
   @@index([customerId])
   @@index([isDemo])
@@ -714,6 +738,20 @@ model CustomerOrder {
   // and docs/milestones/PROGRESS.md's Milestone 9 section.
   integrationOperation IntegrationOperation?
 
+  // Milestone 10 (Communication Channels & Fulfilment). linkedMessageIntakes
+  // is the pure Prisma inverse side of MessageIntake.linkedOrderId (a
+  // follow-up email/WhatsApp message a reviewer tied to this already-
+  // existing order, e.g. "where is my delivery" -- never a new PO).
+  // outboundMessages is the inverse of OutboundMessage.relatedOrderId.
+  // dispatchRecords is this order's own dispatch/delivery fulfilment
+  // history -- deliberately NOT a change to OrderStatus itself (see
+  // DispatchStatus's own comment for why dispatch/delivery gets its own
+  // separate lifecycle, the same precedent PickingSessionStatus and
+  // IntegrationOperationStatus already set).
+  linkedMessageIntakes MessageIntake[]
+  outboundMessages     OutboundMessage[]
+  dispatchRecords      DispatchRecord[]
+
   @@index([customerId])
   @@index([status])
   @@index([orderDate])
@@ -773,6 +811,12 @@ model OrderLine {
   // side, with no column of its own on this table.
   extractedOrderLine ExtractedOrderLine?
 
+  // Milestone 10 (Communication Channels & Fulfilment). Zero or more
+  // DispatchLine rows across however many separate dispatches this line
+  // ends up needing (partial fulfilment) -- see DispatchLine's own
+  // comment for how outstanding quantity is derived.
+  dispatchLines DispatchLine[]
+
   @@unique([orderId, lineNumber])
   @@index([productId])
   @@index([verificationStatus])
@@ -819,6 +863,16 @@ model OrderDocument {
   order         CustomerOrder?  @relation(fields: [orderId], references: [id], onDelete: Restrict)
   uploadedBy    User            @relation("DocumentUploader", fields: [uploadedById], references: [id], onDelete: Restrict)
   extractionRuns ExtractionRun[]
+
+  // Milestone 10 (Communication Channels & Fulfilment). Pure Prisma
+  // inverse side of MessageIntake.resultingOrderDocumentId (a unique
+  // scalar FK living on MessageIntake, not here) -- set only when this
+  // document was created by a reviewer converting an email/WhatsApp
+  // MessageIntake via lib/po-intake.ts's existing createPoIntake(). Null
+  // for every document created the pre-existing way (direct upload,
+  // paste from the order-creation form with no channel intake behind
+  // it).
+  sourceMessageIntake MessageIntake?
 
   @@index([orderId])
   @@index([documentGroupId])
@@ -1220,6 +1274,12 @@ model PickingSession {
 
   // Milestone 4 (Lost-Sales Management).
   unfulfilledDemands UnfulfilledDemand[]
+
+  // Milestone 10 (Communication Channels & Fulfilment). Optional link
+  // from a dispatch to the specific AUTHORIZED session its quantities
+  // were sourced from -- same optional-traceability pattern as
+  // OrderHandover.pickingSessionId above.
+  dispatchRecords DispatchRecord[]
 
   @@index([orderId])
   @@index([status])
@@ -2607,6 +2667,11 @@ model Quotation {
   // lib/approvals/quotation-gate.ts.
   approvalRequests ApprovalRequest[] @relation("QuotationApprovalRequests")
 
+  // Milestone 10 (Communication Channels & Fulfilment). Same pattern as
+  // CustomerOrder's own linkedMessageIntakes/outboundMessages above.
+  linkedMessageIntakes MessageIntake[]
+  outboundMessages     OutboundMessage[]
+
   @@unique([quotationNumber, revisionNumber])
   @@index([quotationNumber])
   @@index([rootQuotationId])
@@ -2973,6 +3038,15 @@ enum NotificationType {
   APPROVAL_REJECTED
   APPROVAL_WITHDRAWN
   APPROVAL_OVERDUE
+
+  // Milestone 10 (Communication Channels & Fulfilment). CHANNEL_INTAKE_
+  // RECEIVED notifies staff that a new email/WhatsApp MessageIntake is
+  // waiting for human review (never auto-converted -- see MessageIntake's
+  // own comment). OUTBOUND_MESSAGE_FAILED notifies staff that a queued
+  // customer communication reached OutboundMessageStatus.FAILED and needs
+  // either a manual Resend or a phone-call follow-up.
+  CHANNEL_INTAKE_RECEIVED
+  OUTBOUND_MESSAGE_FAILED
 }
 
 model Notification {
@@ -3284,4 +3358,542 @@ model IntegrationOperation {
   @@index([status])
   @@index([syncJobId])
   @@index([isDemo])
+}
+
+// =============================================================================
+// Milestone 10 (Communication Channels & Fulfilment). Connects SalesFlow's
+// existing sales/quotation/order/approval/SAP workflows to customer
+// communication channels (email, WhatsApp) and structured dispatch/delivery
+// fulfilment. See docs/milestones/PROGRESS.md's Milestone 10 section for the
+// full design write-up this schema implements.
+//
+// Three genuinely new subsystems, reusing everything that already exists
+// (spec's own "do not duplicate" instruction):
+//   1. Inbound intake review (MessageIntake/MessageAttachment) -- the PO
+//      EXTRACTION pipeline itself is NOT rebuilt here: lib/po-intake.ts's
+//      createPoIntake() already accepts { submission: "paste", channel:
+//      "EMAIL" | "WHATSAPP", pastedText }, built in Milestone 2A.
+//      MessageIntake is purely the pre-extraction holding/review layer a
+//      webhook (or a manual-fallback form) writes into, so an inbound
+//      message can be received with NO human-attributed write at all --
+//      the same problem M9 hit with OrderDocument.uploadedById being
+//      required is avoided by deferring that requirement to the moment a
+//      real signed-in reviewer actively converts, links, or ignores a
+//      row, never at receipt time.
+//   2. Outbound customer communication (OutboundMessage) -- did not exist
+//      before this milestone at all (lib/notifications/create.ts's own
+//      header comment explicitly deferred it here). Deliberately LIGHTER
+//      than IntegrationOperation: QUEUED -> SENT | FAILED only, no
+//      UNCERTAIN state, because an email/WhatsApp send failure is a plain
+//      HTTP-level failure/rejection, never the "did SAP actually receive
+//      this" ambiguity a dropped connection to an ERP creates.
+//   3. Dispatch/delivery fulfilment (DispatchRecord/DispatchLine/
+//      DeliveryRecord/DeliveryLine) -- also did not exist before. Given
+//      its own, separate lifecycle rather than extending OrderStatus,
+//      following the exact precedent PickingSessionStatus and
+//      IntegrationOperationStatus already set (see docs/milestones/
+//      ROADMAP.md's "Things to never conflate").
+//
+// Deliberately NOT a generic polymorphic entityType/entityId system (the
+// same explicit anti-pattern IntegrationOperation's own comment calls out
+// above): OutboundMessage.relatedOrderId/relatedQuotationId/
+// relatedDispatchRecordId/relatedDeliveryRecordId are real, typed,
+// optional foreign keys onto the exact four business objects a customer
+// communication can concern, not a generic reference row.
+//
+// A deliberate, documented trade-off: unlike the notification system's own
+// same-transaction dual-write convention (lib/notifications/create.ts),
+// OutboundMessage rows are NOT queued inside the existing lib/quotations/
+// issue.ts, lib/quotations/convert-to-order.ts, or
+// lib/picking/authorize-picking.ts transactions. They are queued from the
+// thin API route handler immediately AFTER each existing lib call returns
+// success, in a non-blocking try/catch -- a smaller blast radius against
+// already-shipped M3/M7/M8 code, at the cost of a (rare, and itself
+// FAILED-tracked rather than silently lost) window where the business
+// event commits but the queue write does not. See lib/communications/
+// send.ts's own comment.
+// =============================================================================
+
+// Which channel a message arrived on or will be sent on. Deliberately a
+// SEPARATE enum from OrderSource even though the names overlap -- the same
+// "give a new lifecycle/dimension its own enum rather than overloading an
+// existing one" precedent PickingSessionStatus already set against
+// OrderStatus. OrderSource answers "how did this PO arrive" (and also
+// carries PDF/IMAGE/EXCEL/CSV/QUOTATION values that have no meaning for a
+// communication channel); MessageChannel answers "which messaging channel"
+// for both an inbound MessageIntake and an outbound OutboundMessage.
+// MANUAL covers the explicit "manual intake fallback where no authorised
+// integration exists" the spec requires (point 2) -- e.g. a customer phoned
+// in or messaged WhatsApp before a WhatsApp Business API connection exists,
+// and a staff member keys in what was said.
+enum MessageChannel {
+  EMAIL
+  WHATSAPP
+  MANUAL
+}
+
+// RECEIVED: created by a channel webhook or the manual-intake form,
+// awaiting human review -- NEVER auto-advanced past this by any scheduled
+// job or webhook handler itself (spec point 1's "support human review
+// before creating or confirming commercial transactions"). CONVERTED: a
+// reviewer called lib/po-intake.ts's createPoIntake() against this row's
+// stored text/attachments, producing a real OrderDocument (resultingOrder
+// DocumentId set). LINKED: a reviewer tied this message to an ALREADY-
+// EXISTING order or quotation as a follow-up communication (e.g. "where is
+// my delivery"), never creating a new PO. IGNORED: a reviewer determined
+// this is not a commercial transaction at all (spam, general chat, already
+// handled elsewhere). DUPLICATE: a reviewer (or, when the channel API
+// supplies a stable externalMessageId, the receiving webhook itself)
+// determined this is a re-delivery of an already-seen message --
+// duplicateOfId records which one, never silently dropped.
+enum MessageIntakeStatus {
+  RECEIVED
+  CONVERTED
+  LINKED
+  IGNORED
+  DUPLICATE
+}
+
+// One per customer-facing event this milestone actually sends.
+// QUOTATION_ISSUED / ORDER_CONFIRMATION fire from the existing
+// app/api/quotations/[id]/issue and .../convert-to-order route handlers
+// (spec point 3's "quotation communication" / "order confirmations").
+// QUOTATION_RESPONSE_ACKNOWLEDGED fires when staff record a customer's
+// accept/reject in lib/quotations/respond.ts -- the acknowledgement always
+// originates from SalesFlow confirming receipt; the customer's own
+// accept/reject message itself, if it arrived by email/WhatsApp, is a
+// MessageIntake, never an OutboundMessage. PICKING_UPDATE fires from
+// lib/picking/authorize-picking.ts (spec's "picking and fulfilment
+// updates"). DISPATCH_NOTIFICATION / DELIVERY_CONFIRMATION /
+// DELIVERY_EXCEPTION fire from lib/fulfilment/dispatch.ts and
+// lib/fulfilment/delivery.ts (DELIVERY_EXCEPTION only when
+// DeliveryRecord.outcome is not ACCEPTED_IN_FULL).
+enum OutboundMessageType {
+  QUOTATION_ISSUED
+  QUOTATION_RESPONSE_ACKNOWLEDGED
+  ORDER_CONFIRMATION
+  PICKING_UPDATE
+  DISPATCH_NOTIFICATION
+  DELIVERY_CONFIRMATION
+  DELIVERY_EXCEPTION
+}
+
+// Deliberately LIGHTER than IntegrationOperationStatus (see the Milestone
+// 10 header comment above for why) -- QUEUED: created, not yet attempted.
+// SENT: the channel adapter (mock or real) confirmed acceptance. FAILED: a
+// permanent send failure (bad address, provider rejection, adapter
+// configuration error) -- never auto-retried; corrected and resent, or
+// handled by a phone call, by a human (lib/communications/dispatcher.ts
+// never transitions FAILED back to QUEUED on its own).
+enum OutboundMessageStatus {
+  QUEUED
+  SENT
+  FAILED
+}
+
+// A DispatchRecord's own lifecycle -- deliberately separate from
+// OrderStatus, which stops at READY_TO_INVOICE/REJECTED/CANCELLED and is
+// never extended here, the same precedent PickingSessionStatus and
+// IntegrationOperationStatus already set. PLANNED: created, not yet left
+// the warehouse. DEPARTED: vehicle/courier has left (departedById/
+// departedAt set). DELIVERED: set the moment this dispatch's one
+// DeliveryRecord is created (lib/fulfilment/delivery.ts sets both in the
+// same transaction) -- DeliveryRecord.recordedAt remains the authoritative
+// timestamp; this status value exists only so a dispatch list query never
+// has to join DeliveryRecord just to filter out completed dispatches.
+// CANCELLED: called off before departure (cancelledById/cancelledAt/
+// cancellationReason set) -- a dispatch already DEPARTED or DELIVERED can
+// never be cancelled (enforced in lib/fulfilment/dispatch.ts, not here).
+enum DispatchStatus {
+  PLANNED
+  DEPARTED
+  DELIVERED
+  CANCELLED
+}
+
+// Recorded per DeliveryRecord (header-level outcome; DeliveryLine below
+// carries the per-order-line accepted/rejected split that always sums
+// consistently with this value). ACCEPTED_IN_FULL: every DeliveryLine's
+// rejectedQuantity is zero. PARTIALLY_REJECTED: at least one DeliveryLine
+// has both acceptedQuantity > 0 and rejectedQuantity > 0, or the mix across
+// lines is otherwise not all-or-nothing. FULLY_REJECTED: every
+// DeliveryLine's acceptedQuantity is zero (spec point 4's "rejected
+// quantities" case, e.g. the whole load refused at the gate).
+enum DeliveryOutcome {
+  ACCEPTED_IN_FULL
+  PARTIALLY_REJECTED
+  FULLY_REJECTED
+}
+
+// One row per inbound email or WhatsApp message (or manually-keyed
+// fallback entry) received, BEFORE any human review. Created by a channel
+// webhook route handler (app/api/channels/email/webhook, app/api/channels/
+// whatsapp/webhook) with no User at all -- reviewedById stays null until a
+// real signed-in reviewer acts on it, which is what makes "support human
+// review before creating or confirming commercial transactions" (spec
+// point 1) a structural fact rather than a convention: nothing in this
+// milestone ever calls createPoIntake() or links an order/quotation
+// without a genuine reviewer.id in hand.
+//
+// customerId/customerContactId are SUGGESTED matches only (lib/channels/
+// match-customer.ts, matched by the raw fromAddress against Customer.email/
+// phone and CustomerContact.email/phone) -- never auto-confirmed, and a
+// reviewer can accept, change, or clear the suggestion at review time. This
+// is the same "never silently guess" principle the existing invoice-
+// reconciliation matcher already follows (see User's own Milestone 5
+// comment above).
+model MessageIntake {
+  id String @id @default(cuid())
+
+  channel MessageChannel
+
+  // The provider's own message id (an email Message-ID header value, or a
+  // WhatsApp wamid) when the channel supplies one -- the DB-level
+  // duplicate-prevention guard (spec point 1's "avoid duplicate intake"):
+  // a webhook redelivering the same message can never create a second
+  // row. Null for MANUAL intake, which has no such id; duplicate detection
+  // there is a human reviewer's job (status DUPLICATE, duplicateOfId set).
+  externalMessageId String? @unique
+
+  fromAddress     String // raw sender email address or WhatsApp phone number, exactly as received
+  fromDisplayName String?
+
+  subject  String? // email only; null for WHATSAPP/MANUAL
+  bodyText String? // plain-text body/message content, preserved verbatim -- same "preserve the customer's own words" principle as CustomerOrder.originalSourceText
+
+  // The full raw webhook payload, for audit/debugging -- inbound customer
+  // data, never a credential or secret (those live only in environment
+  // variables, same as every other integration in this project).
+  rawPayload Json?
+
+  // The provider's own timestamp for when the message was actually sent,
+  // when available; falls back to createdAt (webhook receipt time) for
+  // MANUAL intake or a provider that supplies none.
+  receivedAt DateTime @db.Timestamptz(6)
+
+  customerId        String?
+  customerContactId String?
+
+  status MessageIntakeStatus @default(RECEIVED)
+
+  reviewedById String?
+  reviewedAt   DateTime? @db.Timestamptz(6)
+  reviewNotes  String? // staff-only commentary on why converted/linked/ignored/marked duplicate
+
+  // Set only when status is CONVERTED. @unique: at most one OrderDocument
+  // is ever created from a given intake, the same structural duplicate-
+  // order guard Quotation.convertedOrderId already uses.
+  resultingOrderDocumentId String? @unique
+
+  // Set only when status is LINKED -- a follow-up communication tied to an
+  // already-existing order or quotation, never a new PO. At most one of
+  // these two is ever set on a given row (enforced in
+  // lib/channels/intake-review.ts, not the schema, the same way other
+  // cross-field business rules in this project are enforced in lib/).
+  linkedOrderId     String?
+  linkedQuotationId String?
+
+  // Set only when status is DUPLICATE -- self-relation to the original,
+  // earlier MessageIntake this row repeats.
+  duplicateOfId String?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  customer        Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  customerContact CustomerContact? @relation(fields: [customerContactId], references: [id], onDelete: SetNull)
+  reviewedBy      User?            @relation("MessageIntakeReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
+
+  resultingOrderDocument OrderDocument? @relation(fields: [resultingOrderDocumentId], references: [id], onDelete: Restrict)
+  linkedOrder            CustomerOrder? @relation(fields: [linkedOrderId], references: [id], onDelete: Restrict)
+  linkedQuotation        Quotation?     @relation(fields: [linkedQuotationId], references: [id], onDelete: Restrict)
+
+  duplicateOf       MessageIntake?  @relation("MessageIntakeDuplicate", fields: [duplicateOfId], references: [id], onDelete: Restrict)
+  duplicatesOfThis  MessageIntake[] @relation("MessageIntakeDuplicate")
+
+  attachments MessageAttachment[]
+
+  @@index([channel])
+  @@index([status])
+  @@index([customerId])
+  @@index([receivedAt])
+  @@index([isDemo])
+}
+
+// Files attached to an inbound MessageIntake (PDF/Excel/image attachments
+// per spec point 1) -- stored via the EXISTING lib/storage/ StorageDriver
+// (same key-based put/get/delete interface M0's OrderDocument already
+// uses), no second storage mechanism introduced. Cascade on its parent: an
+// attachment has no independent meaning once the message row it belongs to
+// is gone (this app never actually deletes a MessageIntake through any UI
+// path, so this is a safety net, not an expected occurrence -- same
+// reasoning as Notification's own onDelete: Cascade above).
+model MessageAttachment {
+  id              String @id @default(cuid())
+  messageIntakeId String
+
+  originalFileName String
+  storageKey       String  @unique
+  mimeType         String
+  fileSize         BigInt
+  checksum         String? // same de-duplication convention as OrderDocument.checksum
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  messageIntake MessageIntake @relation(fields: [messageIntakeId], references: [id], onDelete: Cascade)
+
+  @@index([messageIntakeId])
+}
+
+// The outbox for every customer-facing communication this milestone sends
+// (spec point 5's "durable message queue/outbox"). bodyText is the FULLY
+// RENDERED message, captured immutably at queue time (lib/communications/
+// templates.ts) -- the same "preserve exactly what was sent/will be sent"
+// principle IntegrationOperation.submittedSnapshot already follows, so a
+// later Resend of a FAILED row always re-sends this identical text, never
+// a re-render against whatever the underlying order/quotation looks like
+// by then.
+//
+// idempotencyKey is deterministic, never random: "MSG-<type>-<entityId>"
+// for an event that can only ever happen once per entity (QUOTATION_ISSUED,
+// ORDER_CONFIRMATION, QUOTATION_RESPONSE_ACKNOWLEDGED), or
+// "MSG-<type>-<dispatchOrDeliveryRecordId>" for a per-dispatch/per-delivery
+// event (DISPATCH_NOTIFICATION, DELIVERY_CONFIRMATION, DELIVERY_EXCEPTION)
+// -- the @unique constraint is the physical duplicate-send guard (spec
+// point 5's "duplicate prevention"), mirroring IntegrationOperation.
+// idempotencyKey's own role exactly.
+model OutboundMessage {
+  id String @id @default(cuid())
+
+  type    OutboundMessageType
+  channel MessageChannel
+  status  OutboundMessageStatus @default(QUEUED)
+
+  idempotencyKey String @unique
+
+  customerId        String
+  customerContactId String?
+
+  // Resolved recipient address/number, snapshotted at queue time. Null
+  // only for channel MANUAL, where there is nothing to send electronically
+  // and a staff member must phone the customer instead (spec point 2's
+  // "do not pretend WhatsApp is connected when it is not" -- the same
+  // honesty applies here: if no address/number is on file, this row says
+  // so rather than silently queuing an unsendable message).
+  toAddress String?
+
+  subject  String?
+  bodyText String
+
+  // Optional, typed cross-references to the exact business object this
+  // communication concerns -- deliberately NOT a generic polymorphic
+  // entityType/entityId system (see the Milestone 10 header comment
+  // above). At most one is ever set for a given row in practice, decided
+  // by `type`.
+  relatedOrderId          String?
+  relatedQuotationId       String?
+  relatedDispatchRecordId  String?
+  relatedDeliveryRecordId  String?
+
+  attemptCount     Int       @default(0)
+  lastAttemptAt    DateTime?
+  lastErrorMessage String? // sanitized -- never a raw secret or full stack trace, same convention as IntegrationOperation.lastErrorMessage
+  sentAt           DateTime?
+
+  // Who performed the action that caused this row to be queued (e.g. the
+  // salesperson who clicked "Issue quotation"). Required: unlike
+  // IntegrationSyncJob.triggeredById, nothing in this milestone queues an
+  // OutboundMessage from an unattended/scheduled path -- every trigger
+  // point is a route handler already behind requireUserOrResponse().
+  triggeredById String
+
+  // Set only by the explicit manual Resend action (SALES_MANAGER/
+  // ADMINISTRATOR only -- see app/api/communications/[id]/resend/route.ts)
+  // against a FAILED row. Distinct from triggeredById so the record never
+  // loses who ORIGINALLY caused this communication, even after a later
+  // resend by someone else.
+  lastResentById String?
+  lastResentAt   DateTime?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  customer        Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  customerContact CustomerContact? @relation(fields: [customerContactId], references: [id], onDelete: SetNull)
+
+  relatedOrder          CustomerOrder?  @relation(fields: [relatedOrderId], references: [id], onDelete: SetNull)
+  relatedQuotation      Quotation?      @relation(fields: [relatedQuotationId], references: [id], onDelete: SetNull)
+  relatedDispatchRecord DispatchRecord? @relation(fields: [relatedDispatchRecordId], references: [id], onDelete: SetNull)
+  relatedDeliveryRecord DeliveryRecord? @relation(fields: [relatedDeliveryRecordId], references: [id], onDelete: SetNull)
+
+  triggeredBy  User  @relation("OutboundMessageTrigger", fields: [triggeredById], references: [id], onDelete: Restrict)
+  lastResentBy User? @relation("OutboundMessageResender", fields: [lastResentById], references: [id], onDelete: Restrict)
+
+  @@index([status])
+  @@index([customerId])
+  @@index([type])
+  @@index([relatedOrderId])
+  @@index([relatedQuotationId])
+  @@index([isDemo])
+}
+
+// One row per dispatch ATTEMPT against an order -- deliberately one-to-
+// many with CustomerOrder (not a singleton), the same "support partial
+// fulfilment" requirement (spec point 4) PickingSession's own one-to-many
+// relationship with CustomerOrder already established for re-picks.
+// Eligibility (an order must be OrderStatus.READY_TO_INVOICE before its
+// first DispatchRecord can be created) is enforced in
+// lib/fulfilment/dispatch.ts, not the schema, the same way every other
+// cross-model business rule in this project is enforced in lib/.
+model DispatchRecord {
+  id      String         @id @default(cuid())
+  orderId String
+  status  DispatchStatus @default(PLANNED)
+
+  // Optional link to the specific AUTHORIZED PickingSession this dispatch's
+  // quantities were sourced from -- same optional-traceability pattern as
+  // OrderHandover.pickingSessionId.
+  pickingSessionId String?
+
+  // Free text -- a truck registration, a courier company name, or similar.
+  // No fleet-management system is assumed or invented (spec's explicit
+  // "do not invent external integrations" applies just as much to an
+  // imaginary logistics platform as to WhatsApp/email).
+  vehicleOrCourierReference String?
+
+  plannedDepartureAt DateTime? @db.Timestamptz(6)
+
+  departedById String?
+  departedAt   DateTime? @db.Timestamptz(6)
+
+  cancelledById      String?
+  cancelledAt        DateTime? @db.Timestamptz(6)
+  cancellationReason String?
+
+  notes String?
+
+  createdById String
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  order          CustomerOrder   @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  pickingSession PickingSession? @relation(fields: [pickingSessionId], references: [id], onDelete: SetNull)
+
+  createdBy   User  @relation("DispatchRecordCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  departedBy  User? @relation("DispatchRecordDeparter", fields: [departedById], references: [id], onDelete: Restrict)
+  cancelledBy User? @relation("DispatchRecordCanceller", fields: [cancelledById], references: [id], onDelete: Restrict)
+
+  lines            DispatchLine[]
+  deliveryRecord   DeliveryRecord?
+  outboundMessages OutboundMessage[]
+
+  @@index([orderId])
+  @@index([status])
+  @@index([isDemo])
+}
+
+// Which OrderLine(s) a given DispatchRecord actually covers, and how much
+// of each -- this, not a duplicated quantity on DeliveryLine, is the
+// single source of truth for "how much of this order line has been
+// dispatched so far" (lib/fulfilment/queries.ts's getOrderFulfilmentStatus
+// sums this across every non-CANCELLED dispatch for the order). Outstanding
+// quantity is derived, never stored: PickingLine.foundQuantity minus the
+// sum of this line's dispatchedQuantity across all of the order line's
+// DispatchLine rows -- the same "derive, don't duplicate" principle
+// OrderHandover's own comment already states for its row content.
+model DispatchLine {
+  id               String  @id @default(cuid())
+  dispatchRecordId String
+  orderLineId      String
+
+  dispatchedQuantity Decimal @db.Decimal(18, 4)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  dispatchRecord DispatchRecord @relation(fields: [dispatchRecordId], references: [id], onDelete: Cascade)
+  orderLine      OrderLine      @relation(fields: [orderLineId], references: [id], onDelete: Restrict)
+
+  deliveryLine DeliveryLine?
+
+  @@unique([dispatchRecordId, orderLineId])
+  @@index([orderLineId])
+}
+
+// One row per DispatchRecord (@unique dispatchRecordId) recording how that
+// dispatch's delivery actually went -- accepted in full, partially
+// rejected, or fully rejected (spec point 4's "shortages, substitutions,
+// rejected quantities and delivery exceptions"). Creating this row is the
+// one and only thing that moves its DispatchRecord to DispatchStatus.
+// DELIVERED (lib/fulfilment/delivery.ts, same transaction). Never corrupts
+// the original OrderLine/PickingLine records it derives from -- a
+// rejection is recorded here, on DeliveryLine, and surfaced to the UI as a
+// "File a claim" link into the EXISTING /invoice-claims/new flow (spec's
+// claims workflow, Milestone 6A) rather than this model ever creating an
+// InvoiceClaim itself: a claim is anchored to an SAP invoice (InvoiceClaim.
+// customerOrderId is only "where possible, the original SalesFlow order"),
+// which usually does not exist yet at delivery time.
+model DeliveryRecord {
+  id               String          @id @default(cuid())
+  dispatchRecordId String          @unique
+  outcome          DeliveryOutcome
+
+  recordedById String
+  recordedAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  recipientName String? // who signed/received at the customer site, if given
+
+  // Proof-of-delivery photo/signature capture, via the existing
+  // lib/storage/ StorageDriver -- same key-based convention as every other
+  // stored file in this schema, no second storage mechanism.
+  proofPhotoStorageKey     String?
+  proofSignatureStorageKey String?
+
+  notes String?
+
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  dispatchRecord DispatchRecord @relation(fields: [dispatchRecordId], references: [id], onDelete: Restrict)
+  recordedBy     User           @relation("DeliveryRecordRecorder", fields: [recordedById], references: [id], onDelete: Restrict)
+
+  lines            DeliveryLine[]
+  outboundMessages OutboundMessage[]
+
+  @@index([outcome])
+  @@index([isDemo])
+}
+
+// Per-DispatchLine delivery outcome -- one row per DispatchLine
+// (@unique dispatchLineId), never duplicating orderLineId (derived via
+// dispatchLine.orderLineId, same "derive, don't duplicate" principle as
+// DispatchLine's own comment). acceptedQuantity + rejectedQuantity must
+// equal that DispatchLine's dispatchedQuantity (enforced in
+// lib/fulfilment/delivery.ts, not the schema). rejectionReason is free
+// text -- "shortage", "damaged in transit", "wrong item substituted", etc.
+// -- never a closed enum, since Zimbabwe field conditions produce reasons
+// no fixed list would anticipate.
+model DeliveryLine {
+  id               String  @id @default(cuid())
+  deliveryRecordId String
+  dispatchLineId   String  @unique
+
+  acceptedQuantity Decimal @db.Decimal(18, 4)
+  rejectedQuantity Decimal @db.Decimal(18, 4) @default(0)
+  rejectionReason  String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  deliveryRecord DeliveryRecord @relation(fields: [deliveryRecordId], references: [id], onDelete: Cascade)
+  dispatchLine   DispatchLine   @relation(fields: [dispatchLineId], references: [id], onDelete: Restrict)
+
+  @@index([deliveryRecordId])
 }

@@ -31,6 +31,8 @@ import {
   FileText,
   ShieldCheck,
   Plug,
+  MessageSquare,
+  Send,
 } from "lucide-react";
 import NotificationBell from "./notification-bell";
 
@@ -57,6 +59,17 @@ const navigation = [
         name: "PO Intake",
         href: "/orders/intake",
         icon: Inbox,
+      },
+      // Milestone 10 (Communication Channels & Fulfilment). The raw
+      // email/WhatsApp/manual message queue, reviewed by a human BEFORE
+      // anything here reaches PO Intake above -- a deliberately separate
+      // entry, not a tab on PO Intake, since a message doesn't become a
+      // PO (or a follow-up to an existing order/quotation) until a
+      // reviewer says so.
+      {
+        name: "Message Inbox",
+        href: "/communications/inbox",
+        icon: MessageSquare,
       },
       // Milestone 7 (Quotations Management). Sits alongside Orders/PO
       // Intake, not under Operations -- a quotation is the pre-order
@@ -143,6 +156,16 @@ const navigation = [
         name: "Returns & Credits",
         href: "/returns-credits",
         icon: Undo2,
+      },
+      // Milestone 10 (Communication Channels & Fulfilment). The outbound
+      // message log (quotation/order/dispatch/delivery notifications) --
+      // same "no pre-existing dead placeholder link" situation as Lost
+      // Sales/Invoice Reconciliation/Invoice Claims/Returns & Credits
+      // above.
+      {
+        name: "Communications",
+        href: "/communications",
+        icon: Send,
       },
     ],
   },

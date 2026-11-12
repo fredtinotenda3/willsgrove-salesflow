@@ -2599,3 +2599,264 @@ rollback:
 ```powershell
 npx prisma migrate resolve --rolled-back 20261111200000_add_sap_integration
 ```
+
+## 27. Milestone 10: Communication Channels & Fulfilment
+
+This migration is purely additive: 6 new enum types (`MessageChannel`,
+`MessageIntakeStatus`, `OutboundMessageType`, `OutboundMessageStatus`,
+`DispatchStatus`, `DeliveryOutcome`), 2 new values added to the
+existing `NotificationType` enum (`CHANNEL_INTAKE_RECEIVED`,
+`OUTBOUND_MESSAGE_FAILED`), and 7 new tables (`MessageIntake`,
+`MessageAttachment`, `OutboundMessage`, `DispatchRecord`,
+`DispatchLine`, `DeliveryRecord`, `DeliveryLine`). No existing table,
+column, or enum value is removed or changed. As with every previous
+milestone's migration, it cannot be validated or generated in the
+build sandbox — run these for real on your machine.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_communications_and_fulfilment
+
+# 2. Regenerate the Prisma client so it knows about MessageIntake,
+#    MessageAttachment, OutboundMessage, DispatchRecord, DispatchLine,
+#    DeliveryRecord, DeliveryLine, and their 6 new enums
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+
+# 4. Confirm a real production build succeeds (the sandbox could not
+#    get past its own Google Fonts network block to even reach this
+#    phase -- see PROGRESS.md's Milestone 10 honest verification results)
+npm run build
+```
+
+If `prisma migrate dev` reports schema drift because you've been
+running against the hand-written SQL already, use `migrate deploy`
+instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Configure the environment
+
+Add to `.env.local` (see the updated `.env.example`):
+
+```
+CHANNEL_EMAIL_PROVIDER=""
+CHANNEL_WHATSAPP_PROVIDER=""
+CHANNEL_EMAIL_API_KEY=""
+CHANNEL_EMAIL_FROM_ADDRESS=""
+CHANNEL_WHATSAPP_PHONE_NUMBER_ID=""
+CHANNEL_WHATSAPP_ACCESS_TOKEN=""
+CHANNEL_EMAIL_WEBHOOK_SECRET=""
+CHANNEL_WHATSAPP_WEBHOOK_SECRET=""
+```
+
+Leave all eight blank until you actually have a real transactional-
+email provider account and/or an approved WhatsApp Business Account —
+this project invents neither. With both provider switches unset (or
+anything other than exactly `"live"`), every outbound send in this
+milestone runs against the deterministic mock adapter (recorded as
+`SENT` immediately), and both inbound webhook routes refuse every
+request with a 503 — this is the correct, safe default for all normal
+use, demos, and the manual test script below. Log messages by hand
+instead, via the "Log a message manually" form on
+`/communications/inbox`.
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the two new gated test files alongside every pre-existing
+gated integration test:
+
+- `tests/fulfilment-db.integration.test.ts` — the full dispatch →
+  depart → deliver lifecycle on a fully-picked-and-authorized demo
+  order; `createDispatchRecord` refusing to over-dispatch or to
+  dispatch an order that isn't `READY_TO_INVOICE`; a partial dispatch
+  correctly reducing `getOrderFulfilmentStatus`'s outstanding quantity
+  by exactly the dispatched amount, with the remainder still available
+  for a second dispatch; cancelling a still-`PLANNED` dispatch giving
+  its quantity back to the outstanding pool; a departed dispatch
+  refusing to be cancelled; `recordDelivery` enforcing
+  `accepted + rejected === dispatched` and requiring a rejection reason
+  wherever `rejectedQuantity > 0`; and a second delivery outcome for
+  the same dispatch being refused (`DeliveryRecord.dispatchRecordId`
+  is `@unique`).
+- `tests/channels-intake-review-db.integration.test.ts` —
+  `recordInboundMessage`'s idempotent dedup on a redelivered
+  `externalMessageId`; rejecting an empty sender address and an
+  oversized attachment; every review action refusing once a message
+  has already been reviewed, and refusing to mark a message as a
+  duplicate of itself; and `convertMessageIntakeToPoIntake` actually
+  calling the existing, unmodified `createPoIntake` pipeline,
+  producing a real `OrderDocument` attributed to the reviewer (never
+  the message), and refusing a second conversion attempt.
+
+It needs only an `ADMINISTRATOR` user already seeded (the fulfilment
+test additionally needs one `DEMO-CUST-*` customer, same precondition
+as `tests/picking-db.integration.test.ts`). Everything either test
+creates is marked `isDemo: true` and cleaned up in `afterAll`.
+
+**Honesty note**: both test files, like every gated DB-integration
+test in this project, have not been run against a real database from
+inside this sandbox — `@prisma/client` here is a stale stub that does
+not know these 7 models exist at all (see PROGRESS.md's "Honest
+verification results"). They were written to the same standard as
+`tests/picking-db.integration.test.ts` and independently checked
+against the real source of every function/field/signature they call
+(`lib/fulfilment/*`, `lib/channels/intake-review.ts`,
+`prisma/schema.prisma`) — but treat them as unverified until you
+actually run them.
+
+### Manual test script (via the UI, mock adapters)
+
+1. Log in as any seeded user and open **Message Inbox** in the sidebar
+   (`/communications/inbox`). Confirm the queue is empty (or shows
+   only pre-existing demo data) and the "Log a message manually" form
+   is collapsed by default.
+2. Click **Log a message manually**, choose "Phone / in person", enter
+   a customer email/phone/name and a short message body, and submit.
+   Confirm a new row appears in the `RECEIVED` tab immediately.
+3. Open that message and try each review action in turn: **Ignore**
+   (with a reason), confirming the status becomes `IGNORED` and the
+   action buttons disappear (already reviewed); on a *second*, freshly
+   logged message, try **Convert** instead — confirm it produces a
+   real PO-intake document (check the existing `/orders` → PO review
+   queue, or wherever converted documents land in your build) and that
+   the message's own status becomes `CONVERTED` with a visible link to
+   the resulting document.
+4. `curl` or Postman the WhatsApp webhook's GET handshake
+   (`/api/channels/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=anything&hub.challenge=123`)
+   with `CHANNEL_WHATSAPP_WEBHOOK_SECRET` still unset. Confirm a `403`.
+   `POST` anything to either webhook route with both secrets unset;
+   confirm a `503` "...is not configured on this deployment" — neither
+   webhook ever silently accepts an unsigned request.
+5. Open **Communications** in the sidebar (`/communications`) — should
+   be empty initially. Create and issue a quotation
+   (`/quotations/new` → Issue), then open `/communications` again:
+   confirm a new `QUOTATION_ISSUED` row appears with status `SENT`
+   (the mock email adapter "sends" and records it immediately) and
+   that its rendered body text includes the quotation number and
+   total.
+6. Convert that quotation to an order, authorize picking on it (same
+   workflow as Milestone 3), then check `/communications` again:
+   confirm `ORDER_CONFIRMATION` and `PICKING_UPDATE` rows both appear.
+7. Open the resulting order's fulfilment page (`/fulfilment/[id]`) —
+   the dispatch/delivery panel should now be visible under the
+   existing picking panel. Create a dispatch for less than the full
+   authorized quantity on at least one line; confirm the panel's
+   outstanding-quantity figure drops by exactly that amount. Record
+   departure (optionally with a vehicle/courier reference); confirm a
+   `DISPATCH_NOTIFICATION` row appears on `/communications`.
+8. Record the delivery outcome: accept everything on one line and
+   split accepted/rejected (with a reason) on another. Confirm the
+   dispatch moves to **Delivered**, a `DELIVERY_EXCEPTION` (not
+   `DELIVERY_CONFIRMATION`) row appears on `/communications` since at
+   least one line was rejected, and a "File a claim" link is offered
+   for the rejected line (opens `/invoice-claims/new` — it does **not**
+   create a claim automatically).
+9. Open `/deliveries` (the sidebar's "Dispatch & Delivery" entry — no
+   longer a dead link). Confirm it lists orders that are
+   `READY_TO_INVOICE` or have an in-flight dispatch, and that the
+   order from steps 7–8 drops off the list once fully dispatched and
+   delivered.
+10. As a `SALESPERSON`, open `/communications` and confirm the Resend
+    button is absent (or the underlying `POST
+    /api/communications/[id]/resend` returns 403) on any `FAILED` row
+    — Resend is `SALES_MANAGER`/`ADMINISTRATOR`-only. Confirm every
+    other action in this script (intake review, dispatch, delivery)
+    is available to a `SALESPERSON` too — none of this milestone's
+    operational actions have a dedicated role requirement.
+
+### 27a. Undoing this migration
+
+**This is destructive** — it drops the 7 new tables and the 6 new enum
+types, and removes the 2 added `NotificationType` values (Postgres
+cannot drop individual enum values in place; see below). Back up
+first:
+
+```powershell
+pg_dump -Fc -d <your-database-name> -f backup-before-undo-milestone-10.dump
+```
+
+```sql
+ALTER TABLE "MessageIntake" DROP CONSTRAINT "MessageIntake_customerId_fkey";
+ALTER TABLE "MessageIntake" DROP CONSTRAINT "MessageIntake_customerContactId_fkey";
+ALTER TABLE "MessageIntake" DROP CONSTRAINT "MessageIntake_reviewedById_fkey";
+ALTER TABLE "MessageIntake" DROP CONSTRAINT "MessageIntake_resultingOrderDocumentId_fkey";
+ALTER TABLE "MessageIntake" DROP CONSTRAINT "MessageIntake_linkedOrderId_fkey";
+ALTER TABLE "MessageIntake" DROP CONSTRAINT "MessageIntake_linkedQuotationId_fkey";
+ALTER TABLE "MessageIntake" DROP CONSTRAINT "MessageIntake_duplicateOfId_fkey";
+ALTER TABLE "MessageAttachment" DROP CONSTRAINT "MessageAttachment_messageIntakeId_fkey";
+ALTER TABLE "OutboundMessage" DROP CONSTRAINT "OutboundMessage_customerId_fkey";
+ALTER TABLE "OutboundMessage" DROP CONSTRAINT "OutboundMessage_customerContactId_fkey";
+ALTER TABLE "OutboundMessage" DROP CONSTRAINT "OutboundMessage_relatedOrderId_fkey";
+ALTER TABLE "OutboundMessage" DROP CONSTRAINT "OutboundMessage_relatedQuotationId_fkey";
+ALTER TABLE "OutboundMessage" DROP CONSTRAINT "OutboundMessage_relatedDispatchRecordId_fkey";
+ALTER TABLE "OutboundMessage" DROP CONSTRAINT "OutboundMessage_relatedDeliveryRecordId_fkey";
+ALTER TABLE "OutboundMessage" DROP CONSTRAINT "OutboundMessage_triggeredById_fkey";
+ALTER TABLE "OutboundMessage" DROP CONSTRAINT "OutboundMessage_lastResentById_fkey";
+ALTER TABLE "DispatchRecord" DROP CONSTRAINT "DispatchRecord_orderId_fkey";
+ALTER TABLE "DispatchRecord" DROP CONSTRAINT "DispatchRecord_pickingSessionId_fkey";
+ALTER TABLE "DispatchRecord" DROP CONSTRAINT "DispatchRecord_createdById_fkey";
+ALTER TABLE "DispatchRecord" DROP CONSTRAINT "DispatchRecord_departedById_fkey";
+ALTER TABLE "DispatchRecord" DROP CONSTRAINT "DispatchRecord_cancelledById_fkey";
+ALTER TABLE "DispatchLine" DROP CONSTRAINT "DispatchLine_dispatchRecordId_fkey";
+ALTER TABLE "DispatchLine" DROP CONSTRAINT "DispatchLine_orderLineId_fkey";
+ALTER TABLE "DeliveryRecord" DROP CONSTRAINT "DeliveryRecord_dispatchRecordId_fkey";
+ALTER TABLE "DeliveryRecord" DROP CONSTRAINT "DeliveryRecord_recordedById_fkey";
+ALTER TABLE "DeliveryLine" DROP CONSTRAINT "DeliveryLine_deliveryRecordId_fkey";
+ALTER TABLE "DeliveryLine" DROP CONSTRAINT "DeliveryLine_dispatchLineId_fkey";
+
+DROP TABLE "DeliveryLine";
+DROP TABLE "DeliveryRecord";
+DROP TABLE "DispatchLine";
+DROP TABLE "DispatchRecord";
+DROP TABLE "OutboundMessage";
+DROP TABLE "MessageAttachment";
+DROP TABLE "MessageIntake";
+
+DROP TYPE "DeliveryOutcome";
+DROP TYPE "DispatchStatus";
+DROP TYPE "OutboundMessageStatus";
+DROP TYPE "OutboundMessageType";
+DROP TYPE "MessageIntakeStatus";
+DROP TYPE "MessageChannel";
+```
+
+`NotificationType`'s 2 added values (`CHANNEL_INTAKE_RECEIVED`,
+`OUTBOUND_MESSAGE_FAILED`) cannot be dropped in place — Postgres has no
+`ALTER TYPE ... DROP VALUE`. If no `Notification` row ever used either
+value (true immediately after this rollback, since the tables that
+created them are now gone), rebuild the type instead:
+
+```sql
+CREATE TYPE "NotificationType_new" AS ENUM (/* every value from the
+  CREATE TYPE "NotificationType" statement BEFORE this milestone's
+  migration, in the same order -- copy it from
+  prisma/migrations/20261111180000_add_validation_and_approvals/migration.sql */);
+ALTER TABLE "Notification" ALTER COLUMN "type" TYPE "NotificationType_new" USING ("type"::text::"NotificationType_new");
+DROP TYPE "NotificationType";
+ALTER TYPE "NotificationType_new" RENAME TO "NotificationType";
+```
+
+Apply the reversible part the same way as previous rollbacks (`psql`, a
+GUI client, or `npx prisma db execute --file
+.\rollback-milestone-10.sql --schema prisma/schema.prisma`), then
+revert `prisma/schema.prisma` to remove the same changes and run `npx
+prisma generate` again. Also tell Prisma's migration history about the
+rollback:
+
+```powershell
+npx prisma migrate resolve --rolled-back 20261111220000_add_communications_and_fulfilment
+```
