@@ -4,6 +4,7 @@ import { ORDER_STATUSES } from "@/lib/order-display";
 import { QUOTATION_STATUS_LABELS } from "@/lib/quotations/display";
 import { CLAIM_STATUS_LABELS } from "@/lib/invoice-claims/display";
 import { LOST_SALE_REASON_LABELS } from "@/lib/lost-sales/display";
+import { DECISION_CATEGORIES, DECISION_PRIORITIES, DECISION_RECOMMENDATION_STATUSES } from "@/lib/reporting/decision-types";
 import type { ReportFilters, PaginationParams } from "@/lib/reporting/types";
 
 /**
@@ -150,6 +151,16 @@ export function parseReportFilters(params: URLSearchParams): ParsedReportFilters
     return { ok: false, message: `sapItemCode must be ${MAX_FILTER_TEXT_LENGTH} characters or fewer.` };
   }
 
+  // Milestone 15 (Decision Intelligence). Each maps onto exactly one new
+  // schema enum, so -- like orderStatus/quotationStatus/claimStatus/
+  // lostSalesReason above -- all three ARE centrally validated here.
+  const decisionCategoryResult = readEnumFilter(params.get("decisionCategory"), DECISION_CATEGORIES, "decisionCategory");
+  if (!decisionCategoryResult.ok) return decisionCategoryResult;
+  const decisionPriorityResult = readEnumFilter(params.get("priority"), DECISION_PRIORITIES, "priority");
+  if (!decisionPriorityResult.ok) return decisionPriorityResult;
+  const recommendationStatusResult = readEnumFilter(params.get("recommendationStatus"), DECISION_RECOMMENDATION_STATUSES, "recommendationStatus");
+  if (!recommendationStatusResult.ok) return recommendationStatusResult;
+
   return {
     ok: true,
     filters: {
@@ -174,6 +185,9 @@ export function parseReportFilters(params: URLSearchParams): ParsedReportFilters
       productCategory: productCategoryRaw,
       productSearch: productSearchRaw,
       sapItemCode: sapItemCodeRaw,
+      decisionCategory: decisionCategoryResult.value,
+      priority: decisionPriorityResult.value,
+      recommendationStatus: recommendationStatusResult.value,
     },
   };
 }

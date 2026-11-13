@@ -71,6 +71,11 @@ describe("parseReportFilters", () => {
       productCategory: null,
       productSearch: null,
       sapItemCode: null,
+      // Milestone 15: absent from this request, so default to null, same
+      // as every other optional filter above that wasn't supplied.
+      decisionCategory: null,
+      priority: null,
+      recommendationStatus: null,
     });
   });
 
@@ -179,6 +184,26 @@ describe("parseReportFilters", () => {
     expect(badQuotation.ok).toBe(false);
     const badClaim = parseReportFilters(params({ claimStatus: "BOGUS" }));
     expect(badClaim.ok).toBe(false);
+  });
+
+  it("Milestone 15: accepts a valid decisionCategory/priority/recommendationStatus and rejects a value outside each enum, the same centrally-validated treatment as orderStatus/quotationStatus/claimStatus/lostSalesReason", () => {
+    const valid = parseReportFilters(params({ decisionCategory: "CUSTOMER", priority: "HIGH", recommendationStatus: "ACKNOWLEDGED" }));
+    expect(valid.ok).toBe(true);
+    if (valid.ok) {
+      expect(valid.filters.decisionCategory).toBe("CUSTOMER");
+      expect(valid.filters.priority).toBe("HIGH");
+      expect(valid.filters.recommendationStatus).toBe("ACKNOWLEDGED");
+    }
+
+    const badCategory = parseReportFilters(params({ decisionCategory: "NOT_A_REAL_CATEGORY" }));
+    expect(badCategory.ok).toBe(false);
+    if (!badCategory.ok) expect(badCategory.message).toMatch(/decisionCategory must be one of/);
+
+    const badPriority = parseReportFilters(params({ priority: "URGENT" }));
+    expect(badPriority.ok).toBe(false);
+
+    const badStatus = parseReportFilters(params({ recommendationStatus: "DELETED" }));
+    expect(badStatus.ok).toBe(false);
   });
 
   it("passes fulfilmentStatus and communicationStatus through unvalidated -- each maps onto more than one schema enum depending on which report consumes it, so there is deliberately no single valid set to check here", () => {

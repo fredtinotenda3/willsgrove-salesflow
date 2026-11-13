@@ -18,6 +18,7 @@ import {
   Users,
   Building2,
   Package,
+  Lightbulb,
 } from "lucide-react";
 
 // Reads the session and live report data directly, same reason as
@@ -228,6 +229,26 @@ export default async function ReportsHubPage() {
                       claims and returns, credit notes, delivery rejections, declining activity and master-data
                       quality. Sales Manager / Administrator only. Any role can open a product&apos;s own 360
                       profile from the product directory.
+                    </p>
+                  </div>
+                  <ArrowRight size={16} className="mt-1 shrink-0 text-[#A6AFA4] transition group-hover:text-[#17251E]" />
+                </Link>
+              )}
+
+              {canSeeManagementReports && (
+                <Link
+                  href="/reports/decision-intelligence"
+                  className="group flex items-start gap-4 rounded-2xl border border-[#E7ECE7] bg-white p-5 shadow-sm transition hover:border-[#C9D4C6] hover:shadow"
+                >
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#F2F6F1] text-[#496A42]">
+                    <Lightbulb size={20} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-bold text-[#17251E]">Decision Intelligence</p>
+                    <p className="mt-1 text-xs leading-5 text-[#849087]">
+                      Deterministic, explainable recommendations across sales, customer, product, commercial
+                      exposure and operational decisions, with a lifecycle and full history. Sales Manager /
+                      Administrator only.
                     </p>
                   </div>
                   <ArrowRight size={16} className="mt-1 shrink-0 text-[#A6AFA4] transition group-hover:text-[#17251E]" />

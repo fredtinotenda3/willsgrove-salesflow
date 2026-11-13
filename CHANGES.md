@@ -2890,3 +2890,96 @@ master record, never for aggregation or ranking.
 | `CHANGES.md` | Modified | This section. |
 | `SETUP-WINDOWS.md` | Modified | Added a new numbered section — no new migration to apply (zero schema changes); regenerate the Prisma client; run the 6 new unconditional test files; the gated DB-integration test file and its preconditions; a manual test script walking through both new surfaces and CSV export. |
 | `docs/milestones/MILESTONE-14-DELIVERY-REPORT.md` | Added | The spec-structured delivery report. |
+
+## Milestone 15 — Decision Intelligence
+
+Built from your attached full specification, under your explicit
+implementation authorization ("This is an implementation authorisation,
+not a request for another proposal or architecture document... Do not
+stop after producing a specification... Proceed with full implementation
+now... M15 is complete only when the implementation, recommendation
+lifecycle, tests, documentation and ZIP delivery are finished."), in one
+pass, delivered per your "continue where you left off / return only zip
+of changed files" instruction. **One new, genuinely additive schema
+migration** (unlike M13/M14, which needed zero schema changes) — a
+deterministic, documented, explainable **decision-recommendation
+engine** (16 rules across SALES/CUSTOMER/PRODUCT/COMMERCIAL_EXPOSURE/
+OPERATIONAL) plus its persistence/lifecycle layer, exposed through a new
+management-only **Decision Intelligence** overview and detail surface
+(`/reports/decision-intelligence`, `requireManagementReportAccess`).
+**Every rule reuses an EXISTING M8/M9/M12/M13/M14 calculation or
+classifier** — never a second, parallel computation of a figure another
+milestone already owns — and **no recommendation carries a composite/
+blended score**: every one has its own independent `priority`
+(CRITICAL/HIGH/MEDIUM/LOW/INFORMATIONAL) and `confidence` (HIGH/MEDIUM/
+LOW/INSUFFICIENT_DATA), both from documented, structural cutoffs, never
+intuition. See `docs/milestones/m15-metric-definitions.md` for the full
+16-rule catalogue with exact thresholds and reuse notes.
+
+### Schema
+
+| Change | Reason |
+|---|---|
+| `prisma/migrations/20261113060000_add_decision_intelligence/` | New. Adds `DecisionCategory`/`DecisionPriority`/`DecisionConfidence`/`DecisionRecommendationStatus`/`DecisionRecommendationEventType` enums, `DecisionRecommendation` (unique `dedupeKey` anti-duplicate identity, typed category/priority/confidence, `evidence` JSON, optional FKs to `Customer`/`Product`/`User`/`Quotation`/`CustomerOrder` all `onDelete: Restrict`, plain non-FK `sapItemCode`, per-rule reporting period, optional `currencyCode`, full lifecycle status/note/actor/timestamp set, `isDemo`), and `DecisionRecommendationEvent` (an append-only child log mirroring `ApprovalEvent`'s own exact shape). |
+
+### lib/reporting/ (new M15 modules)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/reporting/decision-types.ts` | Added | Pure (no `@prisma/client` import), unconditionally unit-tested. The category/priority/confidence/status enum literals (kept byte-for-byte in sync with the Prisma schema's own enums, duplicated deliberately rather than imported, so the rule catalogue stays free of any Prisma dependency), `DECISION_RECOMMENDATION_STATUS_TRANSITIONS` and `isValidDecisionStatusTransition` (the full lifecycle transition table — self-transitions always rejected, `RESOLVED`/`DISMISSED` both re-openable to `OPEN`), and the shared `RecommendationCandidate`/`DecisionEvidence`/`DecisionIntelligenceSummary` shapes. |
+| `lib/reporting/decision-priority.ts` | Added | Pure, unconditionally unit-tested. `buildDedupeKey` (the `"${ruleId}:${primaryEntityKey}"` anti-duplicate identity), `classifyDeclinePriority`/`classifyRepeatedCountPriority` (documented, structural priority cutoffs — `classifyDeclinePriority` never returns CRITICAL), `percentDecline` (null-safe against a zero/negative baseline, never a fabricated decline), `roundToOneDecimal`, and `sortForPriorityQueue`/`sortCandidatesByPriority` (deterministic priority-then-confidence-then-time ordering). |
+| `lib/reporting/decision-rules.ts` | Added | Pure, unconditionally unit-tested. The full 16-rule catalogue -- every rule a standalone, independently-testable pure function taking already-fetched plain data and returning zero or one `RecommendationCandidate`; see `docs/milestones/m15-metric-definitions.md` §3 for every rule's exact thresholds and the existing M8/M12/M13/M14 calculation it reuses. |
+| `lib/reporting/decision-recommendations.ts` | Added | Pure, unconditionally unit-tested. `evaluateAllDecisionRules` (runs the full catalogue over one `DecisionRuleRawInputs` bundle, each rule's output independent of every other's) and `buildDecisionIntelligenceSummary` (the executive summary and CRITICAL/HIGH-only priority queue -- no composite/blended score field anywhere in its output, verified by a dedicated test). |
+| `lib/reporting/decision-intelligence-validation.ts` | Added | The zod schema (`updateDecisionRecommendationStatusSchema`) for the one mutation this milestone exposes: a valid `DecisionRecommendationStatus` value, an optional note capped at 2000 characters. |
+| `lib/reporting/decision-intelligence-queries.ts` | Added | Prisma-backed. Fetches every rule's raw input by composing EXISTING M8/M9/M12/M13/M14 query shapes -- never re-deriving a calculation another milestone already owns. `evaluateAndSyncDecisionRecommendations` (runs the catalogue then UPSERTS by `dedupeKey`: refreshes `evidence`/`priority`/`confidence`/`lastEvaluatedAt` on an existing row but NEVER touches lifecycle fields; ALWAYS forces `includeDemo: false` for generation regardless of caller filters -- see the "Demo-data exclusion" scope decision below). `updateDecisionRecommendationStatus` (validates the transition, then writes the status change + a `DecisionRecommendationEvent` + an `AuditEvent`, all inside one `prisma.$transaction` -- reusing the EXISTING audit system, never a second one). `getDecisionIntelligencePageData` (a performance addition: runs the full rule-catalogue evaluation exactly ONCE and builds both the overview and the paginated list from the same evaluated set, via two new private helpers also reused internally by the pre-existing `getDecisionIntelligenceOverview`/`listDecisionRecommendations` exports). `getDecisionRecommendationDetail`/`getDecisionRecommendationHistory`/`listAllDecisionRecommendationsForExport` complete the read surface. Six `new Map(...)` constructions were given explicit `<string, string>`/`<string, number>` generic parameters after `tsc` surfaced 4 genuine type-mismatch errors caused by the sandbox `@prisma/client` stub's `any`-typed results flowing into an un-annotated Map constructor -- a real fix, not a sandbox-noise dismissal. |
+| `lib/reporting/filters.ts` | Modified | Added `decisionCategory`/`priority`/`recommendationStatus` to `ReportFilters` -- all three centrally validated against their own fixed enum (`readEnumFilter`, the same treatment `orderStatus`/`quotationStatus`/`claimStatus`/`lostSalesReason` already get), never free text. Purely additive -- no existing filter's parsing or validation changed. |
+
+### scripts/
+
+| File | Change | Reason |
+|---|---|---|
+| `scripts/remove-demo-data.ts` | Modified | Added a cleanup block for `DecisionRecommendationEvent`/`DecisionRecommendation`, positioned FIRST in the transaction (ahead of even the existing Milestone 10 group) -- both tables carry `onDelete: Restrict` FKs onto `Customer`/`Product`/`User`/`Quotation`/`CustomerOrder`, all deleted much further down. Defensive only, same reasoning as the existing Milestone 9 `IntegrationOperation`/`IntegrationSyncJob` block: `evaluateAndSyncDecisionRecommendations` always forces `includeDemo: false`, so no demo-sourced `DecisionRecommendation` row is ever created today and this is expected to delete 0 rows -- kept correctly ordered for if a future rule version ever needs demo-inclusive generation. Caught and added before delivery: the module comment in `decision-intelligence-queries.ts` already asserted this cleanup block existed before it actually did. |
+
+### API routes (new)
+
+| Route | Method | Access |
+|---|---|---|
+| `app/api/reports/decision-intelligence/route.ts` | GET | Overview summary. `requireManagementReportAccess` |
+| `app/api/reports/decision-intelligence/recommendations/route.ts` | GET | Paginated/filtered recommendation list. Same access |
+| `app/api/reports/decision-intelligence/recommendations/[id]/route.ts` | GET | Recommendation detail. Same access + `isValidId` |
+| `app/api/reports/decision-intelligence/recommendations/[id]/history/route.ts` | GET | Full status-event history. Same access + `isValidId` |
+| `app/api/reports/decision-intelligence/recommendations/[id]/status/route.ts` | POST | The one mutation. CSRF-origin check -> `requireUserOrResponse(["SALES_MANAGER","ADMINISTRATOR"])` -> `isValidId` -> zod-validated body -> audited status change |
+| `app/api/reports/decision-intelligence/recommendations/export/route.ts` | GET | CSV export of every filtered recommendation (never only the current page); records the export via the existing `recordReportExport`. Same access |
+
+### UI
+
+| File | Change | Reason |
+|---|---|---|
+| `app/reports/decision-intelligence/page.tsx` | Added | Management-only overview page (redirects non-management roles to `/reports`). Executive summary metric cards, category/priority/confidence breakdowns, the CRITICAL/HIGH-only priority attention queue, the full filterable/paginated recommendation table, and a "related reports and records" section linking to Customer 360, Product 360, Sales Performance, Lost Sales, Invoice Claims, Returns & Credit Notes, Quotations, Orders, and Fulfilment -- every link a real, verified existing route. |
+| `app/reports/decision-intelligence/[id]/page.tsx` | Added | Per-recommendation detail page: explanation, confidence basis, recommended next action, evidence-metrics table, source-record links, and the full ordered status-history timeline. |
+| `app/reports/decision-intelligence/[id]/status-panel.tsx` | Added | The one client component (`"use client"`), driving the status-update mutation (POSTs to the status route, refreshes the page on success) and rendering nothing when the current status has no valid next transition. |
+| `app/reports/_components/filter-bar.tsx` | Modified | Added three new optional dropdown filters (`decisionCategory`/`priority`/`recommendationStatus`), each gated behind its own new `show*` prop (default `false`) so no other report's filter bar changes shape. |
+| `app/reports/page.tsx` | Modified | Added a "Decision Intelligence" nav tile, gated by the existing `canSeeManagementReports` check every other management-only tile already uses, placed immediately before the Management Reports tile. |
+
+### Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/decision-priority.test.ts` | Added | Full unconditional unit-test suite for every export of `decision-priority.ts` -- dedupe-key format, priority/confidence rank ordering, sort stability and non-mutation, every documented decline-priority boundary (never CRITICAL), repeated-count classification, and `percentDecline`'s null-baseline/negative-guard/clamp behavior. |
+| `tests/decision-types.test.ts` | Added | Full unconditional unit-test suite for the lifecycle transition table -- exact enum literal values, self-transition rejection for every status, every legal/illegal transition, and the guarantee that every status has at least one outbound transition. |
+| `tests/decision-rules.test.ts` | Added | Full unconditional unit-test suite for all 16 rules, one `describe` block per rule: below-floor no-fire, at-floor fire with correct priority/confidence, every documented boundary transition, dedupeKey/entity-reference correctness, and category-specific invariants ("never implies a quality issue," "confidence capped at MEDIUM," "never combines currencies," "never a churn classification"). |
+| `tests/decision-recommendations.test.ts` | Added | Full unconditional unit-test suite for the orchestrator -- empty-input, independent per-rule evaluation, scalar-aggregate (whole-business) evaluation exactly once, union-not-merge of unrelated firing rules, and the summary's tallying/CRITICAL-HIGH-only-queue-filtering/priority-sorting/no-composite-score behavior. |
+| `tests/decision-intelligence-access.test.ts` | Added | Unconditional (no database). Mocks only the session-resolution boundary and exercises the REAL `requireManagementReportAccess()`/`requireUserOrResponse()` functions directly -- 401 unauthenticated and 403 SALESPERSON on every report route; SALES_MANAGER/ADMINISTRATOR allowed on both the report routes and the mutation route; `isValidId` rejects malformed ids; the status-update zod schema accepts every valid status with/without a note and rejects an invalid status, an empty body, and a note over 2000 characters. |
+| `tests/decision-intelligence-db.integration.test.ts` | Added | Gated behind `RUN_DB_INTEGRATION_TESTS=1`. Covers recommendation creation + dedupe-on-regeneration, the full lifecycle (self-transition rejection, a complete OPEN->ACKNOWLEDGED->RESOLVED->reopen walk with `resolvedAt` handling, illegal-transition rejection, full event-history preservation across 5 events), confirmation that regeneration never resets lifecycle state, detail/list/overview surfacing, and a dedicated proof test for the demo-exclusion rule. Documents, in its own header comment, the one deliberate departure from this project's usual test-fixture convention: fixtures here must use `isDemo: false` (not the usual `isDemo: true`) to be visible to the rule engine at all, with explicit manual cleanup in `afterAll`. Confirmed to self-skip cleanly with the flag set and no `DATABASE_URL`. |
+| `tests/reporting-filters.test.ts` | Modified | Fixed a real regression this milestone's own `ReportFilters` extension introduced: the pre-existing "parses a full, valid filter set" exact-equality assertion hadn't been updated for the three new always-present (default-null) keys -- fixed by adding them to the expected object, plus one new dedicated test case for the new fields' valid-value acceptance and each one's independent enum-rejection. |
+
+### Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/m15-metric-definitions.md` | Added | The authoritative catalogue of every figure and rule the Decision Intelligence surface shows -- the priority/confidence classification framework, all 16 rules with exact thresholds and their M8/M12/M13/M14 reuse, the lifecycle state machine, the audit-reuse design, the metrics/data-integrity rules, and the demo-data-exclusion scope decision. |
+| `docs/milestones/ROADMAP.md` | Modified | Milestone 15's row added as "Done"; a new "Things to never conflate" bullet (a recommendation's independent priority/confidence vs. any blended score -- there is none); change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the Milestone 15 section: what was built, the one new migration, the demo-data-exclusion design decision and the cleanup-block gap it surfaced, the two real test regressions caught and fixed, and honest verification results. |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added a new numbered section -- applying the new migration; regenerating the Prisma client; running the 5 new unconditional test files; the gated DB-integration test file and its preconditions; a manual test script walking through the overview, the detail page, the status mutation, and CSV export. |
+| `docs/milestones/MILESTONE-15-DELIVERY-REPORT.md` | Added | The spec-structured delivery report. |

@@ -133,6 +133,29 @@
  * deleteMany issues one SQL DELETE statement, and Postgres checks FK
  * constraints only after the whole statement completes, not row-by-row.
  *
+ * Milestone 15 (Decision Intelligence) added two more models
+ * (DecisionRecommendation, DecisionRecommendationEvent), each with every
+ * FK onDelete: Restrict. This whole group is deleted FIRST, before even
+ * the Milestone 10 group below: DecisionRecommendation.customerId/
+ * productId/salespersonId/quotationId/customerOrderId are all Restrict
+ * FKs onto Customer/Product/User/Quotation/CustomerOrder, every one of
+ * which is deleted much further down (Quotation in the Milestone 7
+ * group, CustomerOrder near the bottom, Customer/Product/User lower
+ * still) -- so this group must go first or those deletes would be
+ * blocked by a lingering demo recommendation that still references
+ * them. DecisionRecommendationEvent has no isDemo column of its own
+ * (mirroring ApprovalEvent/QuotationEvent elsewhere in this file) and is
+ * matched via its parent DecisionRecommendation's isDemo flag instead;
+ * it carries a Restrict FK back to DecisionRecommendation, so it must go
+ * first. Defensive only, same reasoning as the Milestone 9 block below:
+ * `evaluateAndSyncDecisionRecommendations` (lib/reporting/
+ * decision-intelligence-queries.ts) always forces `includeDemo: false`
+ * when generating recommendations, regardless of the caller's own
+ * filters, so no demo-sourced DecisionRecommendation row is ever created
+ * today and this is expected to delete 0 rows. Kept here, correctly
+ * ordered, so the script stays correct if a future rule version ever
+ * needs demo-inclusive generation for test fixtures.
+ *
  * Milestone 0 fix (round 4): this is 12 sequential round trips over one
  * connection to a pooled Neon endpoint, and Prisma's *default* interactive
  * transaction timeout is 5000ms -- comfortably exceeded under real network
@@ -164,6 +187,21 @@ async function main() {
 
   const result = await prisma.$transaction(
     async (tx) => {
+      // Milestone 15 (Decision Intelligence). Deleted FIRST, before even
+      // the Milestone 10 group immediately below -- see the file-level
+      // comment above for why (DecisionRecommendation holds Restrict FKs
+      // onto Customer/Product/User/Quotation/CustomerOrder, all deleted
+      // much further down). Expected to delete 0 rows today (see the
+      // file-level comment); kept correctly ordered for correctness if
+      // that ever changes.
+      const decisionRecommendationEvents = await tx.decisionRecommendationEvent.deleteMany({
+        where: { decisionRecommendation: { isDemo: true } },
+      });
+
+      const decisionRecommendations = await tx.decisionRecommendation.deleteMany({
+        where: { isDemo: true },
+      });
+
       // Milestone 10 (Communication Channels & Fulfilment). Deleted
       // before everything else, including the Milestone 8 group
       // immediately below -- see the file-level comment above for why
@@ -420,6 +458,8 @@ async function main() {
             creditNoteImportBatches: creditNoteImportBatches.count,
             integrationOperations: integrationOperations.count,
             integrationSyncJobs: integrationSyncJobs.count,
+            decisionRecommendations: decisionRecommendations.count,
+            decisionRecommendationEvents: decisionRecommendationEvents.count,
           },
         },
       });
@@ -458,6 +498,8 @@ async function main() {
         creditNoteImportBatches: creditNoteImportBatches.count,
         integrationOperations: integrationOperations.count,
         integrationSyncJobs: integrationSyncJobs.count,
+        decisionRecommendations: decisionRecommendations.count,
+        decisionRecommendationEvents: decisionRecommendationEvents.count,
       };
     },
     {
@@ -500,6 +542,8 @@ async function main() {
   console.log(`  Credit note import batches: ${result.creditNoteImportBatches}`);
   console.log(`  SAP integration operations: ${result.integrationOperations}`);
   console.log(`  SAP integration sync jobs: ${result.integrationSyncJobs}`);
+  console.log(`  Decision recommendations: ${result.decisionRecommendations}`);
+  console.log(`  Decision recommendation events: ${result.decisionRecommendationEvents}`);
 }
 
 main()

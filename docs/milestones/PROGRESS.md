@@ -6549,3 +6549,299 @@ logic across all 10 dimensions plus both composite-assembly functions
 against this project's own established convention, but was not run
 against a real database from inside this sandbox; nothing here claims
 otherwise.
+
+# Milestone 15 — Decision Intelligence
+
+Built from your attached full specification, under your explicit
+implementation authorization ("This is an implementation authorisation,
+not a request for another proposal or architecture document... Do not
+stop after producing a specification... Proceed with full implementation
+now... M15 is complete only when the implementation, recommendation
+lifecycle, tests, documentation and ZIP delivery are finished.") in one
+pass, delivered per your "continue where you left off / return only zip
+of changed files" instruction. **One new, genuinely additive schema
+migration** — the first reporting milestone since M11 to need one.
+
+## What was actually built
+
+A deterministic, documented, explainable **decision-recommendation
+engine**: 16 rules across five categories (SALES, CUSTOMER, PRODUCT,
+COMMERCIAL_EXPOSURE, OPERATIONAL), every one reusing an EXISTING M8/M9/
+M12/M13/M14 calculation or classifier rather than re-deriving a figure
+another milestone already owns, exposed through:
+
+- **Decision Intelligence overview** (`/reports/decision-intelligence`,
+  management-only, `requireManagementReportAccess`) — executive decision
+  summary, a priority attention queue (CRITICAL/HIGH only), category/
+  priority/confidence breakdowns, and the full filterable/paginated
+  recommendation table.
+- **Decision detail page** (`/reports/decision-intelligence/[id]`) —
+  explanation, confidence basis, recommended next action, evidence
+  metrics, source-record links (Customer/Product/Quotation/Order), and
+  the full ordered status-history timeline, plus a status-mutation
+  panel driving the one write path this milestone exposes.
+
+New `lib/reporting/` modules, following the exact pure/Prisma-backed
+split every prior reporting milestone established:
+
+- **`decision-types.ts`** (pure) — the category/priority/confidence/
+  status enum literals, deliberately duplicated from (and kept
+  byte-for-byte in sync with) the Prisma schema's own enums rather than
+  imported, so the rule catalogue stays free of any `@prisma/client`
+  dependency; the full lifecycle transition table and
+  `isValidDecisionStatusTransition`.
+- **`decision-priority.ts`** (pure) — `buildDedupeKey` (the stable
+  anti-duplicate identity), `classifyDeclinePriority`/
+  `classifyRepeatedCountPriority` (documented, structural priority
+  cutoffs — `classifyDeclinePriority` never returns CRITICAL),
+  `percentDecline` (null-safe against a zero/negative baseline), and
+  the deterministic priority-then-confidence-then-time sort used
+  everywhere a priority queue is built.
+- **`decision-rules.ts`** (pure) — the full 16-rule catalogue. Every
+  rule function documents, in its own comment, exactly what evidence it
+  reads, the priority-classification logic, and the confidence-
+  classification logic and its basis — spec section 4's own explicit
+  requirement. See `docs/milestones/m15-metric-definitions.md` §3 for
+  every rule's exact thresholds and which existing M8/M12/M13/M14
+  calculation it reuses.
+- **`decision-recommendations.ts`** (pure) — `evaluateAllDecisionRules`
+  (runs the full catalogue over one `DecisionRuleRawInputs` bundle; one
+  rule's output never depends on another's) and
+  `buildDecisionIntelligenceSummary` (the executive summary and
+  CRITICAL/HIGH-only priority queue — verified by a dedicated test to
+  carry no `compositeScore`/`overallRiskScore` key anywhere).
+- **`decision-intelligence-validation.ts`** — the zod schema for the
+  one mutation this milestone exposes.
+- **`decision-intelligence-queries.ts`** (Prisma-backed) — fetches every
+  rule's raw input by composing EXISTING M8/M9/M12/M13/M14 query shapes;
+  `evaluateAndSyncDecisionRecommendations` upserts by `dedupeKey`
+  (refreshing evidence/priority/confidence/`lastEvaluatedAt` on an
+  existing row, never touching its lifecycle fields);
+  `updateDecisionRecommendationStatus` (the one mutation — validates the
+  transition, then writes the status change + a
+  `DecisionRecommendationEvent` + an `AuditEvent`, all inside one
+  `prisma.$transaction`); `getDecisionIntelligencePageData` (a
+  performance addition — see the design decision below).
+
+## Design decision: the recommendation lifecycle and why regeneration never touches it
+
+Spec section 5 required both "a deterministic... recommendation
+generation process" AND "a stable identity to prevent uncontrolled
+duplicates on regeneration" AND "preserve recommendation history" —
+three requirements that only cohere if regeneration and lifecycle
+mutation are kept structurally separate. The design chosen:
+`dedupeKey = "${ruleId}:${primaryEntityKey}"` is the ONE identity that
+survives regeneration; `evaluateAndSyncDecisionRecommendations` always
+re-runs the full catalogue (deterministic, no caching of stale
+evidence) and upserts by that key, but the upsert's UPDATE branch
+touches only `evidence`/`priority`/`confidence`/`lastEvaluatedAt` —
+never `status`/`statusNote`/`statusById`/`statusAt`/`resolvedAt`. Those
+five lifecycle fields are mutated by exactly one function,
+`updateDecisionRecommendationStatus`, which is the only place
+`DecisionRecommendationEvent` rows and `AuditEvent` rows get written —
+reusing the EXISTING `AuditEvent` audit system (spec section 6: "reuse
+existing audit infrastructure... never a second audit system")
+alongside a new, lightweight append-only child log
+(`DecisionRecommendationEvent`) that mirrors `ApprovalEvent`'s own exact
+shape, the established precedent for this pattern in this project. A
+recommendation whose rule no longer fires on later evaluation is left
+in place with its last-known evidence rather than deleted — deleting it
+would destroy the very history/accountability trail section 6 requires;
+its `lastEvaluatedAt` simply stops advancing, surfaced on the UI as
+"last seen" so a stale recommendation is never mistaken for a current
+one.
+
+## Design decision, and a real gap it surfaced: demo-data exclusion at generation time
+
+`DecisionRecommendation` rows are PERSISTED and SHARED across every
+future read — a structural difference from every M11–M14 report, which
+is pure read-time aggregation with no persisted output. This means the
+M11–M14 convention ("excluded by default, opt-in via
+`includeDemo=true`") would be actively wrong here: a demo-sourced
+recommendation, once created, would keep reappearing in every later
+non-demo read forever, with no natural point at which it stops being
+"current." The fix: `evaluateAndSyncDecisionRecommendations` (and its
+internal `fetchDecisionRuleRawInputs`) ALWAYS forces `includeDemo:
+false` for generation, regardless of the caller's own filters — stricter
+than every prior reporting milestone, by deliberate design, documented
+at the top of `decision-intelligence-queries.ts`.
+
+This produced a genuine, self-caught gap, not a hypothetical one: that
+same module comment already asserted "the remove-demo-data.ts cleanup
+block are kept for schema completeness" — but the actual cleanup block
+did not yet exist in `scripts/remove-demo-data.ts` when that comment
+was written. `DecisionRecommendation` carries `onDelete: Restrict` FKs
+onto `Customer`/`Product`/`User`/`Quotation`/`CustomerOrder`, every one
+of which `remove-demo-data.ts` deletes later in its transaction, so a
+lingering demo recommendation (even though none should exist today)
+would silently block those deletes if the cleanup block were ever
+needed. Fixed before delivery: `DecisionRecommendationEvent` then
+`DecisionRecommendation` are now deleted FIRST in the transaction —
+ahead of even the Milestone 10 group, which was previously the
+earliest — filtered by `isDemo: true`, mirroring the exact "defensive
+only, expected to delete 0 rows today" comment style already
+established for Milestone 9's `IntegrationOperation`/`IntegrationSyncJob`
+block.
+
+## Design decision: performance — evaluate the catalogue once per request, not twice
+
+The overview page needs both the executive summary AND the paginated
+recommendation list. Calling `getDecisionIntelligenceOverview` and
+`listDecisionRecommendations` independently (as a naive page
+implementation would) would run the full 16-rule catalogue evaluation
+— itself composing a dozen-plus existing M8/M9/M12/M13/M14 queries —
+TWICE for one page load. `getDecisionIntelligencePageData` fixes this:
+it calls `evaluateAndSyncDecisionRecommendations` exactly once and
+builds both the overview and the paginated list from the same evaluated
+candidate set via two new private helpers (`buildOverviewFromCandidates`,
+`buildListFromWhere`). The pre-existing `getDecisionIntelligenceOverview`/
+`listDecisionRecommendations` exports now reuse these same helpers
+internally too, but still independently call the evaluation function
+each — correct, since each API route may legitimately be called
+standalone (e.g. the list route and the overview route, hit
+separately, each still need fresh evidence).
+
+## Two real regressions/bugs caught and fixed by actually running the full suite
+
+1. **A pre-existing test regression**, the same shape M14 caught in
+   M13's own filter test: this milestone's three new `ReportFilters`
+   fields (`decisionCategory`/`priority`/`recommendationStatus`) broke
+   `tests/reporting-filters.test.ts`'s "parses a full, valid filter
+   set" exact-equality assertion, which hadn't been updated for the
+   three new always-present (default-`null`) keys. Fixed by adding the
+   three keys to the expected object, plus one new dedicated test case
+   exercising valid-value acceptance and each field's independent
+   enum-rejection (the fields are centrally enum-validated via
+   `readEnumFilter`, unlike M14's three free-text fields).
+2. **A backwards assertion in this milestone's OWN new test file**
+   (`tests/decision-rules.test.ts`): a test for
+   `CUSTOMER_INSUFFICIENT_RECENT_ACTIVITY` asserted the explanation
+   text should NOT contain the word "churn" — but the rule's actual,
+   correct explanation intentionally states "...this is an observation,
+   not a churn or inactivity classification," so the word legitimately
+   appears as part of the disclaimer required by spec section 3.4's
+   "never label a customer lost/inactive without an explicit documented
+   rule." Fixed to assert the disclaimer's presence instead of the
+   word's absence.
+
+## A real TypeScript bug caught and fixed, correctly distinguished from sandbox noise
+
+`tsc --noEmit` surfaced 4 genuine-looking `TS2322`/`TS2345` type-
+mismatch errors in `decision-intelligence-queries.ts` (e.g.
+`customerName: {}` not assignable to `string`). Root-caused to 6 bare
+`new Map(arr.map(x => [x.id, x.name]))` constructions with no explicit
+generic parameters, which infer oddly when fed by the sandbox
+`@prisma/client` stub's `any`-typed query results with no contextual
+expected type at the call site — confirmed by contrast against this
+same file's own `resolveProductNames`-style helpers, which carry an
+explicit `Promise<Map<string, string>>` return annotation and don't
+exhibit the issue. Fixed by adding explicit `<string, string>`/
+`<string, number>` generics to all 6 affected call sites, per the
+spec's own explicit instruction (section 15) to identify and fix real
+M15-introduced errors rather than blanket-classify everything as
+pre-existing noise. Re-running `tsc` confirmed every `TS2322`/`TS2345`
+error cleared from this milestone's own files; the 9+9 such errors
+still present in the full project's error count were confirmed, by
+file, to be pre-existing M11–M14 issues in files this milestone never
+touched.
+
+## Documented scope decisions
+
+- No LLM-fabricated recommendation anywhere — every candidate is
+  produced by a pure, hand-auditable function over already-fetched
+  data.
+- No composite/blended score, no arbitrary scoring, no unsupported
+  financial calculation, anywhere in this milestone.
+- No second audit system — every status mutation reuses the EXISTING
+  `AuditEvent` table, in the same transaction as the status change and
+  the new `DecisionRecommendationEvent` write.
+- Every currency-specific rule produces one recommendation PER
+  CURRENCY — never a cross-currency total, never an invented exchange
+  rate.
+- CRITICAL is reserved for exactly two rules
+  (`COMMERCIAL_CLAIM_EXPOSURE_BY_CURRENCY`,
+  `OPERATIONAL_APPROVAL_BOTTLENECK`) representing an already-active
+  exposure/bottleneck — a decline, however severe, never reaches
+  CRITICAL.
+- Demo data is unconditionally excluded from generation, stricter than
+  every prior reporting milestone, for the structural reason given
+  above.
+
+## Honest verification results
+
+- **`npx eslint .`** — clean across the whole project, including every
+  file this milestone added or edited (including the
+  `scripts/remove-demo-data.ts` fix).
+- **`npx tsc --noEmit`** — 674 errors (up from 630 after Milestone 14).
+  The +44 isolate entirely to `decision-intelligence-queries.ts` (41)
+  and the one new DB-integration test file (3), confirmed by grep to
+  fall ENTIRELY into the same pre-existing, sandbox-`@prisma/client`-
+  stub categories documented in every prior milestone (`TS2305`/
+  `TS2694`/`TS7006`). Zero new `TS2322`/`TS2345` errors in any M15
+  file — see the dedicated section above for the 4 genuine issues found
+  and fixed, correctly distinguished from the 9+9 pre-existing M11–M14
+  occurrences confirmed, by file, to be unrelated to this milestone.
+  Confirmed by grep that this milestone's own new page, API-route, and
+  pure-module files carry **zero** type errors.
+- **`npx vitest run`** (unconditional) — 875 passed, 158 skipped, 0
+  failed (up from 765/145/0 after Milestone 14 — net +110 passed/+13
+  skipped, all new M15 tests). The +110 passed are the combined total
+  of `tests/decision-priority.test.ts` (21), `tests/decision-types.test.ts`
+  (8), `tests/decision-rules.test.ts` (60), `tests/decision-recommendations.test.ts`
+  (9), `tests/decision-intelligence-access.test.ts` (11), and the one
+  new test case added to `tests/reporting-filters.test.ts` while fixing
+  the regression above. The +13 skipped are
+  `tests/decision-intelligence-db.integration.test.ts`'s gated tests,
+  confirmed to self-skip cleanly (no `DATABASE_URL`) rather than
+  silently erroring or false-passing. **Zero regressions in any
+  pre-existing test.**
+- **`RUN_DB_INTEGRATION_TESTS=1 npx vitest run`** — confirms every
+  DB-gated test across the whole project, including this milestone's
+  new file, still self-skips cleanly rather than silently erroring or
+  false-passing. This milestone's DB-integration tests themselves were
+  **not** actually run against a real database from inside this
+  sandbox — nothing here claims otherwise. Its own header comment
+  documents the one deliberate departure from this project's usual
+  fixture convention: its fixtures must use `isDemo: false` (not the
+  usual `isDemo: true`) to be visible to the rule engine at all, with
+  explicit manual cleanup in `afterAll` since the normal demo-removal
+  sweep would never catch them.
+- **`npx prisma validate` / `npx prisma generate`** — could not run.
+  Confirmed, by direct reproduction this round (including past the
+  `PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1` checksum-bypass env var,
+  and after supplying a placeholder `DATABASE_URL` so the CLI gets past
+  its own config-loading step), to be the identical
+  `binaries.prisma.sh` 403-Forbidden network-egress block documented
+  since Milestone 4 — the actual engine binary itself cannot be
+  downloaded in this sandbox, not merely its checksum. This milestone's
+  one new migration has **not** been applied or validated against a
+  real database from inside this sandbox; nothing here claims
+  otherwise.
+- **`npm run build`** — fails at the identical, pre-existing
+  `next/font/google` Google Fonts network block, confirmed via direct
+  reproduction to be unrelated to any file this milestone touched
+  (`app/layout.tsx` itself is untouched by M15; the failure occurs
+  during root-layout module evaluation, before any `/reports` route is
+  ever reached). No claim in this document, or any prior one, about the
+  build's static-generation/prerendering phase should be read as
+  sandbox-verified — that remains true for every milestone, M15
+  included.
+- **Not run in this sandbox**: `npx prisma migrate dev`/`deploy` for
+  the new migration, `npx prisma validate`/`generate`, and this
+  milestone's gated DB-integration tests against a real database.
+
+**Implemented: yes**, the full rule catalogue, lifecycle, and both
+surfaces, per the authorization's own explicit instruction never to
+stop after inspection or ask to approve another specification.
+**Tested: yes, with the same honest, layered caveat as every prior
+milestone** — 110 new unconditional tests (plus 1 extending a
+pre-existing file) cover every Prisma-independent piece of new logic
+directly and completely (all 16 rules, the priority/confidence
+classification framework, the lifecycle transition table, the
+orchestrator, and the real auth-boundary functions); the gated
+`tests/decision-intelligence-db.integration.test.ts` (13 tests,
+confirmed to self-skip cleanly rather than silently erroring or
+false-passing) walks the real Prisma-backed sync/lifecycle/detail/
+export functions' actual logic against this project's own established
+convention, but was not run against a real database from inside this
+sandbox; nothing here claims otherwise.

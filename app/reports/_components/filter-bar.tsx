@@ -1,5 +1,6 @@
 import { Download, Filter } from "lucide-react";
 import type { FilterOption } from "@/lib/reporting/filter-options";
+import { DECISION_CATEGORIES, DECISION_PRIORITIES, DECISION_RECOMMENDATION_STATUSES } from "@/lib/reporting/decision-types";
 
 /**
  * Milestone 11 (Operational BI), spec section 8: "a reusable, consistent
@@ -23,6 +24,31 @@ import type { FilterOption } from "@/lib/reporting/filter-options";
 const FIELD_INPUT_CLASS =
   "h-[38px] w-full rounded-lg border border-[#E1E7E2] bg-white px-3 text-sm text-[#17251E] outline-none focus:border-[#78964A]";
 
+/** Milestone 15 (Decision Intelligence). Human-readable labels for the three new fixed enums -- hardcoded here (rather than threaded through as props from each page) because, unlike `customers`/`salespeople`, these option sets are small, fixed schema enums with no per-tenant variation. */
+const DECISION_CATEGORY_LABELS: Record<string, string> = {
+  SALES: "Sales",
+  CUSTOMER: "Customer",
+  PRODUCT: "Product",
+  COMMERCIAL_EXPOSURE: "Commercial exposure",
+  OPERATIONAL: "Operational",
+};
+
+const DECISION_PRIORITY_LABELS: Record<string, string> = {
+  CRITICAL: "Critical",
+  HIGH: "High",
+  MEDIUM: "Medium",
+  LOW: "Low",
+  INFORMATIONAL: "Informational",
+};
+
+const DECISION_RECOMMENDATION_STATUS_LABELS: Record<string, string> = {
+  OPEN: "Open",
+  ACKNOWLEDGED: "Acknowledged",
+  IN_PROGRESS: "In progress",
+  RESOLVED: "Resolved",
+  DISMISSED: "Dismissed",
+};
+
 export type StatusFilterConfig = {
   queryKey: "orderStatus" | "quotationStatus" | "fulfilmentStatus" | "claimStatus" | "communicationStatus" | "lostSalesReason";
   label: string;
@@ -39,6 +65,12 @@ export function ReportFilterBar({
   showProduct = false,
   showSalesperson = false,
   showCurrency = false,
+  showProductCategory = false,
+  showProductSearch = false,
+  showSapItemCode = false,
+  showDecisionCategory = false,
+  showPriority = false,
+  showRecommendationStatus = false,
   statusFilter,
 }: {
   viewAction: string;
@@ -51,6 +83,18 @@ export function ReportFilterBar({
   showSalesperson?: boolean;
   /** Milestone 12. A free-text 3-letter currency code field, same "no dropdown, honest about it" treatment as the Product ID field -- there is no bounded currency-option list anywhere in this codebase to populate a <select> from (CustomerOrder.currency/SapInvoice.currencyCode are both free-form strings, not a schema enum). */
   showCurrency?: boolean;
+  /** Milestone 14. Product.category, free text -- no controlled taxonomy exists on this schema (spec section 3), same "no dropdown, honest about it" treatment as Product ID/Currency above. All three new M14 fields below are deliberately optional on lib/reporting/types.ts's ReportFilters -- see that file's own comment. */
+  showProductCategory?: boolean;
+  /** Milestone 14. Free-text search against a SAP item code or its most recent invoice-line description. */
+  showProductSearch?: boolean;
+  /** Milestone 14. Exact SAP item code -- distinct from the pre-existing `showProduct` (Product.id) field above; M14's own reports filter by sapItemCode, never by Product.id (spec section 3). */
+  showSapItemCode?: boolean;
+  /** Milestone 15. DecisionCategory enum -- distinct from `statusFilter` below (which carries exactly one of five pre-existing M11 status dimensions); this report has three of its own new enum filters, so each gets its own show-flag rather than overloading `statusFilter`. */
+  showDecisionCategory?: boolean;
+  /** Milestone 15. DecisionPriority enum. */
+  showPriority?: boolean;
+  /** Milestone 15. DecisionRecommendationStatus enum -- the recommendation's lifecycle status, not to be confused with any order/quotation/claim status above. */
+  showRecommendationStatus?: boolean;
   statusFilter?: StatusFilterConfig;
 }) {
   const get = (key: string) => searchParams[key] ?? "";
@@ -113,6 +157,63 @@ export function ReportFilterBar({
               maxLength={3}
               className={`${FIELD_INPUT_CLASS} uppercase`}
             />
+          </Field>
+        )}
+
+        {showSapItemCode && (
+          <Field label="SAP item code" hint="Exact match">
+            <input type="text" name="sapItemCode" defaultValue={get("sapItemCode")} placeholder="e.g. 10001234" className={FIELD_INPUT_CLASS} />
+          </Field>
+        )}
+
+        {showProductCategory && (
+          <Field label="Product category" hint="Free text, exact match -- no fixed list">
+            <input type="text" name="productCategory" defaultValue={get("productCategory")} className={FIELD_INPUT_CLASS} />
+          </Field>
+        )}
+
+        {showProductSearch && (
+          <Field label="Search products" hint="SAP item code or description">
+            <input type="text" name="productSearch" defaultValue={get("productSearch")} className={FIELD_INPUT_CLASS} />
+          </Field>
+        )}
+
+        {showDecisionCategory && (
+          <Field label="Decision category">
+            <select name="decisionCategory" defaultValue={get("decisionCategory")} className={FIELD_INPUT_CLASS}>
+              <option value="">All categories</option>
+              {DECISION_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {DECISION_CATEGORY_LABELS[c] ?? c}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+
+        {showPriority && (
+          <Field label="Priority">
+            <select name="priority" defaultValue={get("priority")} className={FIELD_INPUT_CLASS}>
+              <option value="">All priorities</option>
+              {DECISION_PRIORITIES.map((p) => (
+                <option key={p} value={p}>
+                  {DECISION_PRIORITY_LABELS[p] ?? p}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+
+        {showRecommendationStatus && (
+          <Field label="Recommendation status">
+            <select name="recommendationStatus" defaultValue={get("recommendationStatus")} className={FIELD_INPUT_CLASS}>
+              <option value="">All statuses</option>
+              {DECISION_RECOMMENDATION_STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {DECISION_RECOMMENDATION_STATUS_LABELS[s] ?? s}
+                </option>
+              ))}
+            </select>
           </Field>
         )}
 

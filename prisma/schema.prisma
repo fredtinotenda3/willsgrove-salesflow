@@ -344,6 +344,11 @@ model User {
   cancelledDispatchRecords   DispatchRecord[]  @relation("DispatchRecordCanceller")
   recordedDeliveryRecords    DeliveryRecord[]  @relation("DeliveryRecordRecorder")
 
+  // Milestone 15 (Decision Intelligence).
+  decisionRecommendationsAsSalesperson DecisionRecommendation[]      @relation("DecisionRecommendationSalesperson")
+  decisionRecommendationStatusChanges  DecisionRecommendation[]      @relation("DecisionRecommendationStatusActor")
+  decisionRecommendationEvents         DecisionRecommendationEvent[] @relation("DecisionRecommendationEventActor")
+
   @@index([isDemo])
 }
 
@@ -431,6 +436,9 @@ model Customer {
   // Milestone 10 (Communication Channels & Fulfilment).
   messageIntakes    MessageIntake[]
   outboundMessages  OutboundMessage[]
+
+  // Milestone 15 (Decision Intelligence).
+  decisionRecommendations DecisionRecommendation[]
 
   @@index([name])
   @@index([status])
@@ -553,6 +561,9 @@ model Product {
 
   // Milestone 7 (Quotations Management).
   quotationLines QuotationLine[]
+
+  // Milestone 15 (Decision Intelligence).
+  decisionRecommendations DecisionRecommendation[]
 
   @@index([itemName])
   @@index([category])
@@ -777,6 +788,9 @@ model CustomerOrder {
   linkedMessageIntakes MessageIntake[]
   outboundMessages     OutboundMessage[]
   dispatchRecords      DispatchRecord[]
+
+  // Milestone 15 (Decision Intelligence).
+  decisionRecommendations DecisionRecommendation[]
 
   @@index([customerId])
   @@index([status])
@@ -2705,6 +2719,9 @@ model Quotation {
   linkedMessageIntakes MessageIntake[]
   outboundMessages     OutboundMessage[]
 
+  // Milestone 15 (Decision Intelligence).
+  decisionRecommendations DecisionRecommendation[]
+
   @@unique([quotationNumber, revisionNumber])
   @@index([quotationNumber])
   @@index([rootQuotationId])
@@ -3929,4 +3946,203 @@ model DeliveryLine {
   dispatchLine   DispatchLine   @relation(fields: [dispatchLineId], references: [id], onDelete: Restrict)
 
   @@index([deliveryRecordId])
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 15 (Decision Intelligence).
+//
+// A deterministic, explainable, rules-based recommendation -- never an LLM
+// guess, never an arbitrary composite "risk score." Each row is produced by
+// exactly one named, versioned rule in lib/reporting/decision-rules.ts,
+// evaluated against the real M12 (Sales Performance), M13 (Customer
+// Intelligence) and M14 (Product Intelligence) source data, and must be
+// explainable purely from the `evidence` JSON plus the linked source
+// records below.
+//
+// Schema design follows two precedents already established elsewhere in
+// this file rather than inventing new ones:
+//   1. Every reference to a real business entity (Customer/Product/
+//      Quotation/CustomerOrder/User) is a typed, nullable, Restrict FK --
+//      never a generic entityType/entityId pointer. See the comment on
+//      IntegrationProvider for why this project treats that as a hard
+//      anti-pattern; AuditEvent (used below for history, section 6) is the
+//      one deliberate exception, reserved for cross-cutting audit logging,
+//      not business relationships.
+//   2. The free-form "evidence" / "source record references" trail --
+//      which can span several records of several different types and
+//      doesn't fit a fixed relational shape -- is a Json snapshot, exactly
+//      like ApprovalRequest.submittedValues/previousValues.
+//
+// Recommendations are evaluated live on every read of the decision
+// intelligence report (no new background job -- none existed before this
+// milestone and the spec does not require one) and synced into this table
+// via `dedupeKey` (ruleId + a stable primary-entity key): re-evaluating a
+// rule UPDATES the matching row's evidence/priority/confidence/
+// lastEvaluatedAt rather than creating a duplicate, and never touches its
+// lifecycle `status` or `events` history (spec section 5: "must not create
+// uncontrolled duplicates on regeneration" / "must preserve recommendation
+// history"). A recommendation whose rule no longer fires on later
+// evaluation is left in place with its last-known evidence rather than
+// deleted -- deleting it would destroy the very history/accountability
+// trail section 6 requires; its `lastEvaluatedAt` simply stops advancing,
+// which the UI surfaces as "last seen" so a stale recommendation is never
+// mistaken for a current one.
+enum DecisionCategory {
+  SALES
+  CUSTOMER
+  PRODUCT
+  COMMERCIAL_EXPOSURE
+  OPERATIONAL
+}
+
+enum DecisionPriority {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFORMATIONAL
+}
+
+// Spec section 4: "confidence classification (HIGH/MEDIUM/LOW/
+// INSUFFICIENT_DATA), with the basis for each confidence level documented."
+// INSUFFICIENT_DATA is not a fallback for a bug -- it is the correct,
+// honest classification whenever a rule's own documented data requirement
+// (see lib/reporting/decision-rules.ts) is not met, and such a
+// recommendation must never be upgraded to a risk/action label it cannot
+// support (spec: "never fabricate... omit or clearly label as insufficient
+// data instead").
+enum DecisionConfidence {
+  HIGH
+  MEDIUM
+  LOW
+  INSUFFICIENT_DATA
+}
+
+enum DecisionRecommendationStatus {
+  OPEN
+  ACKNOWLEDGED
+  IN_PROGRESS
+  RESOLVED
+  DISMISSED
+}
+
+enum DecisionRecommendationEventType {
+  CREATED
+  REEVALUATED
+  ACKNOWLEDGED
+  STARTED
+  RESOLVED
+  DISMISSED
+  REOPENED
+}
+
+model DecisionRecommendation {
+  id String @id @default(cuid())
+
+  // ruleId + the rule's own primary-entity key (e.g.
+  // "CUSTOMER_DECLINING_VALUE:cust_123" or
+  // "COMMERCIAL_EXPOSURE_CLAIMS_BY_CURRENCY:USD") -- the identity that
+  // survives regeneration (spec section 5's anti-duplicate requirement).
+  dedupeKey String @unique
+
+  ruleId      String
+  ruleVersion Int    @default(1)
+
+  decisionCategory DecisionCategory
+  priority         DecisionPriority
+  confidence       DecisionConfidence
+
+  title       String
+  explanation String
+
+  // Supporting metrics and source-record references for this
+  // recommendation, e.g. { "metrics": {...}, "sourceRecords": [{"type":
+  // "InvoiceClaim", "id": "...", "label": "..."}] } -- see
+  // lib/reporting/decision-recommendations.ts for the exact shape each
+  // rule populates. Never used in place of the typed FKs below for an
+  // entity this project already has a real relation for.
+  evidence Json
+
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id], onDelete: Restrict)
+  // Milestone 14 convention: a plain, non-FK SAP item code for display/
+  // identity even when no Product master record matches (productId null).
+  sapItemCode String?
+
+  salespersonId String?
+  salesperson   User?   @relation("DecisionRecommendationSalesperson", fields: [salespersonId], references: [id], onDelete: Restrict)
+
+  quotationId String?
+  quotation   Quotation? @relation(fields: [quotationId], references: [id], onDelete: Restrict)
+
+  customerOrderId String?
+  customerOrder   CustomerOrder? @relation(fields: [customerOrderId], references: [id], onDelete: Restrict)
+
+  reportingPeriodFrom DateTime @db.Date
+  reportingPeriodTo   DateTime @db.Date
+  // Null when the recommendation is not currency-specific (spec section
+  // 7.2: currencies are never combined -- a rule whose evidence spans more
+  // than one currency produces one recommendation per currency instead).
+  currencyCode String?
+
+  recommendedNextAction String
+
+  status     DecisionRecommendationStatus @default(OPEN)
+  statusNote String?
+  statusById String?
+  statusBy   User?     @relation("DecisionRecommendationStatusActor", fields: [statusById], references: [id], onDelete: Restrict)
+  statusAt   DateTime?
+
+  firstDetectedAt DateTime  @default(now()) @db.Timestamptz(6)
+  lastEvaluatedAt DateTime  @default(now()) @db.Timestamptz(6)
+  resolvedAt      DateTime?
+
+  // True when any linked business entity (customer/product/salesperson/
+  // quotation/order) is itself isDemo -- never computed from the
+  // recommendation's own fields alone, since a recommendation with no
+  // linked entity could otherwise never be classified as demo data. See
+  // lib/reporting/decision-intelligence-queries.ts for the derivation and
+  // scripts/remove-demo-data.ts for the matching cleanup block.
+  isDemo Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  events DecisionRecommendationEvent[]
+
+  @@index([decisionCategory])
+  @@index([priority])
+  @@index([status])
+  @@index([customerId])
+  @@index([productId])
+  @@index([salespersonId])
+  @@index([quotationId])
+  @@index([customerOrderId])
+  @@index([isDemo])
+  @@index([isDemo, status])
+}
+
+// Child event log mirroring ApprovalEvent's own shape exactly (spec
+// section 6 calls for full decision history/accountability; ApprovalEvent
+// is the existing precedent for "a lightweight append-only child log next
+// to a stateful parent record," reused here rather than invented fresh).
+model DecisionRecommendationEvent {
+  id                       String                           @id @default(cuid())
+  decisionRecommendationId String
+  eventType                DecisionRecommendationEventType
+  fromStatus               DecisionRecommendationStatus?
+  toStatus                 DecisionRecommendationStatus
+  actorId                  String?
+  notes                    String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  decisionRecommendation DecisionRecommendation @relation(fields: [decisionRecommendationId], references: [id], onDelete: Restrict)
+  actor                  User?                   @relation("DecisionRecommendationEventActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([decisionRecommendationId])
+  @@index([eventType])
 }

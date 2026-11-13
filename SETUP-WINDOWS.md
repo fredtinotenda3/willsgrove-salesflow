@@ -3423,3 +3423,135 @@ passed, 145 skipped, 0 failed).
    or equal to) the attribution-gated credit-note total, and that this
    distinction is documented, not silently reconciled — see
    `docs/milestones/m14-metric-definitions.md` §4.
+
+## 32. Milestone 15: Decision Intelligence
+
+This migration is purely additive: 5 new enum types (`DecisionCategory`,
+`DecisionPriority`, `DecisionConfidence`, `DecisionRecommendationStatus`,
+`DecisionRecommendationEventType`) and 2 new tables
+(`DecisionRecommendation`, `DecisionRecommendationEvent`). No existing
+table, column, or enum value is removed or changed. As with every
+previous milestone's migration, it cannot be validated or generated in
+the build sandbox — run these for real on your machine.
+
+```powershell
+# 1. Apply the migration
+npx prisma migrate dev --name add_decision_intelligence
+
+# 2. Regenerate the Prisma client so it knows about
+#    DecisionRecommendation, DecisionRecommendationEvent, and their
+#    5 new enums
+npx prisma generate
+
+# 3. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+
+# 4. Confirm a real production build succeeds (the sandbox could not
+#    get past its own Google Fonts network block to even reach this
+#    phase -- see PROGRESS.md's Milestone 15 honest verification results)
+npm run build
+```
+
+If `prisma migrate dev` reports schema drift because you've been
+running against the hand-written SQL already, use `migrate deploy`
+instead:
+
+```powershell
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the new gated test file,
+`tests/decision-intelligence-db.integration.test.ts`, alongside every
+pre-existing gated integration test. It needs an `ADMINISTRATOR` user
+already present (same precondition pattern as every other gated test
+file in this project) — if missing, the file logs which and self-skips
+cleanly rather than failing. **Unlike every other gated test file in
+this project, this one's own fixtures are created with `isDemo: false`,
+not `isDemo: true`** — documented explicitly in the file's own header
+comment and necessary because `evaluateAndSyncDecisionRecommendations`
+always forces `includeDemo: false` when generating recommendations, so
+an `isDemo: true` fixture would simply never be seen by the rule
+engine. Everything this file creates is explicitly deleted in `afterAll`
+(events before the parent recommendation, before the synthetic
+currency-code credit notes), rather than relying on
+`scripts/remove-demo-data.ts`'s normal sweep. Covered in this file:
+
+- Recommendation creation and dedupe-on-regeneration — running
+  `evaluateAndSyncDecisionRecommendations` twice against the same
+  underlying data produces the same single row (by `dedupeKey`), never
+  a duplicate.
+- The full lifecycle: self-transition rejection for every status, a
+  complete `OPEN → ACKNOWLEDGED → RESOLVED → reopen` walk verifying
+  `resolvedAt` is set on `RESOLVED` and cleared on reopen, illegal-
+  transition rejection, and full event-history preservation across 5
+  events.
+- Regeneration-never-resets-lifecycle: a fifth event is added via a
+  fresh `ACKNOWLEDGED` call and regeneration is confirmed to add none
+  of its own, and to never touch the already-set lifecycle fields.
+- Detail/list/overview surfacing of a real persisted recommendation.
+- A dedicated proof test for the demo-exclusion rule: seeded demo
+  (`isDemo: true`) credit-note data in a synthetic currency never
+  produces a `COMMERCIAL_CREDIT_NOTE_BACKLOG_BY_CURRENCY` recommendation,
+  while the equivalent non-demo fixture does.
+
+**Honesty note**: this test file, like every gated DB-integration test
+in this project, has not been run against a real database from inside
+this sandbox — this sandbox's `@prisma/client` is a stale stub (see
+PROGRESS.md's "Honest verification results"). Treat it as unverified
+until you actually run it. The new unconditional unit/access-control
+tests added this milestone (`tests/decision-priority.test.ts`,
+`tests/decision-types.test.ts`, `tests/decision-rules.test.ts`,
+`tests/decision-recommendations.test.ts`,
+`tests/decision-intelligence-access.test.ts`, plus the
+`tests/reporting-filters.test.ts` fix) have no such caveat: they were
+actually run in this sandbox and pass (full suite: 875 passed, 158
+skipped, 0 failed).
+
+### Manual test script (via the UI)
+
+1. Log in as a `SALESPERSON`. Try navigating directly to
+   `/reports/decision-intelligence`. Confirm you are redirected to
+   `/reports` (the page-level convenience redirect — the real security
+   boundary is server-side on the API route).
+2. Log in as a `SALES_MANAGER` or `ADMINISTRATOR`. Open `/reports` and
+   confirm the new **"Decision Intelligence"** tile is visible, and
+   that it opens `/reports/decision-intelligence` successfully.
+3. On the overview, confirm the executive summary metric cards, the
+   category/priority/confidence breakdowns, and the priority attention
+   queue all render, and that the queue contains only CRITICAL/HIGH
+   recommendations.
+4. Try the new `decisionCategory`/`priority`/`recommendationStatus`
+   filter dropdowns on the filter bar — confirm each is a fixed
+   enum-backed dropdown (not free text), and that leaving them unset
+   still returns the full, unfiltered result.
+5. Click a recommendation's row and confirm it opens the detail page
+   with its explanation, confidence basis, recommended next action,
+   evidence metrics, and any source-record links (Customer/Product/
+   Quotation/Order) — confirm each link opens the correct real page.
+6. On the detail page, change the recommendation's status (e.g.
+   `OPEN → ACKNOWLEDGED`) via the status panel. Confirm the page
+   refreshes with the new status and the status-history timeline grows
+   by one event. Try an illegal transition is not offered (the panel
+   only shows the recommendation's own valid next statuses).
+7. Click **Export CSV** on the overview and confirm the download
+   contains every filtered recommendation (not just the current
+   screen's page).
+8. Confirm there is **no** combined score or tier column anywhere on
+   either page — every recommendation shows its own independent
+   priority and confidence, never a blended number.
+9. Trigger a page reload (regenerating the catalogue) on a
+   recommendation you changed the status of in step 6. Confirm its
+   status, note, and history are unchanged by the regeneration — only
+   a fresh rule evaluation that still fires updates its evidence/
+   `lastEvaluatedAt`, never its lifecycle state.
