@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import {
   Search,
   Plus,
@@ -969,13 +970,22 @@ export default function CustomersPage() {
                         </span>
                       </td>
                       <td className="px-5 py-4 text-right">
-                        <button
-                          onClick={() => openCustomer(customer.id)}
-                          title="View customer"
-                          className="rounded-lg p-2 text-[#89948D] hover:bg-[#EFF4EF] hover:text-[#315C43]"
-                        >
-                          <ArrowUpRight size={17} />
-                        </button>
+                        <div className="flex items-center justify-end gap-1">
+                          <Link
+                            href={`/customers/${customer.id}`}
+                            title="View Customer 360 profile"
+                            className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-[#315C43] hover:bg-[#EFF4EF]"
+                          >
+                            360 profile
+                          </Link>
+                          <button
+                            onClick={() => openCustomer(customer.id)}
+                            title="Edit customer"
+                            className="rounded-lg p-2 text-[#89948D] hover:bg-[#EFF4EF] hover:text-[#315C43]"
+                          >
+                            <ArrowUpRight size={17} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

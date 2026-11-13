@@ -3161,3 +3161,265 @@ skipped, 0 failed).
     confirm only matching lost-sale rows remain. Click **Export CSV**
     and confirm the download contains all 5 sections (attribution,
     revenue, lost sales, pipeline, summary).
+
+## 30. Milestone 13: Customer Intelligence
+
+**No migration this milestone.** Every table and column this
+milestone's reporting logic reads (`SapInvoice`/`SapInvoiceLine`,
+`InvoiceClaim`/`ClaimReturn`/`CreditNote`, `Product`, `CustomerOrder`,
+`Quotation`, `LostSaleRecord`, `DeliveryRecord`) already existed after
+Milestone 12. Both new surfaces are read-only reporting over that
+existing data.
+
+```powershell
+# 1. Regenerate the Prisma client (no schema change, but keeps the
+#    client in step with every other milestone's own convention)
+npx prisma generate
+
+# 2. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+
+# 3. Confirm a real production build succeeds (the sandbox could not
+#    get past its own Google Fonts network block to even reach this
+#    phase -- see PROGRESS.md's Milestone 13 honest verification results)
+npm run build
+```
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the new gated test file,
+`tests/customer-intelligence-db.integration.test.ts`, alongside every
+pre-existing gated integration test. It needs an `ADMINISTRATOR` user
+and at least two seeded customers (`DEMO-CUST-001`/`DEMO-CUST-002`)
+already present (same precondition pattern as every other gated test
+file in this project) — if either is missing, the file logs which and
+self-skips cleanly rather than failing. Everything it creates is marked
+`isDemo: true` and cleaned up in `afterAll`. Covered in this file:
+
+- Qualifying-invoice rules at customer-level grouping (cancelled/
+  reversed exclusion, no-usable-date exclusion, a fully-credited
+  invoice still qualifying) — and that two customers' values never mix.
+- The credit-note union path: claim-linked credit notes (via the real
+  claim → resolution → approval → manual-credit-note lifecycle) and
+  directly invoice-linked credit notes (`claimId: null`, mirroring a
+  Milestone 6B CSV-import UNMATCHED row) both counted, verified
+  non-double-counting via a cumulative lower-bound assertion against
+  seeded demo data.
+- Open-claims-count as-of approximation, and historical as-of-date
+  reproducibility (a `dateTo` in the past bounds recency correctly even
+  when a later invoice exists).
+- Product-purchasing query-layer wiring — distinct-invoice frequency
+  vs. line count, mixed-unit-of-measure separation, unmatched-product
+  retention.
+- Returns grouped by `ReturnCondition`, via the real `recordClaimReturn`
+  lifecycle (`GOOD_RESALABLE` and `DAMAGED`).
+- The management overview's minimum-activity toggle.
+
+**Honesty note**: this test file, like every gated DB-integration test
+in this project, has not been run against a real database from inside
+this sandbox — this sandbox's `@prisma/client` is a stale stub (see
+PROGRESS.md's "Honest verification results"). Treat it as unverified
+until you actually run it. The 39 new unconditional unit/access-control
+tests added this milestone (`tests/customer-revenue.test.ts`,
+`tests/customer-purchasing.test.ts`, `tests/customer-recency.test.ts`,
+`tests/customer-segmentation.test.ts`, `tests/customer-intelligence-access.test.ts`)
+have no such caveat: they were actually run in this sandbox and pass
+(full suite: 696 passed, 131 skipped, 0 failed).
+
+### Manual test script (via the UI)
+
+1. Log in as a `SALESPERSON`. Open `/customers` and click the new
+   **"360 profile"** link on any customer's row. Confirm it opens
+   `/customers/[id]` without being redirected (all three roles can
+   reach this page).
+2. On the Customer 360 profile, confirm each section renders: account
+   identity; SAP invoice line value by currency; invoice history
+   (first/last/frequency/interval); product purchasing table; lost
+   sales; commercial health (claims, returns by condition, actual
+   credit notes shown both in-period and all-time-cumulative); a
+   **separate** "Delivery outcomes" card explicitly labelled
+   "operational signal, not a commercial dispute"; orders with
+   salesperson attribution; quotations; and a data-quality legend at
+   the bottom.
+3. Still logged in as `SALESPERSON`, try navigating directly to
+   `/reports/customer-intelligence`. Confirm you are redirected to
+   `/reports` (the page-level convenience redirect — not the actual
+   security boundary, which is server-side on the API route).
+4. Log in as a `SALES_MANAGER` or `ADMINISTRATOR`. Open `/reports` and
+   confirm the new **"Customer Intelligence"** tile is visible, and
+   that it opens `/reports/customer-intelligence` successfully.
+5. On the overview, confirm the **Population** toggle defaults to
+   "All eligible customers" (every customer shown, including any with
+   zero qualifying invoices in the selected period). Click "Only active
+   in period" and confirm the customer count in the rankings table
+   narrows accordingly, with the query string updating
+   (`minimumActivityOnly=true`) and the page number resetting.
+6. Confirm the rankings table shows, per customer: SAP invoice line
+   value by currency with a rank **within that currency** (never a
+   cross-currency rank); purchase frequency with its own rank; days
+   since last qualifying invoice with its own rank (or "No qualifying
+   invoice on record" where that's genuinely true); and a calculated
+   open-claims count. Confirm there is **no** combined score or tier
+   column anywhere on this page.
+7. Click a customer's name in the rankings table and confirm it links
+   through to that customer's own Customer 360 profile (step 2).
+8. Click **Export CSV** on the overview and confirm the download
+   contains all filtered customers (not just the current page) across
+   its 3 sections (customers, revenue-by-currency, summary). Click
+   **Export CSV** on a Customer 360 profile and confirm its download
+   contains all 8+ profile sections for that one customer.
+9. On a customer with at least one invoice claim that has both a
+   claim-linked credit note AND a directly-imported credit note (no
+   claim) recorded against their invoices, confirm the Customer 360
+   profile's "Actual credit notes" figures include both, with no
+   value appearing twice, and that these numbers are shown with
+   clearly distinct labelling from Milestone 6B/6A's own whole-business
+   claim exposure figures elsewhere in the app (they are related but
+   not identical — see `docs/milestones/m13-metric-definitions.md` §7).
+
+## 31. Milestone 14: Product Intelligence
+
+**No migration this milestone.** Every table and column this
+milestone's reporting logic reads (`SapInvoice`/`SapInvoiceLine`,
+`InvoiceClaim`/`ClaimReturn`/`CreditNote`, `Product`, `LostSaleRecord`,
+`DispatchRecord`/`DispatchLine`/`DeliveryRecord`/`DeliveryLine`)
+already existed after Milestone 13. Both new surfaces are read-only
+reporting over that existing data.
+
+```powershell
+# 1. Regenerate the Prisma client (no schema change, but keeps the
+#    client in step with every other milestone's own convention)
+npx prisma generate
+
+# 2. Confirm everything else still passes against the real client
+npx tsc --noEmit
+npm run lint
+npm test
+
+# 3. Confirm a real production build succeeds (the sandbox could not
+#    get past its own Google Fonts network block to even reach this
+#    phase -- see PROGRESS.md's Milestone 14 honest verification results)
+npm run build
+```
+
+### Run this milestone's real database acceptance tests
+
+```powershell
+npm run db:seed
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm test
+```
+
+This runs the new gated test file,
+`tests/product-intelligence-db.integration.test.ts`, alongside every
+pre-existing gated integration test. It needs an `ADMINISTRATOR` user
+already present (same precondition pattern as every other gated test
+file in this project) — if missing, the file logs which and self-skips
+cleanly rather than failing. Everything it creates is marked
+`isDemo: true` and cleaned up in `afterAll`, in FK-respecting order
+(`lostSaleRecord`/`customerDecisionEvent`/`unfulfilledDemand` deleted
+**before** `pickingLine`/`pickingSession`, since `UnfulfilledDemand`'s
+own FKs onto those two are `onDelete: Restrict`). Covered in this file:
+
+- Dimensions 1–4 (SAP invoice line value by currency, invoiced
+  quantity by UoM, invoice frequency, distinct purchasing customers)
+  for both a matched product and an unmatched SAP item code — the
+  unmatched one never hidden, `productMasterMatched: false`.
+- Dimension 5 (lost-sales ranking) via the full real picking →
+  authorize → customer-decision → confirm-lost-sale lifecycle,
+  verifying `UnfulfilledDemand.sapItemCodeSnapshot`/`productId` are
+  captured correctly at the moment of unavailability.
+- Dimension 6 (claim/return activity): a single-product claim (via the
+  real claim → resolution → approval lifecycle) vs. a multi-product
+  claim on a two-line invoice, verifying the inclusive `claimCount` and
+  the separate `multiProductClaimCount` bucket.
+- Dimension 7 (actual credit-note values): a claim-linked credit note
+  on a single-product claim counted correctly per currency; a credit
+  note on a multi-product claim excluded from every product's total
+  and counted in `unattributableCreditNoteCount` instead.
+- Dimension 8 (delivery rejections) — **the one genuinely new risk this
+  milestone introduced**: the full real dispatch → depart → deliver
+  lifecycle with a partial rejection, verifying both the Product 360
+  fulfilment summary and the overview's rejection ranking correctly
+  find the rejection through the `DispatchLine.createdAt`-based fix
+  (there is no `DispatchRecord.dispatchedAt` field).
+- Dimension 9 (declining activity) — a verified 10-day current/previous
+  period pair showing a real decline, and a separate test confirming a
+  product with zero previous-period activity is never shown as a
+  fabricated 100% decline.
+- Dimension 10 (master-data quality) — an unmatched item, a matched
+  item with no `category`, and a fully-complete item that is correctly
+  **not** flagged. No `rank` field appears anywhere on this dimension.
+- `getProductProfile`/`getProductById` full assembly, including the
+  null-return case for a nonexistent id, and a composite smoke test on
+  `getProductIntelligenceOverview` confirming all 10 dimensions are
+  present under their own keys with no `compositeScore`/`overallRank`
+  field anywhere.
+
+**Honesty note**: this test file, like every gated DB-integration test
+in this project, has not been run against a real database from inside
+this sandbox — this sandbox's `@prisma/client` is a stale stub (see
+PROGRESS.md's "Honest verification results"). Treat it as unverified
+until you actually run it. The new unconditional unit/access-control
+tests added this milestone (`tests/product-segmentation.test.ts`,
+`tests/product-revenue.test.ts`, `tests/product-insights.test.ts`,
+`tests/product-commercial-health.test.ts`,
+`tests/product-purchasing.test.ts`, `tests/product-intelligence-access.test.ts`,
+plus the `tests/reporting-filters.test.ts` fix) have no such caveat:
+they were actually run in this sandbox and pass (full suite: 765
+passed, 145 skipped, 0 failed).
+
+### Manual test script (via the UI)
+
+1. Log in as a `SALESPERSON`. Open `/products` and click any product's
+   row to open its slide-over panel, then click the new **"View full
+   product profile"** button. Confirm it opens `/products/[id]` without
+   being redirected (all three roles can reach this page).
+2. On the Product 360 profile, confirm each section renders: identity
+   (including SAP item code and master-data match status); SAP invoice
+   line value by currency; invoiced quantity by unit; invoice frequency
+   and distinct purchasing customers; lost sales; commercial health
+   (claims, returns, actual credit notes by currency); delivery/
+   rejection outcomes; and any deterministic insights (or none, if the
+   product has too little history).
+3. Still logged in as `SALESPERSON`, try navigating directly to
+   `/reports/product-intelligence`. Confirm you are redirected to
+   `/reports` (the page-level convenience redirect — the real security
+   boundary is server-side on the API route).
+4. Log in as a `SALES_MANAGER` or `ADMINISTRATOR`. Open `/reports` and
+   confirm the new **"Product Intelligence"** tile is visible, between
+   the Customer Intelligence and Management Reports tiles, and that it
+   opens `/reports/product-intelligence` successfully.
+5. On the overview, confirm all 10 dimensions render as separate
+   sections, each with its own ranking — confirm there is **no**
+   combined score or tier column anywhere on this page, and that the
+   10th ("incomplete/unmatched master data") section has no rank
+   column at all.
+6. Try the new `productCategory`/`productSearch`/`sapItemCode` filter
+   fields on the filter bar — confirm each is free text (no fixed
+   dropdown) and that all three are optional (leaving them blank still
+   returns full results, per Milestone 12's own "optional filter"
+   lesson).
+7. Click a product's row in any of the overview's ranked tables and
+   confirm it links through to that product's own Product 360 profile
+   (step 2) — except the 10th dimension's unmatched rows, which have no
+   profile to link to.
+8. Click **Export CSV** on the overview and confirm the download
+   contains all filtered products across all 10 sections (not just the
+   current page). Click **Export CSV** on a Product 360 profile and
+   confirm its download contains every profile section for that one
+   product.
+9. On a product with both a single-product claim/credit-note and a
+   known multi-product claim touching its SAP item code, confirm the
+   inclusive claim count on the overview differs from (is higher than
+   or equal to) the attribution-gated credit-note total, and that this
+   distinction is documented, not silently reconciled — see
+   `docs/milestones/m14-metric-definitions.md` §4.

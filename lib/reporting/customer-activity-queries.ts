@@ -34,8 +34,19 @@ export type CustomerActivityReport = {
   invoicesWithNoUsableDateCount: number;
 };
 
-/** The one qualifying-invoice where-clause, reused by every query in this file -- see this module's own top comment for the definition. `customerFilter`/`demo` are spread in by callers so this stays the single source of truth for the business rule itself. */
-function qualifyingInvoiceWhere(demo: Prisma.SapInvoiceWhereInput, customerFilter: Prisma.SapInvoiceWhereInput): Prisma.SapInvoiceWhereInput {
+/**
+ * The one qualifying-invoice where-clause, reused by every query in
+ * this file -- see this module's own top comment for the definition.
+ * `customerFilter`/`demo` are spread in by callers so this stays the
+ * single source of truth for the business rule itself.
+ *
+ * Exported (Milestone 13, Customer Intelligence) so the customer-level
+ * revenue/purchasing/recency query modules reuse this EXACT where-clause
+ * rather than re-typing the qualifying-invoice rule a second time --
+ * purely a visibility change, the function's own behavior is untouched,
+ * so every existing M12 call site and test continues to pass unchanged.
+ */
+export function qualifyingInvoiceWhere(demo: Prisma.SapInvoiceWhereInput, customerFilter: Prisma.SapInvoiceWhereInput): Prisma.SapInvoiceWhereInput {
   return { ...demo, isCancelledOrReversed: false, matchedCustomerId: { not: null }, invoiceDate: { not: null }, ...customerFilter };
 }
 

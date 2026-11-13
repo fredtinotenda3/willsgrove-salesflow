@@ -2731,3 +2731,162 @@ than ever re-deriving "deliberate" from the field's resolved value.
 | `CHANGES.md` | Modified | This section. |
 | `SETUP-WINDOWS.md` | Modified | Added §29 — no new migration to apply; regenerate the Prisma client so it knows about the `salespersonAssignment` shape on `AuditEvent.afterData` (structurally, no schema change — a JSON field already held arbitrary shapes); run the 5 new test files; a manual test script walking through both never-pre-filled pickers, the attribution-confidence table, and the `/reports/sales-performance` CSV export. |
 | `MILESTONE-12-DELIVERY-REPORT.md` | Added | The spec-structured delivery report. |
+
+## Milestone 13 — Customer Intelligence
+
+Built from your attached full specification, under your explicit
+implementation authorization ("I explicitly authorise you to implement
+Milestone 13 (M13: Customer Intelligence) in full. This is
+implementation approval, not another specification exercise."), in one
+pass. **Zero schema changes** — every figure is derived live from
+tables M1/M5/M6A/M6B/M11/M12 already write to. Two new surfaces: a
+**Customer 360 profile** (`/customers/[id]`, open to **all three
+roles** — the first Customer Intelligence surface with no management
+restriction, modeled on `app/orders/[id]/page.tsx`'s own
+no-role-redirect precedent) composing SAP invoice line value by
+currency, invoice history, product purchasing, lost sales, commercial
+health (claims/returns/credit-notes/delivery-outcomes), orders with
+salesperson attribution, and quotations for one customer; and a
+**management-only customer-intelligence overview**
+(`/reports/customer-intelligence`, `requireManagementReportAccess`)
+independently ranking every eligible customer by SAP invoice line value
+(per currency, never combined), purchase frequency, recency, and
+calculated open-claims count — **no composite score, no tier, no churn
+label**, per explicit instruction.
+
+### lib/reporting/ (new M13 modules)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/reporting/customer-revenue.ts` | Added | Pure (no `@prisma/client` import), unconditionally unit-tested. The customer-keyed twin of M12's `sales-revenue.ts` — `groupRevenueByCurrencyAndCustomer`/`summarizeCustomerRevenueByCurrency`, reusing M12's own `currencyKey`/`sumMoneyRows`/`UNKNOWN_CURRENCY` rather than reimplementing currency normalization a second time. Same "SAP invoice line value," never "revenue," labelling rule. |
+| `lib/reporting/customer-revenue-queries.ts` | Added | Prisma-backed half. `getCustomerRevenueProfile` (one customer's own revenue/history, for the Customer 360 page) and `getCustomerIntelligenceOverview` (the management overview's single full-population ranked query — no per-customer loop, minimum-activity toggle defaulting OFF). |
+| `lib/reporting/customer-purchasing.ts` | Added | Pure. `aggregateProductPurchasing` — four deliberately separate metrics per `(customer, sapItemCode)` (quantity by unit, value by currency, purchase frequency as distinct-invoice count, last-purchased date), replacing an earlier, rejected `SUM(quantityInvoiced / lineTotal)` "average price" design. |
+| `lib/reporting/customer-purchasing-queries.ts` | Added | Prisma-backed half. `getCustomerProductPurchasing` — joins `Product` master data for match status/category, falling back to the invoice line's own recorded description when no match exists. |
+| `lib/reporting/customer-recency.ts` | Added | Pure. The as-of-date resolution rule (`resolveAsOfDate`: a selected historical `dateTo` makes the report reproducible; otherwise the live business date in **Africa/Harare**, resolved via the real IANA tz database, never the server's own UTC calendar date) and day-difference/inter-purchase-interval arithmetic, both returning explicit "no data"/"insufficient data" sentinels rather than a misleading `0`. |
+| `lib/reporting/customer-segmentation.ts` | Added | Pure. `rankByValue` — sequential 1-based ranking (ties broken deterministically by `customerId`), with currency separation deliberately left to the caller so one primitive serves both currency-scoped (revenue) and whole-population (frequency, recency) ranking. No composite score or tier, by explicit decision. |
+| `lib/reporting/customer-commercial-health-queries.ts` | Added | Prisma-backed. `getCustomerCommercialHealth` — claims raised/open-as-of-reporting-date (calculated, no event-sourced status history to replay)/exposure-by-currency (reusing `lib/invoice-claims/financial.ts`'s `computeExposureByCurrency` verbatim); returns by `ReturnCondition`; actual credit notes via the claim-linked **and** direct-invoice-linked (`claimId: null`) union, mutually exclusive by construction so neither branch double-counts; delivery outcomes in their own section, labelled "operational signal, not a commercial dispute." Also exports `getOpenClaimsCountByCustomer`, the management overview's bulk (never per-customer) open-claims lookup. |
+| `lib/reporting/customer-insights-queries.ts` | Added | Prisma-backed, composite. `getCustomerProfile` — the single function both the Customer 360 page and its export route call, assembling every section above plus lost sales and orders/quotations (owned directly here, no separate pure module needed for those two). |
+| `lib/reporting/customer-activity-queries.ts` | Modified | One new exported helper reused by the customer-level grouping logic above. Additive only — no existing M12 call site's behaviour changed. |
+| `lib/reporting/filters.ts` | Modified | Added `resolveEffectiveDateRange` — a small shared export pulling out the "apply `defaultDateRange()`'s 30-day fallback when `dateFrom`/`dateTo` are unset" step every M11/M12 report already repeats inline, so the three new M13 query modules that need it share one function. Purely additive. |
+
+### API routes (new)
+
+| Route | Method | Access |
+|---|---|---|
+| `app/api/customers/[id]/profile/route.ts` | GET | **All three roles**, via `requireUserOrResponse()` (no role list). |
+| `app/api/customers/[id]/profile/export/route.ts` | GET | Same. CSV export of all 8 profile sections (identity, revenue-by-currency, history, products, quantity-by-unit, value-by-currency, delivery, orders, quotations, data quality); records the export via `recordReportExport`. |
+| `app/api/reports/customer-intelligence/route.ts` | GET | `SALES_MANAGER`/`ADMINISTRATOR` only, via `requireManagementReportAccess`. In-memory pagination over the full ranked result set — never re-queried per page. |
+| `app/api/reports/customer-intelligence/export/route.ts` | GET | Same access. Exports **every** filtered customer, never only the current screen page (spec section 15) — 3 CSV blocks (customers, revenue-by-currency, summary). |
+
+### UI
+
+| File | Change | Reason |
+|---|---|---|
+| `app/customers/[id]/page.tsx` | Added | Customer 360 profile — open to all 3 roles (`getCurrentUser()` + redirect-if-absent, `notFound()` for an invalid/missing customer, no role gate). Renders every `getCustomerProfile` section via the shared `app/reports/_components/ui.tsx` primitives and `ReportFilterBar`. |
+| `app/reports/customer-intelligence/page.tsx` | Added | Management-only overview page (redirects non-management roles to `/reports` as a UX convenience — the real control is server-side). Minimum-activity toggle built as a `Link`-pair reusing the exact existing period-toggle pattern from `app/reports/management/[reportId]/page.tsx`, rather than extending `ReportFilterBar` with a bespoke boolean it was never designed to carry. |
+| `app/customers/page.tsx` | Modified | Added a "360 profile" link into the existing row-actions cell, alongside (not replacing) the existing edit button — the directory itself otherwise untouched, per the spec's own "do not rebuild unnecessarily" instruction. |
+| `app/reports/page.tsx` | Modified | Added a "Customer Intelligence" tile, gated by `canSeeManagementReports`, placed alongside the existing Sales Performance/Management Reports tiles. |
+
+### Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/customer-revenue.test.ts` | Added | Full unconditional unit-test suite for `groupRevenueByCurrencyAndCustomer`/`summarizeCustomerRevenueByCurrency`. |
+| `tests/customer-purchasing.test.ts` | Added | Full unconditional unit-test suite for `aggregateProductPurchasing` — the four separate metrics, unit/currency/item `UNKNOWN_*` buckets. |
+| `tests/customer-recency.test.ts` | Added | Full unconditional unit-test suite for `resolveAsOfDate`/`currentBusinessDateInHarare`/`computeDaysSinceLastQualifyingInvoice`/`computeAverageInterPurchaseInterval`, including the historical-vs-live as-of-date branch and the "no data"/"insufficient data" sentinels. |
+| `tests/customer-segmentation.test.ts` | Added | Full unconditional unit-test suite for `rankByValue` — sequential ranking, deterministic tie-breaking by `customerId`, both rank directions. |
+| `tests/customer-intelligence-access.test.ts` | Added | Unconditional (no database). Mocks only the session-resolution boundary (`next/headers`'s `cookies()`, `lib/auth/session.ts`'s `resolveSession`) and exercises the REAL `requireUserOrResponse()`/`requireManagementReportAccess()` functions directly — 401 unauthenticated on both surfaces; `SALESPERSON` allowed on the profile but 403 on the management overview; `SALES_MANAGER`/`ADMINISTRATOR` allowed on both; `isValidId` rejects malformed customer ids. A deliberate departure from Milestone 11's own precedent of deferring this class of test, justified because this milestone's authorization explicitly required these exact assertions. |
+| `tests/customer-intelligence-db.integration.test.ts` | Added | Gated behind `RUN_DB_INTEGRATION_TESTS=1` (same sandbox blocker as every other Prisma-backed reporting file). Covers qualifying-invoice rules, customer-level grouping, the credit-note union path's non-double-counting, the open-claims-count approximation, historical as-of-date reproducibility, product-purchasing's query-layer wiring, and returns-by-condition (a coverage gap this file's own doc comment initially over-claimed and was self-caught and fixed before delivery — see PROGRESS.md's Milestone 13 section). Confirmed to self-skip cleanly with the flag unset or with no `DATABASE_URL`. |
+
+### Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/m13-metric-definitions.md` | Added | The authoritative catalogue of every figure the Customer 360 profile and management overview show — the as-of-date rule, the four purchasing metrics, the ranking primitive's no-composite-score decision, the commercial-health "open as of" approximation, and the explicit warning never to conflate this milestone's customer-centric credit-note figure with M6B's own claim-centric one. |
+| `docs/milestones/ROADMAP.md` | Modified | Milestone 13's row added as "✅ Done"; two new "Things to never conflate" bullets (the two credit-note figures; the Customer 360 profile vs. the management overview's own ranking); change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the Milestone 13 section: what was built, the credit-note union-path gap it closes, the coverage gap self-caught and fixed mid-round, the access-control tests' deliberate departure from M11's own precedent, documented scope decisions, and honest verification results. |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added §30 — no new migration to apply (zero schema changes); regenerate the Prisma client; run the 5 new unconditional test files; the gated DB-integration test file and its preconditions; a manual test script walking through both new surfaces, the minimum-activity toggle, the credit-note union figures, and CSV export. |
+| `MILESTONE-13-DELIVERY-REPORT.md` | Added | The spec-structured delivery report. |
+
+## Milestone 14 — Product Intelligence
+
+Built from your attached full specification, under your explicit
+implementation authorization ("This is an implementation instruction,
+not a request for another proposal or specification... Never stop
+after inspection. Never ask to approve another specification."), in
+one pass. **Zero schema changes** — every figure is derived live from
+tables M1/M5/M6A/M6B/M10/M13 already write to. Two new surfaces, one
+level down from Milestone 13's own customer-centric pair: a
+**Product 360 profile** (`/products/[id]`, open to **all three
+roles**, modeled on `app/customers/[id]/page.tsx`'s own
+no-role-redirect precedent) composing SAP invoice line value by
+currency, invoiced quantity by UoM, invoice frequency/distinct
+purchasing customers, lost sales, commercial health
+(claims/returns/credit-notes/delivery-rejections), and master-data
+match status for one product; and a **management-only product-
+intelligence overview** (`/reports/product-intelligence`,
+`requireManagementReportAccess`) independently ranking every product
+across exactly 10 named dimensions, per currency where money is
+involved — **no composite score, no invented tier**, per explicit
+instruction. **SAP item code is canonical product identity throughout**
+— `Product.id` is used only as the Product 360 route key for a real
+master record, never for aggregation or ranking.
+
+### lib/reporting/ (new M14 modules)
+
+| File | Change | Reason |
+|---|---|---|
+| `lib/reporting/product-segmentation.ts` | Added | Pure (no `@prisma/client` import), unconditionally unit-tested. The product-keyed twin of M13's `customer-segmentation.ts` — `rankByValue` (sequential 1-based ranking, deterministic tie-break by `sapItemCode`, no composite score) and `computePreviousPeriod` (immediately preceding period of equal duration, no gap/overlap, null-returning for invalid/reversed ranges — the shared primitive behind dimension 9's declining-activity ranking). |
+| `lib/reporting/product-revenue.ts` | Added | Pure (no `@prisma/client` import), unconditionally unit-tested. The product-keyed twin of M13's `customer-revenue.ts` — `groupRevenueByCurrencyAndProduct`/`summarizeProductRevenueByCurrency`, reusing M12's own `currencyKey`/`sumMoneyRows`/`UNKNOWN_CURRENCY` rather than reimplementing currency normalization a third time. Groups by `SapInvoiceLine.sapItemCode`, never a `Product`-master join. |
+| `lib/reporting/product-revenue-queries.ts` | Added | Prisma-backed. `getProductRevenueProfile`/`getProductRevenueOverview` (dimensions 1–4: SAP invoice line value by currency, invoiced quantity by UoM, invoice frequency, distinct purchasing customers — all grouped by `sapItemCode`, never `Product.id` or description), `getProductDecliningActivityOverview` (dimension 9, per-currency-independent decline ranking against `computePreviousPeriod`), and `getProductMasterDataQualityOverview`/`getProductMasterDataQualityReport` (dimension 10 — `incomplete_category` means `Product.category === null` only, never `unitOfMeasure`; `unmatched` means real invoice activity with no `Product` master row; no `rank` field, since this dimension is a binary flag, not a ranked magnitude). |
+| `lib/reporting/product-purchasing.ts` | Added | Pure. `aggregateQuantityByUnit` (never combines incompatible units; normalizes missing/whitespace/case-variant units into one bucket), `itemKey` (trims real codes, maps null/blank to `UNKNOWN_SAP_ITEM_CODE`), `aggregateCustomerDemandForProduct` (distinct-invoice purchase frequency per customer, MAX last-purchase date, deterministic sort by `customerId`). |
+| `lib/reporting/product-demand-queries.ts` | Added | Prisma-backed. `getProductLostSalesRanking` (dimension 5) — groups confirmed `LostSaleRecord`s by `sapItemCodeSnapshot`, reusing the existing M4 lifecycle verbatim; never infers a lost sale from warehouse unavailability or a customer decision alone. |
+| `lib/reporting/product-commercial-health.ts` | Added | Pure. `resolveSingleProductSapItemCode` — the central single-product attribution rule: a claim/credit-note/return is attributed to exactly one product only when every line on it resolves to the same single, non-blank SAP item code (whitespace trimmed before comparison); returns `"multiple"`/`"none"` otherwise, never guessed or split pro-rata. |
+| `lib/reporting/product-commercial-health-queries.ts` | Added | Prisma-backed. `getProductClaimAndReturnOverview` (dimension 6 — inclusive `claimCount`/`returnCount` touching a product's item code at all, plus an explicit `multiProductClaimCount` bucket) and `getProductCreditNoteValueOverview` (dimension 7 — per-currency actual credit-note totals, attribution-gated via `resolveSingleProductSapItemCode`, with an explicit `unattributableCreditNoteCount` bucket for multi-product notes). `resolveClaimItem`/`loadClaimAttribution` reused verbatim from the existing M6A/M6B query shape. |
+| `lib/reporting/product-fulfilment-queries.ts` | Added | Prisma-backed. `getProductFulfilmentSummary` (Product 360) and `getProductDeliveryRejectionOverview` (dimension 8). **The one genuinely new query-layer risk this milestone introduced**: `DispatchRecord` has no `dispatchedAt` field, so both functions read `DispatchLine.createdAt` instead — documented as a "cohort view" (dispatches occurring in the period, not deliveries recorded in the period), not a bug. |
+| `lib/reporting/product-insights.ts` | Added | Pure. `generateProductInsightsForProduct`/`hasDeclineSimple` — deterministic, structurally-cutoff-based insights only (insufficient-data priority below 2 qualifying invoices; repeated-claims/lost-sales/delivery-rejections at count ≥ 2; credit-notes-reach-or-exceed-invoiced-value, a self-justifying 100% bar with zero-invoiced-value handled per currency independently; broad-customer-base-declining-activity, requiring both a real decline and ≥ 2 distinct customers). Never an arbitrary threshold, never an invented score, never LLM-fabricated. |
+| `lib/reporting/product-insights-queries.ts` | Added | Prisma-backed, composite. `getProductProfile`/`getProductById` (Product 360) and `getProductIntelligenceOverview` (the management overview's full 10-dimension assembly, paginating only the largest dimension in memory). Resolves `productId` for claim/return rows via one batched `prisma.product.findMany` at the assembly layer, never per-row. |
+| `lib/reporting/filters.ts` | Modified | Added `productCategory`/`productSearch`/`sapItemCode` to `ReportFilters` — all three free text, never validated against a fixed enum (per M12's own documented "optional filter" lesson), each independently capped at the existing `MAX_FILTER_TEXT_LENGTH`. Purely additive — no existing filter's parsing or validation changed. |
+
+### API routes (new)
+
+| Route | Method | Access |
+|---|---|---|
+| `app/api/products/[id]/profile/route.ts` | GET | **All three roles**, via `requireUserOrResponse()` (no role list). `isValidId` guard before any query. |
+| `app/api/products/[id]/profile/export/route.ts` | GET | Same. CSV export of every Product 360 section (identity, revenue-by-currency, quantity-by-unit, lost sales, commercial health, delivery, insights); records the export via `recordReportExport`. |
+| `app/api/reports/product-intelligence/route.ts` | GET | `SALES_MANAGER`/`ADMINISTRATOR` only, via `requireManagementReportAccess`. In-memory pagination over only the largest dimension — the other 9 returned whole. |
+| `app/api/reports/product-intelligence/export/route.ts` | GET | Same access. Exports **every** filtered product across all 10 dimensions, never only the current screen page. |
+
+### UI
+
+| File | Change | Reason |
+|---|---|---|
+| `app/products/[id]/page.tsx` | Added | Product 360 profile — open to all 3 roles (`getCurrentUser()` + redirect-if-absent, `notFound()` for an invalid/missing product, no role gate). Renders every `getProductProfile` section via the shared `app/reports/_components/ui.tsx` primitives. |
+| `app/reports/product-intelligence/page.tsx` | Added | Management-only overview page (redirects non-management roles to `/reports`). Renders all 10 dimensions, each in its own `SectionCard`, with every row carrying a resolved `productId` linking to `/products/[id]`. Only the largest dimension's rows are paginated. |
+| `app/products/page.tsx` | Modified | Added a "View full product profile" full-width button to the existing slide-over panel, linking to `/products/[id]` — the directory and its existing panel content otherwise untouched. |
+| `app/reports/page.tsx` | Modified | Added a "Product Intelligence" tile, gated by `canSeeManagementReports`, placed between the existing Customer Intelligence and Management Reports tiles. |
+
+### Tests
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/product-segmentation.test.ts` | Added | Full unconditional unit-test suite for `rankByValue` (descending/ascending, deterministic tie-break, no composite score) and `computePreviousPeriod` (hand-verified date arithmetic across 10-day, 1-day, and year-crossing periods; null-return for invalid/reversed ranges). |
+| `tests/product-revenue.test.ts` | Added | Full unconditional unit-test suite for `groupRevenueByCurrencyAndProduct`/`summarizeProductRevenueByCurrency` — never-sums-across-currency, UNKNOWN-currency bucketing, deterministic sort, and the read-back (not re-derived) relationship between the two exports. |
+| `tests/product-insights.test.ts` | Added | Full unconditional unit-test suite for `generateProductInsightsForProduct`/`generateProductInsights`/`hasDeclineSimple` — insufficient-data priority, every structural cutoff, multi-insight products, and `hasDeclineSimple`'s zero-treated-as-current-value behavior. |
+| `tests/product-commercial-health.test.ts` | Added | Full unconditional unit-test suite for `resolveSingleProductSapItemCode` — single/multiple/none resolution, mixed real-and-missing codes, whitespace-only and surrounding-whitespace handling. |
+| `tests/product-purchasing.test.ts` | Added | Full unconditional unit-test suite for `aggregateQuantityByUnit`, `itemKey`, and `aggregateCustomerDemandForProduct`. |
+| `tests/product-intelligence-access.test.ts` | Added | Unconditional (no database). Mocks only the session-resolution boundary and exercises the REAL `requireUserOrResponse()`/`requireManagementReportAccess()` functions directly — same pattern as `tests/customer-intelligence-access.test.ts`: 401 unauthenticated on both surfaces; `SALESPERSON` allowed on the profile but 403 on the management overview; `SALES_MANAGER`/`ADMINISTRATOR` allowed on both; `isValidId` rejects malformed product ids. |
+| `tests/product-intelligence-db.integration.test.ts` | Added | Gated behind `RUN_DB_INTEGRATION_TESTS=1` (same sandbox blocker as every other Prisma-backed reporting file). Covers all 10 overview dimensions plus both composite-assembly functions, with dedicated sections for the single- vs. multi-product claim/credit-note attribution rule and the `DispatchLine.createdAt`-based delivery-rejection fix. Confirmed to self-skip cleanly with the flag unset or with no `DATABASE_URL`. |
+| `tests/reporting-filters.test.ts` | Modified | Fixed a real regression this milestone's own `ReportFilters` extension introduced: the pre-existing "parses a full, valid filter set" exact-equality assertion hadn't been updated for the three new always-present (default-null) keys — fixed by adding them to the expected object, plus two new dedicated test cases for the new fields' parsing and length-cap rejection. |
+
+### Documentation
+
+| File | Change | Reason |
+|---|---|---|
+| `docs/milestones/m14-metric-definitions.md` | Added | The authoritative catalogue of every figure the Product 360 profile and management overview show — the SAP-item-code-is-canonical-identity rule, all 10 ranking dimensions, the single-product attribution rule, the `DispatchRecord` date-field fix, the per-currency declining-activity computation, and the master-data-quality scope. |
+| `docs/milestones/ROADMAP.md` | Modified | Milestone 14's row added as "✅ Done"; two new "Things to never conflate" bullets (the Product 360 profile vs. the management overview's own ranking; a claim/return's inclusive count vs. its conservative, attribution-gated value); change-log entry. |
+| `docs/milestones/PROGRESS.md` | Modified | Added the Milestone 14 section: what was built, the single-product attribution design decision, the `DispatchRecord` date-field fix, documented scope decisions, and honest verification results. |
+| `CHANGES.md` | Modified | This section. |
+| `SETUP-WINDOWS.md` | Modified | Added a new numbered section — no new migration to apply (zero schema changes); regenerate the Prisma client; run the 6 new unconditional test files; the gated DB-integration test file and its preconditions; a manual test script walking through both new surfaces and CSV export. |
+| `docs/milestones/MILESTONE-14-DELIVERY-REPORT.md` | Added | The spec-structured delivery report. |

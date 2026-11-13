@@ -125,6 +125,31 @@ export function parseReportFilters(params: URLSearchParams): ParsedReportFilters
     return { ok: false, message: "currency must be a 3-letter code." };
   }
 
+  // Milestone 14 (Product Intelligence). Three new, deliberately OPTIONAL
+  // filters -- see ReportFilters' own comment in lib/reporting/types.ts
+  // for why these are optional rather than required fields on that type.
+  // productCategory is free text (Product.category has no controlled
+  // taxonomy -- spec section 3), so, like currency, it is length-capped
+  // rather than validated against a fixed enum. productSearch is a
+  // free-text search term, also length-capped. sapItemCode is validated
+  // only for length, never for a specific format -- this schema's own
+  // SapInvoiceLine.sapItemCode/Product.sapItemCode comment documents SAP
+  // item codes as opaque strings with no fixed shape this codebase can
+  // assume.
+  const MAX_FILTER_TEXT_LENGTH = 100;
+  const productCategoryRaw = readOptionalString(params.get("productCategory"));
+  if (productCategoryRaw && productCategoryRaw.length > MAX_FILTER_TEXT_LENGTH) {
+    return { ok: false, message: `productCategory must be ${MAX_FILTER_TEXT_LENGTH} characters or fewer.` };
+  }
+  const productSearchRaw = readOptionalString(params.get("productSearch"));
+  if (productSearchRaw && productSearchRaw.length > MAX_FILTER_TEXT_LENGTH) {
+    return { ok: false, message: `productSearch must be ${MAX_FILTER_TEXT_LENGTH} characters or fewer.` };
+  }
+  const sapItemCodeRaw = readOptionalString(params.get("sapItemCode"));
+  if (sapItemCodeRaw && sapItemCodeRaw.length > MAX_FILTER_TEXT_LENGTH) {
+    return { ok: false, message: `sapItemCode must be ${MAX_FILTER_TEXT_LENGTH} characters or fewer.` };
+  }
+
   return {
     ok: true,
     filters: {
@@ -146,6 +171,9 @@ export function parseReportFilters(params: URLSearchParams): ParsedReportFilters
       includeDemo: params.get("includeDemo") === "true",
       currency: currencyRaw === "" ? null : currencyRaw,
       lostSalesReason: lostSalesReasonResult.value,
+      productCategory: productCategoryRaw,
+      productSearch: productSearchRaw,
+      sapItemCode: sapItemCodeRaw,
     },
   };
 }
@@ -196,4 +224,25 @@ export function dateRangeToDateOnlyFilter(filters: Pick<ReportFilters, "dateFrom
 /** `{ isDemo: false }` unless the filter set explicitly opted into demo rows -- spread into any Prisma `where`. */
 export function demoWhere(filters: Pick<ReportFilters, "includeDemo">): { isDemo?: false } {
   return filters.includeDemo ? {} : { isDemo: false };
+}
+
+/**
+ * Milestone 13 (Customer Intelligence). The "apply defaultDateRange()'s
+ * 30-day fallback when dateFrom/dateTo are unset" step every M11/M12
+ * report already repeats inline (see e.g. lib/reporting/
+ * sales-revenue-queries.ts's own getSalesRevenueReport) -- pulled out
+ * here as its own small, shared export purely so the several new M13
+ * query modules that all need it (customer-revenue-queries.ts,
+ * customer-purchasing-queries.ts, customer-commercial-health-queries.ts)
+ * can import ONE function instead of each re-typing the same two-line
+ * fallback, and so none of them need to import from one another just to
+ * share it. Purely additive -- no existing call site is changed to use
+ * this instead of its own inline version.
+ */
+export function resolveEffectiveDateRange(filters: Pick<ReportFilters, "dateFrom" | "dateTo">): { effectiveFrom: string; effectiveTo: string } {
+  const { dateFrom, dateTo } = defaultDateRange();
+  return {
+    effectiveFrom: filters.dateFrom ?? dateFrom,
+    effectiveTo: filters.dateTo ?? dateTo,
+  };
 }

@@ -589,6 +589,13 @@ export default function ProductsPage() {
               </p>
             </div>
 
+            <Link
+              href={`/products/${selectedProduct.id}`}
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-[#183B2D] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#24513D]"
+            >
+              View full product profile
+            </Link>
+
             <p className="mt-6 text-xs leading-5 text-[#9AA39D]">
               Read-only SAP product record. Approved selling prices, stock
               balances and units will be added in later stages.

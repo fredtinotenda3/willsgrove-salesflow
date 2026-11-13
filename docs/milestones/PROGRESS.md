@@ -5969,3 +5969,583 @@ confirm-lost-sale lifecycle and the `currency` filter regression)
 against this project's own established convention, but was not run
 against a real database from inside this sandbox; nothing here claims
 otherwise.
+
+# Milestone 13 — Customer Intelligence
+
+Built from your attached full specification, under your explicit
+implementation authorization ("I explicitly authorise you to implement
+Milestone 13 (M13: Customer Intelligence) in full. This is
+implementation approval, not another specification exercise.") in one
+pass, delivered per your "return zip of only changed files" instruction.
+**Zero schema changes** — every figure is derived live from tables
+M1/M5/M6A/M6B/M11/M12 already write to.
+
+## What was actually built
+
+Two new surfaces, both reporting-only (no write paths):
+
+- **Customer 360 profile** (`/customers/[id]`, `app/api/customers/[id]/profile/route.ts`
+  + export sibling) — open to **all three roles** (`requireUserOrResponse()`,
+  no role list), the first Customer Intelligence surface with no
+  management restriction, modeled directly on `app/orders/[id]/page.tsx`'s
+  own no-role-redirect precedent. Composes: account identity; SAP
+  invoice line value by currency; invoice history (first/last-as-of/
+  days-since/average-inter-purchase-interval); product purchasing
+  (SAP item, product-master match status/category, quantity-by-unit,
+  value-by-currency, purchase frequency, last-purchased); lost sales;
+  commercial health (claims raised/open-as-of/exposure-by-currency,
+  returns-by-condition, actual-credit-notes in-period vs. all-time-
+  cumulative); delivery outcomes in their own section, explicitly
+  labelled "operational signal, not a commercial dispute"; orders with
+  salesperson-attribution breakdown; quotations (no classification);
+  and a per-customer data-quality summary with a legend.
+- **Management customer-intelligence overview**
+  (`/reports/customer-intelligence`, `app/api/reports/customer-intelligence/route.ts`
+  + export sibling) — **management-only**
+  (`requireManagementReportAccess`). Independently ranks every eligible
+  customer by SAP invoice line value (per currency, never combined),
+  purchase frequency, and days-since-last-qualifying-invoice, plus a
+  calculated open-claims count as of the reporting date — **no
+  composite score, no tier, no churn label**, by explicit instruction. A
+  minimum-activity toggle (default OFF — every eligible customer shown,
+  including zero-activity ones) reuses the exact existing period-toggle
+  `Link`-pair pattern already established on
+  `app/reports/management/[reportId]/page.tsx`'s `operational-summary`
+  report, rather than extending `ReportFilterBar` with a bespoke boolean
+  control it was never designed to carry (that component's own doc
+  comment: "a dropdown that would silently do nothing is worse than no
+  dropdown at all").
+
+New `lib/reporting/` modules, following the same pure/Prisma-backed
+split every prior reporting milestone established:
+
+- **`customer-revenue.ts`** (pure) / **`customer-revenue-queries.ts`**
+  (Prisma-backed) — the customer-keyed twin of M12's `sales-revenue.ts`,
+  deliberately reusing its `currencyKey`/`sumMoneyRows`/`UNKNOWN_CURRENCY`
+  rather than reimplementing currency normalization a second time.
+  `customer-revenue-queries.ts` also owns `getCustomerIntelligenceOverview`
+  (the management overview's single full-population query — no
+  per-customer loop) and `getCustomerRevenueProfile` (the profile's own
+  revenue/history section).
+- **`customer-purchasing.ts`** (pure) / **`customer-purchasing-queries.ts`**
+  (Prisma-backed) — four deliberately separate purchasing metrics per
+  `(customer, sapItemCode)`, replacing an earlier, rejected
+  `SUM(quantityInvoiced / lineTotal)` "average price" design.
+- **`customer-recency.ts`** (pure) — the as-of-date resolution rule
+  (live business date in Africa/Harare via the real IANA tz database
+  vs. a selected historical `dateTo`, so a historical report stays
+  reproducible) and day-difference/inter-purchase-interval arithmetic.
+  No Prisma-backed counterpart needed — it's pure date math over values
+  the other query modules already fetch.
+- **`customer-segmentation.ts`** (pure) — `rankByValue`, the sequential
+  1-based ranking primitive (ties broken deterministically by
+  `customerId`) the management overview uses for all three ranking
+  dimensions. Currency separation is deliberately the CALLER's
+  responsibility, not this module's, so the same primitive serves both
+  currency-scoped (revenue) and whole-population (frequency, recency)
+  rankings without knowing the difference.
+
+  Each of these four pure modules has its own dedicated, unconditional
+  unit-test file (`tests/customer-revenue.test.ts`,
+  `tests/customer-purchasing.test.ts`, `tests/customer-recency.test.ts`,
+  `tests/customer-segmentation.test.ts`) — all passing, no
+  `@prisma/client` dependency, so all run unconditionally in this
+  sandbox. See "Honest verification results" below for the combined
+  pass count.
+- **`customer-commercial-health-queries.ts`** (Prisma-backed) —
+  claims/returns/credit-notes/delivery-outcomes for one customer,
+  reusing `lib/invoice-claims/financial.ts`'s `computeExposureByCurrency`
+  verbatim for claim exposure (zero new financial logic). Also exports
+  `getOpenClaimsCountByCustomer`, the management overview's bulk
+  (never per-customer) open-claims lookup.
+- **`customer-insights-queries.ts`** (Prisma-backed, composite) —
+  `getCustomerProfile`, the single function the Customer 360 page and
+  its export route both call, assembling every section above into one
+  composite plus lost-sales and orders/quotations, which this file owns
+  directly (no separate pure module needed for those two sections).
+- **`lib/reporting/customer-activity-queries.ts`** (M12 file, extended)
+  — one new exported helper reused by the customer-level grouping logic
+  above; backward-compatible, additive only, no existing call site's
+  behaviour changed.
+- **`lib/reporting/filters.ts`** (extended) — `resolveEffectiveDateRange`,
+  a small shared export pulling out the "apply `defaultDateRange()`'s
+  30-day fallback when `dateFrom`/`dateTo` are unset" step every M11/M12
+  report already repeats inline, purely so the three new M13 query
+  modules that all need it share one function instead of each
+  re-typing it or importing from one another just to share it. Purely
+  additive — no existing call site was changed to use it instead of its
+  own inline version.
+
+New UI navigation, additive only: a "360 profile" link added to the
+existing `/customers` directory's row actions (the directory page
+itself otherwise untouched, per the spec's own "do not rebuild
+unnecessarily" instruction), and a "Customer Intelligence" tile added
+to `/reports`, gated by the existing `canSeeManagementReports`, placed
+alongside the existing Sales Performance/Management Reports tiles.
+
+## The credit-note union path: closing a real gap in M6A/M6B's own figure
+
+Investigating how to show "actual credit notes" for one customer
+surfaced a real limitation in the existing, whole-business
+`computeExposureByCurrency` (M6A/M6B): it is claim-centric, walking
+`CreditNote` rows reachable through a claim. A credit note can also be
+recorded with **no claim at all** — directly against an invoice,
+`claimId: null`, via `lib/returns-credits/plan-import.ts`'s own CSV
+match path — and that path is invisible to a claim-centric walk. This
+milestone's `getCustomerCommercialHealth` closes that gap for the
+customer-scoped figure with a single query spanning both branches
+(`OR: [{ claim: { customerId } }, { claimId: null, sapInvoice: { matchedCustomerId: customerId } }]`),
+mutually exclusive by construction so neither branch can double-count
+a note the other already counted. See `docs/milestones/m13-metric-definitions.md`
+§6–7 for the full rule and the explicit warning never to add this
+figure to M6A/M6B's own claim-centric one.
+
+## A genuine coverage gap self-caught mid-round
+
+While finishing `tests/customer-intelligence-db.integration.test.ts`,
+re-reading my own file's top-of-file doc comment against its actual
+`describe` sections found that it claimed "Returns grouped by actual
+return condition, via the real M6B `recordClaimReturn` lifecycle" as
+covered — but no such test existed yet; only the credit-note union path
+had been written. This was a real gap between what the documentation
+asserted and what the test file actually did, not a pre-existing
+sandbox limitation, caught by my own re-read rather than by a failing
+assertion (there was nothing to fail — the section simply didn't
+exist). Fixed before delivery: extracted the shared claim-driving logic
+into a `driveClaimToApproved()` helper (shared with the existing
+credit-note test section, avoiding duplicated claim-lifecycle
+boilerplate), then added the actually-missing test section, calling
+the real `recordClaimReturn()` twice (`GOOD_RESALABLE` and `DAMAGED`)
+and asserting `getCustomerCommercialHealth(...).returns.inPeriodByCondition`
+reflects both. Re-verified: `npx eslint`/`npx tsc --noEmit` clean for
+this file (the one new error, `tests/customer-intelligence-db.integration.test.ts(185,65): error TS7006`,
+is the same pre-existing stub-client category as the rest of the
+project, confirmed by inspection); `npx vitest run` on the file
+confirms all 13 tests still skip cleanly (no `DATABASE_URL`).
+
+## Access-control tests: a deliberate departure from Milestone 11's own precedent
+
+`tests/reporting-db.integration.test.ts` (M11) explicitly defers
+role-gating 403 tests as "already covered elsewhere." This milestone's
+own authorization explicitly and specifically requires these exact
+assertions (403 for `SALESPERSON` on management surfaces;
+`SALES_MANAGER`/`ADMINISTRATOR` access works; all three roles access
+Customer 360; unauthenticated rejected), so `tests/customer-intelligence-access.test.ts`
+was written as a new, unconditional (no database needed) test file —
+mocking only the external session-resolution boundary
+(`next/headers`'s `cookies()`, `lib/auth/session.ts`'s `resolveSession`)
+via `vi.mock`, while exercising the REAL, unmodified
+`requireUserOrResponse()`/`requireManagementReportAccess()` functions
+every M13 route actually calls. 5 tests, all passing: unauthenticated →
+401 on both surfaces; `SALESPERSON` → 200-eligible on the profile, 403
+on the overview; `SALES_MANAGER`/`ADMINISTRATOR` → both surfaces;
+`isValidId` rejects malformed customer ids (empty string, a string with
+a space, a naive SQL-injection-shaped string) — the exact guard both
+the profile route and its export sibling call before doing anything
+else.
+
+## Documented scope decisions
+
+- No schema migration — every M13 figure is derived live from existing
+  M1/M5/M6A/M6B/M11/M12 tables/columns.
+- No composite score, no tier, no churn label, no percentile
+  segmentation on the management overview — an explicit instruction,
+  not an omission; `customer-segmentation.ts`'s own top comment states
+  this plainly so a future round doesn't quietly add one without a
+  fresh decision to do so.
+- The management overview's minimum-activity toggle defaults to OFF —
+  every eligible customer is shown, including those with zero
+  qualifying invoices in the selected period, unless a manager
+  explicitly turns the toggle on.
+- `getCustomerProductPurchasing`/`getCustomerCommercialHealth`/
+  `getCustomerRevenueProfile` apply only `dateFrom`/`dateTo`/
+  `includeDemo` (and, for the overview, `currency`) — none of
+  `productId`/`orderStatus`/`quotationStatus`/`fulfilmentStatus`/
+  `claimStatus`/`communicationStatus` is wired into any M13 query,
+  documented in `m13-metric-definitions.md` §9 rather than silently
+  guessed at.
+- Quotations on the Customer 360 profile carry no classification or
+  health signal of their own this milestone — listed for reference only.
+
+## Honest verification results
+
+- **`npx eslint .`** — clean across the whole project, including every
+  file this milestone added or edited.
+- **`npx tsc --noEmit`** — 569 errors (up from 532 after Milestone 12),
+  **zero of which are new regressions**: the +37 break down exactly as
+  `customer-revenue-queries.ts` (12) + `customer-purchasing-queries.ts`
+  (7) + `customer-commercial-health-queries.ts` (3) +
+  `customer-insights-queries.ts` (14) + the one new `TS7006` in
+  `tests/customer-intelligence-db.integration.test.ts` (1) = 37, every
+  one falling into the exact same three pre-existing, sandbox-
+  `@prisma/client`-stub error categories (`TS2694`/`TS7006`/`TS2305`,
+  plus the `TS2345`/`TS2322` cascade from the stub's `{}`-typed JSON/
+  aggregate fields, the same cascade already present in M12's own
+  `lib/quotations/create.ts`/`lib/reporting/sales-performance.ts`)
+  already documented in every prior milestone's own round. Confirmed by
+  grep that this milestone's own new page and API-route files
+  (`app/customers/[id]/page.tsx`, `app/reports/customer-intelligence/page.tsx`,
+  both new API route pairs, plus the four new pure modules) carry
+  **zero** type errors — the noise isolates entirely to the four new
+  Prisma-backed query/composite modules and the one DB-integration test
+  file, exactly matching the established precedent.
+- **`npx vitest run`** (unconditional) — 696 passed, 131 skipped, 0
+  failed (up from 657/118/0 after Milestone 12 — net +39 passed/+13
+  skipped, all new M13 tests). The +39 passed are the combined total of
+  `tests/customer-revenue.test.ts`, `tests/customer-purchasing.test.ts`,
+  `tests/customer-recency.test.ts`, `tests/customer-segmentation.test.ts`
+  (full coverage of the four new pure modules in §"What was actually
+  built" above) plus `tests/customer-intelligence-access.test.ts`'s 5
+  unconditional access-control tests. The +13 skipped are
+  `tests/customer-intelligence-db.integration.test.ts`'s gated tests,
+  confirmed to self-skip cleanly (no `DATABASE_URL`) rather than
+  silently erroring or false-passing. **Zero regressions in any
+  pre-existing test.**
+- **`RUN_DB_INTEGRATION_TESTS=1 npx vitest run`** — confirms every
+  DB-gated test across the whole project, including this milestone's
+  new file, still self-skips cleanly (this sandbox has no
+  `DATABASE_URL`) rather than silently erroring or false-passing. This
+  milestone's DB-integration tests themselves were **not** actually run
+  against a real database from inside this sandbox — nothing here
+  claims otherwise.
+- **`npx prisma validate` / `npx prisma generate`** — could not run.
+  Confirmed, by direct reproduction this round (including past the
+  `PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1` checksum-bypass env var),
+  to be the identical `binaries.prisma.sh` 403-Forbidden network-egress
+  block documented since Milestone 4 — the actual engine binary itself
+  cannot be downloaded in this sandbox, not merely its checksum. M13
+  made zero schema/migration changes, so this is expected to clear
+  essentially entirely on a real network, same as every prior
+  milestone's own note.
+- **`npm run build`** — fails at the identical, pre-existing
+  `next/font/google` Google Fonts network block, confirmed via direct
+  grep against this very file's own prior entries (present since
+  "Milestone 1 fix round 2," recurring in nearly every milestone since)
+  to be unrelated to any file this milestone touched (`app/layout.tsx`
+  itself is untouched by M13). Re-reading this file's own prior
+  diagnostic investigation (lines ~355–392 above) confirms that even
+  working around the font block would only prove the build reaches the
+  TypeScript-checking phase — already redundantly covered by the
+  standalone `tsc --noEmit` run above — before hitting the
+  un-workaroundable wall of `@prisma/client`'s stub throwing when
+  actually constructed during Next's "Collecting page data" phase. **No
+  claim in this document, or any prior one, about the build's
+  static-generation/prerendering phase should be read as
+  sandbox-verified** — that remains true for every milestone, M13
+  included.
+- **Not run in this sandbox**: `npx prisma validate`/`generate`, and
+  this milestone's gated DB-integration tests against a real database.
+
+**Implemented: yes**, both surfaces, in full, per the authorization's
+own explicit instruction not to stop at a partial delivery. **Tested:
+yes, with the same honest, layered caveat as every prior milestone** —
+39 new unconditional tests cover every Prisma-independent piece of new
+logic directly and completely (the four pure modules' own test files,
+plus the 5 access-control tests exercising the real auth-boundary
+functions); the gated `tests/customer-intelligence-db.integration.test.ts`
+(13 tests, confirmed to self-skip cleanly rather than silently erroring
+or false-passing) walks every real Prisma-backed query function's
+actual logic (qualifying-invoice rules, customer grouping, the
+credit-note union path's non-double-counting, the open-claims
+approximation, historical as-of-date reproducibility, product-
+purchasing's frequency/value/quantity separation, and the
+returns-by-condition coverage this round self-caught and fixed) against
+this project's own established convention, but was not run against a
+real database from inside this sandbox; nothing here claims otherwise.
+
+# Milestone 14 — Product Intelligence
+
+Built from your attached full specification, under your explicit
+implementation authorization ("This is an implementation instruction,
+not a request for another proposal or specification... Never stop
+after inspection. Never ask to approve another specification.") in one
+pass, delivered per your "return a zip of only changed files"
+instruction. **Zero schema changes** — every figure is derived live
+from tables M1/M5/M6A/M6B/M10/M13 already write to.
+
+## What was actually built
+
+Two new surfaces, both reporting-only (no write paths), one level down
+from Milestone 13's own customer-centric pair:
+
+- **Product 360 profile** (`/products/[id]`, `app/api/products/[id]/profile/route.ts`
+  + export sibling) — open to **all three roles** (`requireUserOrResponse()`,
+  no role list), modeled directly on `app/customers/[id]/page.tsx`'s own
+  no-role-redirect precedent. Composes: product identity (including
+  SAP item code and master-data match status); SAP invoice line value
+  by currency; invoiced quantity by UoM; invoice frequency and distinct
+  purchasing customers; lost sales; commercial health (claims/returns
+  raised, actual credit notes by currency, with the inclusive count and
+  the attribution-gated value kept structurally separate); delivery/
+  rejection outcomes; and deterministic, structurally-cutoff-based
+  insights (or none, when the product has too little history).
+- **Management product-intelligence overview**
+  (`/reports/product-intelligence`, `app/api/reports/product-intelligence/route.ts`
+  + export sibling) — **management-only** (`requireManagementReportAccess`).
+  Independently ranks every product across exactly 10 named dimensions
+  — SAP invoice line value by currency; invoiced quantity by UoM;
+  invoice frequency; distinct purchasing customers; lost-sales activity;
+  claim/return activity; actual credit-note values by currency;
+  delivery rejection quantities; declining invoice activity vs. the
+  immediately preceding period of equal duration; incomplete/unmatched
+  master data — **no composite score, no invented tier**, by explicit
+  instruction. Only the largest dimension's rows are paginated in
+  memory for the screen; the other 9 are returned/exported whole. Every
+  row with a resolved `productId` links through to that product's own
+  Product 360 profile.
+
+New `lib/reporting/` modules, following the same pure/Prisma-backed
+split every prior reporting milestone established:
+
+- **`product-segmentation.ts`** (pure) — the product-keyed twin of
+  M13's `customer-segmentation.ts`: `rankByValue` (sequential 1-based
+  ranking, deterministic tie-break by `sapItemCode`, no composite
+  score) and `computePreviousPeriod` (immediately preceding period of
+  equal duration, no gap/overlap, null-returning for invalid/reversed
+  ranges — the shared primitive behind dimension 9).
+- **`product-revenue.ts`** (pure) — the product-keyed twin of M13's
+  `customer-revenue.ts`: `groupRevenueByCurrencyAndProduct`/
+  `summarizeProductRevenueByCurrency`, reusing M12's own `currencyKey`/
+  `sumMoneyRows`/`UNKNOWN_CURRENCY` rather than reimplementing currency
+  normalization a third time. Groups every qualifying `SapInvoiceLine`
+  by its own recorded `sapItemCode`, never a `Product`-master join
+  (a join is used only for match-status/category display, at the query
+  layer, never for identity or grouping). Same "SAP invoice line
+  value," never "revenue," labelling rule as `sales-revenue.ts`/
+  `customer-revenue.ts`.
+- **`product-revenue-queries.ts`** (Prisma-backed) — dimensions 1–4
+  (`getProductRevenueProfile`/`getProductRevenueOverview`, grouped by
+  `sapItemCode`, never `Product.id` or description), dimension 9
+  (`getProductDecliningActivityOverview`, per-currency-independent
+  decline ranking against `computePreviousPeriod`), and dimension 10
+  (`getProductMasterDataQualityOverview`/`-Report` — `incomplete_category`
+  means `Product.category === null` only, never `unitOfMeasure`, since
+  quantity reporting deliberately always uses transaction-level UoM;
+  `unmatched` means real invoice activity with no `Product` master row;
+  no `rank` field on this dimension, since it is a binary flag, not a
+  ranked magnitude).
+- **`product-purchasing.ts`** (pure) — `aggregateQuantityByUnit`
+  (never combines incompatible units; normalizes missing/whitespace/
+  case-variant units into one bucket), `itemKey`, and
+  `aggregateCustomerDemandForProduct` (distinct-invoice purchase
+  frequency per customer, MAX last-purchase date).
+- **`product-demand-queries.ts`** (Prisma-backed) —
+  `getProductLostSalesRanking` (dimension 5), grouping confirmed
+  `LostSaleRecord`s by `sapItemCodeSnapshot`, reusing the existing M4
+  lifecycle verbatim.
+- **`product-commercial-health.ts`** (pure) — `resolveSingleProductSapItemCode`,
+  the central single-product attribution rule: a claim/credit-note/
+  return is attributed to exactly one product only when every line on
+  it resolves to the same single, non-blank SAP item code (whitespace
+  trimmed before comparison); returns `"multiple"`/`"none"` otherwise,
+  never guessed or split pro-rata.
+- **`product-commercial-health-queries.ts`** (Prisma-backed) —
+  `getProductClaimAndReturnOverview` (dimension 6 — inclusive
+  `claimCount`/`returnCount` touching a product's item code at all,
+  plus an explicit `multiProductClaimCount` bucket) and
+  `getProductCreditNoteValueOverview` (dimension 7 — per-currency
+  actual credit-note totals, attribution-gated via
+  `resolveSingleProductSapItemCode`, with an explicit
+  `unattributableCreditNoteCount` bucket).
+- **`product-fulfilment-queries.ts`** (Prisma-backed) —
+  `getProductFulfilmentSummary` (Product 360) and
+  `getProductDeliveryRejectionOverview` (dimension 8). See
+  "The `DispatchRecord` date-field fix" below.
+- **`product-insights.ts`** (pure) — `generateProductInsightsForProduct`/
+  `hasDeclineSimple`: deterministic, structurally-cutoff-based insights
+  only (insufficient-data priority below 2 qualifying invoices;
+  repeated-claims/lost-sales/delivery-rejections at count ≥ 2;
+  credit-notes-reach-or-exceed-invoiced-value, a self-justifying 100%
+  bar with zero-invoiced-value handled per currency independently;
+  broad-customer-base-declining-activity, requiring both a real decline
+  and ≥ 2 distinct customers). Never an arbitrary threshold, never an
+  invented score, never LLM-fabricated — per spec section 7's explicit
+  instruction.
+- **`product-insights-queries.ts`** (Prisma-backed, composite) —
+  `getProductProfile`/`getProductById` (Product 360) and
+  `getProductIntelligenceOverview` (the management overview's full
+  10-dimension assembly). Resolves `productId` for claim/return rows
+  via one batched `prisma.product.findMany` at the assembly layer,
+  never per-row.
+- **`lib/reporting/filters.ts`** (extended) — `productCategory`/
+  `productSearch`/`sapItemCode` added to `ReportFilters`, all three
+  free text, never validated against a fixed enum — per Milestone 12's
+  own documented "optional filter" lesson — each independently capped
+  at the existing `MAX_FILTER_TEXT_LENGTH`. Purely additive.
+
+  Each pure module above has its own dedicated, unconditional
+  unit-test file (`tests/product-segmentation.test.ts`,
+  `tests/product-revenue.test.ts`, `tests/product-insights.test.ts`,
+  `tests/product-commercial-health.test.ts`,
+  `tests/product-purchasing.test.ts`) — all passing, no `@prisma/client`
+  dependency. See "Honest verification results" below for the combined
+  pass count.
+
+New UI navigation, additive only: a "View full product profile" button
+added to the existing `/products` directory's slide-over panel (the
+directory and panel otherwise untouched), and a "Product Intelligence"
+tile added to `/reports`, gated by the existing `canSeeManagementReports`,
+placed between the existing Customer Intelligence and Management
+Reports tiles.
+
+## The `DispatchRecord` date-field fix: this milestone's one genuinely new query-layer risk
+
+Dimension 8 (delivery rejections) needs a period filter over
+dispatch/delivery activity, but direct schema inspection confirmed
+`DispatchRecord` has **no `dispatchedAt` field** — only `DispatchLine`
+carries its own non-nullable `createdAt`. Both
+`getProductFulfilmentSummary` and `getProductDeliveryRejectionOverview`
+filter on `DispatchLine.createdAt` instead, documented explicitly in
+`docs/milestones/m14-metric-definitions.md` §5 as producing a "cohort
+view" — dispatches that **occurred** in the period, not deliveries
+**recorded** in the period, since a delivery can be recorded well after
+its dispatch. This is a scope decision, not a bug: the alternative
+(filtering on `DeliveryRecord`'s own timestamp) would silently exclude
+a dispatch still in transit at period end even though its rejection
+risk already exists. This is the one area of this milestone's own new
+query-layer logic given the heaviest DB-integration test coverage (see
+`tests/product-intelligence-db.integration.test.ts`'s dimension-8
+section), since it's a genuinely new shape rather than a direct
+extension of M13's own already-proven patterns.
+
+## The single-product attribution rule: never guessing, never splitting pro-rata
+
+A claim, credit note, or return can span multiple products on one
+multi-line invoice. `resolveSingleProductSapItemCode` resolves this
+deliberately conservatively: it is attributed to exactly one product
+only when **every** line on the record resolves to the same single,
+non-blank SAP item code. A claim or credit note touching two or more
+distinct item codes is excluded from every product's own financial
+total and counted instead in an explicit `multiProductClaimCount`
+(dimension 6) or `unattributableCreditNoteCount` (dimension 7) bucket —
+never guessed at, never split pro-rata across the lines it touches.
+This is the direct reason `getProductClaimAndReturnOverview`'s
+`claimCount`/`returnCount` (inclusive — any claim touching the item
+code at all) and `getProductCreditNoteValueOverview`'s per-product
+totals (attribution-gated) are two structurally different populations
+that must never be read as reconciling against one another — see the
+new "never conflate" bullet in `docs/milestones/ROADMAP.md`.
+
+## A real regression caught and fixed by actually running the full suite
+
+This milestone's own extension of `ReportFilters` (adding
+`productCategory`/`productSearch`/`sapItemCode`, all three always
+present with a default of `null`) broke Milestone 11's own
+pre-existing `tests/reporting-filters.test.ts` "parses a full, valid
+filter set" test — its exact-equality assertion on the parsed result
+didn't anticipate the three new always-present keys, so the assertion
+object was now missing fields the real return value has. This was
+caught only by actually running the full test suite, not by inspection
+of the new code alone — consistent with this project's own standing
+"always verify before considering complete" discipline. Per the
+spec's explicit "never weaken/skip/delete existing tests" instruction,
+this was fixed properly rather than loosened: the three new
+default-null keys were added to the expected object (not removed from
+the assertion), and two new dedicated test cases were added
+specifically exercising the new fields' free-text parsing and their
+shared length-cap rejection — turning a bare regression fix into real
+new-functionality coverage.
+
+## Documented scope decisions
+
+- No schema migration — every M14 figure is derived live from existing
+  M1/M5/M6A/M6B/M10/M13 tables/columns.
+- No composite score, no invented product tier, on the management
+  overview — an explicit instruction, not an omission; the overview
+  page's own structure (10 separate `SectionCard`s, one per dimension)
+  makes this visually as well as structurally true.
+- `Product.id` is used only as the Product 360 route key for a real
+  master record; an unmatched SAP item code has no profile page of its
+  own and surfaces only through the overview's 10th dimension.
+- Quantity/category reporting uses only transaction-level UoM and
+  `Product.category`; `Product.unitOfMeasure` is never read for
+  quantity aggregation, by deliberate design (documented in
+  `m14-metric-definitions.md` §6), so an unmatched-UoM edge case is
+  never silently papered over by the product master's own value.
+- Delivery-rejection figures are a "cohort view" over
+  `DispatchLine.createdAt` (dispatches occurring in the period), never
+  a claim about deliveries recorded in the period — see above.
+
+## Honest verification results
+
+- **`npx eslint .`** — clean across the whole project, including every
+  file this milestone added or edited (one dead `orderCounter`
+  declaration in the new DB-integration test file was caught and
+  removed before this run, not left for the linter to flag and ignored).
+- **`npx tsc --noEmit`** — 630 errors (up from 569 after Milestone 13),
+  **zero of which are new regressions**: the +61 isolate entirely to
+  this milestone's new Prisma-backed query/composite modules
+  (`product-revenue-queries.ts`, `product-demand-queries.ts`,
+  `product-commercial-health-queries.ts`, `product-fulfilment-queries.ts`,
+  `product-insights-queries.ts`) plus the one new DB-integration test
+  file, every one falling into the same pre-existing, sandbox-
+  `@prisma/client`-stub error categories (`TS2694`/`TS7006`/`TS2305`,
+  plus the `TS2322`/`TS2345`/`TS2339` cascade from the stub's
+  `{}`-typed JSON/aggregate fields) already documented in every prior
+  milestone's own round. Confirmed by grep that this milestone's own
+  new page and API-route files (`app/products/[id]/page.tsx`,
+  `app/reports/product-intelligence/page.tsx`, both new API route
+  pairs, plus the five new pure modules) carry **zero** type errors,
+  and that the one new error shape in the new DB-integration test file
+  (`TS7006` on an implicit-any callback parameter) is identical to an
+  already-shipped error at the same code pattern in
+  `tests/customer-intelligence-db.integration.test.ts` — confirming
+  stub noise, not a new logic bug.
+- **`npx vitest run`** (unconditional) — 765 passed, 145 skipped, 0
+  failed (up from 696/131/0 after Milestone 13 — net +69 passed/+14
+  skipped, all new M14 tests). The +69 passed are the combined total of
+  `tests/product-segmentation.test.ts`, `tests/product-revenue.test.ts`,
+  `tests/product-insights.test.ts`,
+  `tests/product-commercial-health.test.ts`, `tests/product-purchasing.test.ts`
+  (full coverage of the five new pure modules above), `tests/product-intelligence-access.test.ts`'s
+  4 unconditional access-control tests, and the two new test cases
+  added to `tests/reporting-filters.test.ts` while fixing the
+  regression above. The +14 skipped are
+  `tests/product-intelligence-db.integration.test.ts`'s gated tests,
+  confirmed to self-skip cleanly (no `DATABASE_URL`) rather than
+  silently erroring or false-passing. **Zero regressions in any
+  pre-existing test** — the one pre-existing test that would have
+  regressed (`tests/reporting-filters.test.ts`'s exact-equality
+  assertion) was caught and properly fixed, as detailed above.
+- **`RUN_DB_INTEGRATION_TESTS=1 npx vitest run`** — confirms every
+  DB-gated test across the whole project, including this milestone's
+  new file, still self-skips cleanly (this sandbox has no
+  `DATABASE_URL`) rather than silently erroring or false-passing. This
+  milestone's DB-integration tests themselves were **not** actually run
+  against a real database from inside this sandbox — nothing here
+  claims otherwise.
+- **`npx prisma validate` / `npx prisma generate`** — could not run.
+  Confirmed, by direct reproduction this round (including past the
+  `PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1` checksum-bypass env var),
+  to be the identical `binaries.prisma.sh` 403-Forbidden network-egress
+  block documented since Milestone 4. M14 made zero schema/migration
+  changes, so this is expected to clear essentially entirely on a real
+  network, same as every prior milestone's own note.
+- **`npm run build`** — fails at the identical, pre-existing
+  `next/font/google` Google Fonts network block, confirmed via direct
+  reproduction to be unrelated to any file this milestone touched
+  (`app/layout.tsx` itself is untouched by M14; the failure occurs
+  during root-layout module evaluation, before any `/products` or
+  `/reports` route is ever reached). **No claim in this document, or
+  any prior one, about the build's static-generation/prerendering
+  phase should be read as sandbox-verified** — that remains true for
+  every milestone, M14 included.
+- **Not run in this sandbox**: `npx prisma validate`/`generate`, and
+  this milestone's gated DB-integration tests against a real database.
+
+**Implemented: yes**, both surfaces, in full, across all 10
+management-overview dimensions, per the authorization's own explicit
+instruction never to stop after inspection or ask to approve another
+specification. **Tested: yes, with the same honest, layered caveat as
+every prior milestone** — 69 new unconditional tests (plus 2 extending
+a pre-existing file) cover every Prisma-independent piece of new logic
+directly and completely (the five pure modules' own test files, the
+4 access-control tests exercising the real auth-boundary functions,
+and the regression-fix coverage); the gated
+`tests/product-intelligence-db.integration.test.ts` (14 tests,
+confirmed to self-skip cleanly rather than silently erroring or
+false-passing) walks every real Prisma-backed query function's actual
+logic across all 10 dimensions plus both composite-assembly functions
+against this project's own established convention, but was not run
+against a real database from inside this sandbox; nothing here claims
+otherwise.

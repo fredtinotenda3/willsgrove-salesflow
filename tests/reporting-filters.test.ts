@@ -66,7 +66,28 @@ describe("parseReportFilters", () => {
       currency: "USD",
       lostSalesReason: "PRODUCT_UNAVAILABLE",
       includeDemo: true,
+      // Milestone 14: absent from this request, so default to null, same
+      // as every other optional filter above that wasn't supplied.
+      productCategory: null,
+      productSearch: null,
+      sapItemCode: null,
     });
+  });
+
+  it("Milestone 14: parses productCategory/productSearch/sapItemCode as free text, never validated against a fixed enum", () => {
+    const result = parseReportFilters(params({ productCategory: "Fresh Produce", productSearch: "widget", sapItemCode: "10001234" }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.filters.productCategory).toBe("Fresh Produce");
+    expect(result.filters.productSearch).toBe("widget");
+    expect(result.filters.sapItemCode).toBe("10001234");
+  });
+
+  it("Milestone 14: rejects productCategory/productSearch/sapItemCode over 100 characters, each with its own named error", () => {
+    const tooLong = "x".repeat(101);
+    expect(parseReportFilters(params({ productCategory: tooLong })).ok).toBe(false);
+    expect(parseReportFilters(params({ productSearch: tooLong })).ok).toBe(false);
+    expect(parseReportFilters(params({ sapItemCode: tooLong })).ok).toBe(false);
   });
 
   it("Milestone 12: uppercases a lowercase/mixed-case currency code", () => {
