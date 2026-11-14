@@ -6,6 +6,8 @@ Root-caused and fixed against the repository zip you supplied. Every fix is expl
 
 **Update 2:** your next build log showed two things. First, two non-fatal `prisma:error`/"Database health check failed" lines from `/api/health` during static-page generation -- investigated and found to need **no fix** (see section **K**: this is expected build-time behavior this project's own `CHANGES.md` already documents and deliberately chose not to suppress). Second, a **fatal** error that did stop the build: `useParams()` used in a Client Component outside `<Suspense>`, on `/orders/intake/[id]/review`. Section **J** covers that fix. Sections A-I are unchanged.
 
+**Update 3:** this round's report was a browser console error rather than a terminal transcript: `eval() is not supported in this environment... React requires eval() in development mode`, seen in `next dev`. Root cause and fix are in section **L**. Sections A-K are unchanged.
+
 ## A. `lib/channels/intake-review.ts` — 4 errors (1 root cause)
 
 **Root cause:** `MessageIntake` has explicit `@relation(fields: [...], references: [...])` relations (`linkedOrder`, `linkedQuotation`, `duplicateOf`, etc.), which means Prisma generates two different update-input shapes for it: a **checked** one (`MessageIntakeUpdateInput`) that only exposes the *relation* fields, and an **unchecked** one (`MessageIntakeUncheckedUpdateInput`) that exposes the *scalar foreign-key* fields (`linkedOrderId`, `linkedQuotationId`, `duplicateOfId`) directly. `finishReview`'s `extra` parameter was typed as the checked variant, but every call site passes scalar FK literals (`{ linkedOrderId: orderId }`, etc.) — the unchecked shape. That mismatch is also what produced the `customer`-relation error at the old line 296: merging the wrongly-typed `extra` into the update's `data` object pulled in a checked-only `customer?: CustomerUpdateOneWithoutMessageIntakesNestedInput` property that doesn't belong in an otherwise-unchecked object (this file's `reviewedById` scalar FK already uses unchecked only).
@@ -103,6 +105,35 @@ What you're seeing is Next's build-time route-classification pass: during "Gener
 
 **No code change made.** Re-introducing `force-dynamic` (or any other attempt to "fix" this console output) would just repeat the mistake `CHANGES.md` already documents as wrong, for a problem that isn't actually a problem.
 
+## L. Browser console error — `eval() is not supported in this environment` (`next dev`)
+
+**Error:**
+```
+eval() is not supported in this environment. If this page was served with a
+Content-Security-Policy header, make sure that `unsafe-eval` is included.
+React requires eval() in development mode for various debugging features like
+reconstructing callstacks from a different environment.
+React will never use eval() in production mode
+
+Next.js version: 16.4.4 (Turbopack)
+```
+
+**Root cause:** `next.config.ts`'s `headers()` (added in Milestone 16, spec section 4.4 — the global security-headers baseline) sends `Content-Security-Policy: ...; script-src 'self' 'unsafe-inline'; ...` on **every** response, including `next dev`. React's own development build calls `eval()` itself — not a bundler/HMR mechanism, but `react-dom`'s dev-mode instrumentation for reconstructing component stacks (its own error text says exactly this: "React requires eval() in development mode..."). A CSP whose `script-src` doesn't include `'unsafe-eval'` makes the browser block that call outright, which is this error, firing on every page in dev.
+
+This is a real gap in this milestone's own CSP, not a new defect introduced by this fix round. `docs/production/SECURITY-REVIEW.md` section 4 already documents how the CSP was verified: "confirmed present via `curl`... `/login` rendered correctly, 200 OK, full page body." `curl` fetches the response and checks the header's value and the HTML body — it never loads the page in an actual browser, so it could not have exercised (or caught) a browser-side `eval()` block. The gap sat undetected until now because of *how* it was verified, not because it was overlooked in the code.
+
+**Fix (`next.config.ts`):** `script-src` now conditionally appends `'unsafe-eval'`, gated on `process.env.NODE_ENV !== "production"`:
+```ts
+const isProduction = process.env.NODE_ENV === "production";
+...
+`script-src 'self' 'unsafe-inline'${isProduction ? "" : " 'unsafe-eval'"}`,
+```
+**Why this is correct, not a weakening:** the error message's own second line says it plainly — "React will never use `eval()` in production mode." The thing that needs `'unsafe-eval'` only exists in development. Scoping the relaxation to `NODE_ENV !== "production"` means the **production** CSP this project already reviewed and shipped is byte-for-byte unchanged (verified with a small standalone script reproducing the template-string logic for both branches — see verification table below); only `next dev` gets the one extra token it actually needs to run without a blocked `eval()` on every page. This is the standard, minimal fix for this well-known Next.js-plus-strict-CSP interaction — not a broadened production policy, and not a removal of the CSP.
+
+**Docs updated for consistency:** `docs/production/SECURITY-REVIEW.md` section 4 now states the CSP's production value and its dev-only addition separately, and explains the `curl`-vs-browser verification gap, rather than quoting only the single policy string that was true before this fix.
+
+**Proactive check:** confirmed no test or other config references the CSP string directly (`grep` across `tests/` and the repo for `Content-Security-Policy`/`script-src` — only `next.config.ts` and the two docs files above mention it), so nothing else needed updating for consistency.
+
 ## Verification results
 
 Run from this environment, against the fixed code:
@@ -112,10 +143,11 @@ Run from this environment, against the fixed code:
 | `npx prisma generate` | **Could not run.** `Error: Failed to fetch sha256 checksum at https://binaries.prisma.sh/.../schema-engine.sha256 - 403 Forbidden`. This sandbox's outbound network access does not reach `binaries.prisma.sh` at all (confirmed by also trying `PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1`, which gets one step further and then fails the same way trying to fetch the actual engine binary). This is an environment limitation, not something introduced by these fixes. |
 | `npx prisma validate` | **Could not run** — same network restriction (needs the schema-engine binary). |
 | `npx prisma migrate status` | **Could not run** — no real PostgreSQL database is reachable from this environment. |
-| `npm run lint` | **Pass.** Clean, exit 0, both before and after every round of these fixes, including a full-project run and a targeted run against the two new/changed files in section J. |
-| `npx tsc --noEmit` | See the dedicated explanation below — **the specific 18 originally-reported errors are gone**, confirmed line-by-line, and the two files touched in section J produce **zero** errors of their own (`grep`-confirmed against the full `tsc` output). |
-| `npx vitest run` | **Pass.** 875 passed / 158 skipped / 0 failed — identical to your own reported local result, unchanged after section J (no test exercises this page directly). |
+| `npm run lint` | **Pass.** Clean, exit 0, both before and after every round of these fixes, including a full-project run and targeted runs against the files changed in sections J and L. |
+| `npx tsc --noEmit` | See the dedicated explanation below — **the specific 18 originally-reported errors are gone**, confirmed line-by-line, and the files touched in sections J and L produce **zero** errors of their own (`grep`-confirmed against the full `tsc` output). |
+| `npx vitest run` | **Pass.** 875 passed / 158 skipped / 0 failed — identical to your own reported local result, unchanged after sections J and L (no test exercises either change directly). |
 | `npm run build` | **Could not run at all in this environment** — fails immediately at font fetching (`next/font: error: Failed to fetch Geist from Google Fonts`, `https://fonts.googleapis.com` unreachable from this sandbox), before even reaching TypeScript-checking, let alone static-page generation. Confirmed again this round, unchanged. Your own environment is the only one that can confirm sections I and J's fixes, the same as every other check this sandbox can't run. Based on direct code inspection (not a successful build here), both fixes are grounded in this project's own established, already-working patterns (41 other routes for section I; `app/orders/[id]/page.tsx` and every other `[id]/page.tsx` + panel split for section J) — not a guess. |
+| `next dev` | **Could not run at all in this environment either** — same `fonts.googleapis.com` block applies to `next dev`, not only `next build`. Section L's fix was instead verified by (a) reading the exact `isProduction`-gated template-string logic directly, and (b) reproducing that logic in a standalone Node script with `NODE_ENV` set both ways, confirming the dev-mode value gains exactly `'unsafe-eval'` and the production value is byte-for-byte identical to the one already documented and reviewed in `SECURITY-REVIEW.md` section 4. Your own environment is the only one that can confirm the console error is actually gone from a running `next dev` page. |
 
 ### Why `tsc --noEmit` needs an explanation here, not just a number
 
@@ -145,5 +177,6 @@ Unchanged by this fix, and not represented as passing integration tests — they
 - No migration, schema, or database change — nothing in this fix required one, and none was made, in any round.
 - No test was deleted, skipped, or had its expectations weakened.
 - No business rule, audit trail, or financial calculation changed, in any round. The one access-control-adjacent change is section J's new page-level auth/id check, called out explicitly there (with a one-line revert if you'd rather not have it) rather than silently folded in.
-- No unrelated file, formatting, or refactor — the original pass changed exactly 8 files, matching the 8 files in the error report; section I added exactly the 2 files it describes; section J added exactly 1 new file (`review-workspace.tsx`) and rewrote exactly 1 existing one (`page.tsx`), both fully explained there; section K changed nothing at all (`app/api/health/route.ts` was read and deliberately left as-is).
+- No unrelated file, formatting, or refactor — the original pass changed exactly 8 files, matching the 8 files in the error report; section I added exactly the 2 files it describes; section J added exactly 1 new file (`review-workspace.tsx`) and rewrote exactly 1 existing one (`page.tsx`), both fully explained there; section K changed nothing at all (`app/api/health/route.ts` was read and deliberately left as-is); section L changed exactly `next.config.ts` (one conditional expression) plus `docs/production/SECURITY-REVIEW.md` (updated to match, not a new claim).
 - `app/api/health/route.ts`'s `force-dynamic` config was **not** re-added — that would repeat a mistake this project's own `CHANGES.md` already documents as tried and reverted (see section K).
+- The production `Content-Security-Policy` is unchanged — section L only widens the dev-mode `script-src`, gated strictly on `NODE_ENV !== "production"`.

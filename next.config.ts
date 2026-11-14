@@ -23,8 +23,27 @@ import type { NextConfig } from "next";
  * SECURITY-REVIEW.md for what this does and does not cover, and the
  * explicit recommendation to verify a stricter CSP against a real build
  * before go-live.
+ *
+ * `script-src` adds 'unsafe-eval' ONLY outside production. React's
+ * development build calls eval() itself -- not HMR wiring, but
+ * react-dom's own dev-mode instrumentation for reconstructing component
+ * stacks -- and a CSP without 'unsafe-eval' makes the browser block it
+ * outright, which surfaces as a console error on every page in `next dev`
+ * ("eval() is not supported in this environment... React requires eval()
+ * in development mode"). This was missed by this milestone's own CSP
+ * verification (SECURITY-REVIEW.md section 4): that check confirmed the header's
+ * VALUE via `curl` against `next dev`, which proves the header is present
+ * and correctly formed but never loads the page in an actual browser, so
+ * it couldn't have caught a browser-side eval() block. Scoping the
+ * relaxation to non-production changes nothing about the policy a real
+ * deployed build sends -- react-dom's production build "will never use
+ * eval()" (its own warning's wording) -- so the verified-safe production
+ * baseline in SECURITY-REVIEW.md is unchanged; only `next dev` gets the
+ * extra allowance it actually needs.
  */
 async function headers() {
+  const isProduction = process.env.NODE_ENV === "production";
+
   const securityHeaders = [
     { key: "X-Content-Type-Options", value: "nosniff" },
     { key: "X-Frame-Options", value: "DENY" },
@@ -37,7 +56,7 @@ async function headers() {
       key: "Content-Security-Policy",
       value: [
         "default-src 'self'",
-        "script-src 'self' 'unsafe-inline'",
+        `script-src 'self' 'unsafe-inline'${isProduction ? "" : " 'unsafe-eval'"}`,
         "style-src 'self' 'unsafe-inline'",
         "img-src 'self' data:",
         "font-src 'self' data:",
