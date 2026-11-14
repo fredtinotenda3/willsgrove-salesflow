@@ -27,7 +27,14 @@ async function gatherCandidateOrders(
   orderReference: string | null
 ): Promise<MatchCandidateOrder[]> {
   const orders = await tx.customerOrder.findMany({
-    where: { customerId, status: { in: ELIGIBLE_ORDER_STATUSES } },
+    // Prisma's generated filter expects a mutable OrderStatus[]; spread
+    // into a fresh array rather than loosening ELIGIBLE_ORDER_STATUSES's
+    // own `as const` (kept for its literal-narrowing elsewhere). This
+    // mismatch was also the root cause of the `pickingSessions`/implicit-
+    // `any` errors below: the `where` clause failing to typecheck made
+    // the whole findMany call fall back to a less-specific overload, so
+    // `orders`'s inferred element type lost its `select`-narrowed shape.
+    where: { customerId, status: { in: [...ELIGIBLE_ORDER_STATUSES] } },
     select: {
       id: true,
       reference: true,

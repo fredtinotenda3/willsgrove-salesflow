@@ -520,6 +520,9 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
           currencyCode: "USD",
           creditNoteDate: new Date(),
           isDemo: true,
+          // CreditNote.recordedById is required (no default); reuse the
+          // existing admin test user rather than fabricating one.
+          recordedById: adminId,
         },
         select: { id: true },
       });
@@ -552,6 +555,9 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
           currencyCode: "USD",
           creditNoteDate: new Date(),
           isDemo: true,
+          // CreditNote.recordedById is required (no default); reuse the
+          // existing admin test user rather than fabricating one.
+          recordedById: adminId,
         },
         select: { id: true },
       });

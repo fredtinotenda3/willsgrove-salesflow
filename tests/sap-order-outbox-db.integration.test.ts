@@ -54,7 +54,14 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("SAP order eligibility + outbox again
         customerId,
         createdById: adminId,
         source: "QUOTATION",
-        status: "CONFIRMED",
+        // "CONFIRMED" is not a valid OrderStatus value (DRAFT/RECEIVED/
+        // PENDING_VERIFICATION/READY_FOR_APPROVAL/APPROVED/PICKING/
+        // READY_TO_INVOICE/REJECTED/CANCELLED). checkOrderEligibility only
+        // cares that status isn't CANCELLED/REJECTED (see lib/integrations/
+        // sap/order-eligibility.ts) -- APPROVED is the closest real status
+        // to the intended "a normal, active order" and preserves this
+        // helper's behaviour exactly.
+        status: "APPROVED",
         currency: "USD",
         orderDate: new Date("2026-11-11"),
         isDemo: true,
@@ -162,7 +169,10 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("SAP order eligibility + outbox again
         customerId,
         createdById: adminId,
         source: "MANUAL",
-        status: "CONFIRMED",
+        // See the other "CONFIRMED" fix above in this file -- not a valid
+        // OrderStatus; this test only asserts NOT_FROM_QUOTATION, which
+        // doesn't depend on the specific status either.
+        status: "APPROVED",
         isDemo: true,
         lines: {
           create: [{ lineNumber: 1, originalProductDescription: "Untracked line", requestedQuantity: "1", requestedUnitCode: "EA", isDemo: true }],

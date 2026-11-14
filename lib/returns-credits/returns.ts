@@ -72,6 +72,20 @@ export async function recordClaimReturn(
 
   const returnReference = generateReturnReference();
 
+  // RecordClaimReturnInput.receivedDate (lib/returns-credits/validation.ts)
+  // is a required, already-regex-validated "YYYY-MM-DD" string, never
+  // null/undefined -- so dateOnlyStringToUtcDate (whose `Date | null`
+  // return type exists only to accommodate its OTHER, genuinely-optional
+  // call sites elsewhere in the app) can never actually return null here.
+  // This guard is defensive, not a real code path: it exists so a future
+  // change that made receivedDate optional couldn't silently produce an
+  // invalid ClaimReturn row, rather than a bare non-null assertion that
+  // would hide that same future mistake.
+  const receivedDate = dateOnlyStringToUtcDate(input.receivedDate);
+  if (receivedDate === null) {
+    return { ok: false, status: 400, message: "A valid received date is required.", fieldErrors: { receivedDate: "Required." } };
+  }
+
   const created = await prisma.$transaction(async (tx) => {
     const record = await tx.claimReturn.create({
       data: {
@@ -82,7 +96,7 @@ export async function recordClaimReturn(
         condition: input.condition,
         conditionDetail: input.conditionDetail ?? null,
         conditionNotes: input.conditionNotes ?? null,
-        receivedDate: dateOnlyStringToUtcDate(input.receivedDate),
+        receivedDate,
         receivedById,
       },
       select: { id: true },

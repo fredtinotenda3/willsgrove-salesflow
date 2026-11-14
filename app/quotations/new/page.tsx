@@ -11,7 +11,19 @@ import NewQuotationForm from "./new-quotation-form";
  * editor -- this form's own "at least one line" nudge is a UX default,
  * not a hard requirement (lib/quotations/create.ts accepts an empty
  * `lines` array).
+ *
+ * export const instant = false: this page calls getCurrentUser()
+ * (lib/auth/current-user.ts), which reads the request's session cookie
+ * via cookies() -- a per-request dynamic API. With Cache Components
+ * enabled (next.config.ts), Next.js otherwise tries to prerender this
+ * page's static shell and fails the production build with "uncached or
+ * runtime data accessed outside of <Suspense>". Every other
+ * authenticated page in this app (see e.g. app/deliveries/page.tsx,
+ * app/lost-sales/page.tsx) already opts out the same way; this route
+ * was simply missing it.
  */
+export const instant = false;
+
 export default async function NewQuotationPage() {
   const user = await getCurrentUser();
   if (!user) {

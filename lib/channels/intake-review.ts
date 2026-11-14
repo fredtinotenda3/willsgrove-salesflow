@@ -280,7 +280,16 @@ async function finishReview(
   messageIntakeId: string,
   reviewerId: string,
   status: "LINKED" | "IGNORED" | "DUPLICATE",
-  extra: Prisma.MessageIntakeUpdateInput,
+  // Unchecked, not checked: every caller below sets a scalar foreign key
+  // (linkedOrderId/linkedQuotationId/duplicateOfId), never the relation
+  // object (linkedOrder/linkedQuotation/duplicateOf) -- the same choice
+  // the rest of this function already makes for reviewedById. Prisma's
+  // *checked* update input only exposes the relation fields for a model
+  // with explicit @relation(fields: ...) attributes like MessageIntake's;
+  // the scalar FK fields exist only on the *unchecked* variant. Typing
+  // this as the checked input was the root cause of this file's TS2561/
+  // TS2322 errors -- not a real type mismatch in the call sites below.
+  extra: Prisma.MessageIntakeUncheckedUpdateInput,
   reviewNotes: string | undefined,
   auditAction: string
 ): Promise<ReviewActionResult> {

@@ -1,4 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+// Type-only: erased at compile time, so this never constructs the
+// sandbox's stub @prisma/client (see this file's own comment below on
+// why every other Prisma import here is a dynamic await import(...)).
+import type { OrderStatus } from "@prisma/client";
 
 /**
  * Milestone 3D (SAP Invoice Handover Specification, final stage: tests,
@@ -78,7 +82,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 3D: lib/picking/queries.ts
     }
   });
 
-  async function createOrder(status: string, lineCount = 1) {
+  async function createOrder(status: OrderStatus, lineCount = 1) {
     const { prisma } = await import("@/lib/prisma");
     const { generateOrderReference } = await import("@/lib/orders");
 

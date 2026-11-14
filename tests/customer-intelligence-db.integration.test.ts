@@ -361,11 +361,22 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 13: customer intelligence"
           sapInvoiceId: invoiceId,
           claimId: null,
           matchStatus: "AUTO_MATCHED",
-          matchMethod: "DOC_ENTRY",
+          // InvoiceLineMatchMethod is AUTOMATIC | MANUAL only -- "DOC_ENTRY"
+          // (a CSV column-matching strategy name from
+          // lib/invoice-reconciliation/csv.ts, not a match-method value)
+          // was never a valid value here. This note mirrors the CSV-import
+          // path's automatic doc-entry matching, pairing with
+          // matchStatus: "AUTO_MATCHED" above, so AUTOMATIC is also the
+          // semantically correct value, not just the only valid one.
+          matchMethod: "AUTOMATIC",
           amount: "40.0000",
           currencyCode: "USD",
           creditNoteDate: new Date(),
           isDemo: true,
+          // CreditNote.recordedById is required (no default) -- missing
+          // here regardless of the matchMethod error above; reusing the
+          // existing admin test user rather than fabricating one.
+          recordedById: adminId,
         },
         select: { id: true },
       });

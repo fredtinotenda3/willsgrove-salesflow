@@ -8,7 +8,19 @@ import NewClaimForm from "./new-claim-form";
  * section 2): pick the SAP invoice, select which of its lines are being
  * disputed and how, then the claim-level detail. Open to any
  * authenticated user.
+ *
+ * export const instant = false: this page calls getCurrentUser()
+ * (lib/auth/current-user.ts), which reads the request's session cookie
+ * via cookies() -- a per-request dynamic API. With Cache Components
+ * enabled (next.config.ts), Next.js otherwise tries to prerender this
+ * page's static shell and fails the production build with "uncached or
+ * runtime data accessed outside of <Suspense>". Every other
+ * authenticated page in this app (see e.g. app/deliveries/page.tsx,
+ * app/lost-sales/page.tsx) already opts out the same way; this route
+ * was simply missing it.
  */
+export const instant = false;
+
 export default async function NewInvoiceClaimPage() {
   const user = await getCurrentUser();
   if (!user) {

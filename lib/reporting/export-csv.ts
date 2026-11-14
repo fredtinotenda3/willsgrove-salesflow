@@ -1,4 +1,5 @@
 import "server-only";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -58,9 +59,32 @@ export async function recordReportExport(input: {
       action: "REPORT_EXPORTED",
       entityType: "Report",
       entityId: input.reportId,
-      afterData: { reportId: input.reportId, filters: input.filters, rowCount: input.rowCount },
+      afterData: toJsonValue({ reportId: input.reportId, filters: input.filters, rowCount: input.rowCount }),
     },
   });
+}
+
+/**
+ * Converts an arbitrary, assumed-JSON-serializable value (every caller
+ * here passes an already-validated ReportFilters-shaped object -- see
+ * lib/reporting/types.ts/filters.ts) into the shape Prisma's JSON columns
+ * (`Prisma.InputJsonValue`) actually require. A plain `Record<string,
+ * unknown>` is not structurally assignable to `InputJsonValue` because
+ * `unknown` offers no guarantee the value is JSON-safe (it could hold a
+ * function, a `Date`, `undefined`, etc.) -- and several callers' filter
+ * objects do include `Date` values (e.g. report dateFrom/dateTo), which
+ * are not valid Prisma JSON input on their own either. Round-tripping
+ * through real `JSON.stringify`/`JSON.parse` is the correct, type-safe
+ * conversion for "this is going into a JSON column": it applies the same
+ * serialization a `Date` would get via its own `toJSON()`, drops
+ * `undefined` keys, and the *result* is provably JSON-shaped -- this is
+ * not a bare type-assertion papering over a real mismatch, it is the
+ * actual transformation Prisma's own JSON columns apply to any object at
+ * the database boundary, made explicit and done once, here, rather than
+ * at each of this function's many callers.
+ */
+function toJsonValue(value: Record<string, unknown>): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
 
 /**
