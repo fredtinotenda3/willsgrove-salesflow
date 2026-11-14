@@ -162,6 +162,14 @@ export default async function Home() {
     claimStatus: null,
     communicationStatus: null,
     includeDemo: false,
+    currency: null,
+    lostSalesReason: null,
+    productCategory: null,
+    productSearch: null,
+    sapItemCode: null,
+    decisionCategory: null,
+    priority: null,
+    recommendationStatus: null,
   };
 
   const [dashboard, recentOrders] = await Promise.all([

@@ -28,6 +28,14 @@ const EMPTY_FILTERS = {
   claimStatus: null,
   communicationStatus: null,
   includeDemo: false,
+  currency: null,
+  lostSalesReason: null,
+  productCategory: null,
+  productSearch: null,
+  sapItemCode: null,
+  decisionCategory: null,
+  priority: null,
+  recommendationStatus: null,
 } as const;
 
 export default async function SalesPipelineReportPage({ searchParams }: RouteParams) {

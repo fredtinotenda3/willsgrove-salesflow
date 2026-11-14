@@ -3555,3 +3555,115 @@ skipped, 0 failed).
    status, note, and history are unchanged by the regeneration — only
    a fresh rule evaluation that still fires updates its evidence/
    `lastEvaluatedAt`, never its lifecycle state.
+
+## 33. Milestone 16: Production Readiness & Go-live
+
+This is an audit-and-harden milestone, not a feature milestone — there
+is no new schema feature to exercise through the UI. What changed on
+your machine and needs a real run:
+
+### A dead, out-of-order migration was deleted
+
+`prisma/migrations/20261110140630_add_invoice_reconciliation/` has been
+**removed**. It altered a column on `SapInvoiceLine` before the table
+existed (the chronologically later
+`20261110190000_add_invoice_reconciliation/` migration is the one that
+actually creates it) — a fresh `prisma migrate deploy` against any
+database that has never seen this project's migrations would have
+failed outright on it. **Before running any migration against a real
+database, check first whether that specific database already has this
+migration applied:**
+
+```powershell
+npx prisma migrate status
+```
+
+- If the deleted migration does **not** appear as applied, proceed
+  normally — `npx prisma migrate deploy` (or `migrate dev` on a fresh
+  dev database) will simply never see it, which is correct.
+- If it **does** appear as applied on some real database somewhere,
+  **do not** just copy this repository's migration folder over —
+  resolve it properly instead:
+
+```powershell
+npx prisma migrate resolve --applied 20261110140630_add_invoice_reconciliation
+```
+
+  then confirm the schema already matches what the later
+  `20261110190000_add_invoice_reconciliation` migration would have
+  produced (it should, since that is the migration that actually ran
+  the real `CREATE TABLE`). See
+  `docs/production/DATABASE-BACKUP-AND-RECOVERY.md` §1 for the full
+  writeup.
+
+```powershell
+# Regenerate the client as usual after any migration-folder change
+npx prisma generate
+npx tsc --noEmit
+npm run lint
+npm test
+```
+
+### New: a true liveness endpoint
+
+`GET /api/health/live` is new this milestone — unlike the existing
+`GET /api/health`, it does **not** touch the database, so it tells you
+whether the Node process itself is up even when Postgres is
+unreachable. Confirm both locally:
+
+```powershell
+npm run dev
+# in a second terminal
+curl http://localhost:3000/api/health/live
+curl http://localhost:3000/api/health
+```
+
+`/api/health/live` should return `200` with `status: "alive"` even
+before a database connection is configured. `/api/health` additionally
+now reports `version`/`buildId`/`environment` — `buildId` will show
+`"unknown"` locally unless you set a `BUILD_ID` environment variable,
+which is expected and matches what
+`docs/production/OPERATIONS-HANDBOOK.md` §3 documents.
+
+### New: site-wide security headers
+
+Open your browser's network inspector against any page (e.g.
+`http://localhost:3000/login`) and confirm the response carries
+`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+`Content-Security-Policy`, `Strict-Transport-Security`,
+`Referrer-Policy`, and `Permissions-Policy`. These are new this
+milestone (`next.config.ts`'s `headers()`) — before M16 the only
+security header anywhere in the app was a per-route `nosniff` on file
+downloads.
+
+### Full validation re-run
+
+```powershell
+npm ci
+npx prisma generate
+npx tsc --noEmit    # expect 674 errors -- see below
+npm run lint        # expect clean
+npm test            # expect 875 passed / 158 skipped / 0 failed
+npm run build
+```
+
+The 674 `tsc` errors are **not new** — they are the exact,
+category-for-category and file-for-file pre-existing baseline this
+milestone's own audit confirmed against every prior milestone's
+documentation (see PROGRESS.md's Milestone 16 section). If your real
+run (with a working `@prisma/client`, unlike this sandbox's stub)
+shows a meaningfully different number, something has changed that
+this milestone's audit did not account for — investigate before
+assuming it is sandbox noise.
+
+### Where to find the rest of this milestone's work
+
+Nothing else in this milestone needs a manual UI walkthrough — it is
+documentation, configuration, and defect fixes. Start with
+`docs/milestones/MILESTONE-16-DELIVERY-REPORT.md` for the full
+findings and the acceptance matrix, then `docs/production/` for the
+detailed reference documents (architecture, environment variables,
+security review, backup/recovery, deployment runbook,
+rollback/incident response, operations handbook, go-live checklist,
+and the UAT plan to actually execute against your own staging
+environment before go-live).

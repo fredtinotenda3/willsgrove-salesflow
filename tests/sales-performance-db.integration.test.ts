@@ -269,6 +269,12 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 12: sales performance inte
         currency: null,
         lostSalesReason: null,
         includeDemo: true,
+        productCategory: null,
+        productSearch: null,
+        sapItemCode: null,
+        decisionCategory: null,
+        priority: null,
+        recommendationStatus: null,
       });
 
       const row = report.lostSales.bySalesperson.find((r) => r.salespersonId === adminId);
@@ -394,5 +400,11 @@ function reportFiltersFor(customerId: string) {
     currency: null,
     lostSalesReason: null,
     includeDemo: true,
+    productCategory: null,
+    productSearch: null,
+    sapItemCode: null,
+    decisionCategory: null,
+    priority: null,
+    recommendationStatus: null,
   };
 }

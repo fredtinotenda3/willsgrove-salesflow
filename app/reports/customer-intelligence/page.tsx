@@ -27,6 +27,12 @@ const EMPTY_FILTERS = {
   currency: null,
   lostSalesReason: null,
   includeDemo: false,
+  productCategory: null,
+  productSearch: null,
+  sapItemCode: null,
+  decisionCategory: null,
+  priority: null,
+  recommendationStatus: null,
 } as const;
 
 /**

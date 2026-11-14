@@ -286,6 +286,15 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       currency: null,
       lostSalesReason: null,
       includeDemo: true,
+      // Milestone 14/15 added these five fields to ReportFilters; kept
+      // null here since this describe block's reports don't consume any
+      // of them.
+      productCategory: null,
+      productSearch: null,
+      sapItemCode: null,
+      decisionCategory: null,
+      priority: null,
+      recommendationStatus: null,
     });
 
     it("getSalesPipelineReport counts a received order in ordersAwaitingFulfilment while it is APPROVED/PICKING, within its own receivedAt cohort", async () => {
@@ -355,6 +364,12 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       currency: null,
       lostSalesReason: null,
       includeDemo: true,
+      productCategory: null,
+      productSearch: null,
+      sapItemCode: null,
+      decisionCategory: null,
+      priority: null,
+      recommendationStatus: null,
       ...overrides,
     });
 
@@ -474,6 +489,12 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       currency: null,
       lostSalesReason: null,
       includeDemo: true,
+      productCategory: null,
+      productSearch: null,
+      sapItemCode: null,
+      decisionCategory: null,
+      priority: null,
+      recommendationStatus: null,
     });
 
     it("intake.totalReceived always equals the sum of intake.byChannel -- same where clause, so this must hold structurally", async () => {

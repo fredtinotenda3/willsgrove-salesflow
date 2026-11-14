@@ -224,3 +224,44 @@ export async function listProducts(query: ProductListQuery) {
     },
   };
 }
+
+/**
+ * Milestone 16 (Production Readiness) fix: this function was imported by
+ * lib/reporting/product-insights-queries.ts (Milestone 14's Product 360
+ * composite assembly, `getProductProfile`) and referenced in a comment in
+ * app/products/[id]/page.tsx, but was never actually defined anywhere in
+ * the codebase -- a genuine pre-existing defect (not sandbox noise) that
+ * surfaced as an ESLint parse error (a malformed `ReturnType<typeof>` at
+ * the import's use site) rather than a clean "module has no exported
+ * member" error, which is why it had not been caught by a prior
+ * milestone's own `tsc`/`eslint` round. `Product.id` (a cuid), never the
+ * SAP item code, is the lookup key -- see the Product 360 route's own
+ * comment for why: a SAP item code with no master row has no profile
+ * page at all (it only surfaces via the management overview's master-
+ * data-quality ranking), so this function's only valid caller-supplied
+ * key is the master record's own id. No `isDemo` filter is applied here,
+ * mirroring `getCustomerById`'s own precedent above -- a direct id
+ * lookup is never filtered by demo status; only list/aggregate queries
+ * exclude demo rows by default.
+ */
+export async function getProductById(id: string) {
+  return prisma.product.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      sapItemCode: true,
+      itemName: true,
+      barcode: true,
+      category: true,
+      status: true,
+      unitOfMeasure: true,
+      packSize: true,
+      isVariableWeight: true,
+      vatCode: true,
+      isDemo: true,
+      importedAt: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+}

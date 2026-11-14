@@ -77,6 +77,12 @@ export default async function CustomerProfilePage({ params, searchParams }: Rout
     currency: null,
     lostSalesReason: null,
     includeDemo: false,
+    productCategory: null,
+    productSearch: null,
+    sapItemCode: null,
+    decisionCategory: null,
+    priority: null,
+    recommendationStatus: null,
   } as const;
 
   const filters = parsedFilters.ok ? parsedFilters.filters : EMPTY_FILTERS;

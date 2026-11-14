@@ -579,6 +579,12 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 13: customer intelligence"
       includeDemo: true,
       currency: null,
       lostSalesReason: null,
+      productCategory: null,
+      productSearch: null,
+      sapItemCode: null,
+      decisionCategory: null,
+      priority: null,
+      recommendationStatus: null,
     };
   }
 });

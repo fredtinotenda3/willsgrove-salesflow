@@ -304,6 +304,9 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
       productCategory: null,
       productSearch: null,
       sapItemCode: null,
+      decisionCategory: null,
+      priority: null,
+      recommendationStatus: null,
     };
   }
 

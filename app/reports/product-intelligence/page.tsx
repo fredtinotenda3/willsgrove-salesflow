@@ -30,6 +30,9 @@ const EMPTY_FILTERS = {
   productCategory: null,
   productSearch: null,
   sapItemCode: null,
+  decisionCategory: null,
+  priority: null,
+  recommendationStatus: null,
 } as const;
 
 const MASTER_DATA_ISSUE_LABELS: Record<string, string> = {

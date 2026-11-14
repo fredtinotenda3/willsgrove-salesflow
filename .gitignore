@@ -45,3 +45,12 @@ yarn-error.log*
 next-env.d.ts
 
 /app/generated/prisma
+
+# Milestone 16 (Production Readiness) finding: `next dev` (Next.js 16.4.4)
+# writes this file at the repo root on its own -- generic AI-agent
+# guidance by default, plus a data-sharing "report feedback to Vercel"
+# block if `experimental.agentFeedback` is ever turned on (it has been
+# turned off; see next.config.ts and docs/production/SECURITY-REVIEW.md
+# section 0). Either way it is dev-server scaffolding, not application
+# source, and must never be committed.
+/AGENTS.md

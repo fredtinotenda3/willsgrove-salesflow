@@ -59,7 +59,7 @@ import { generateProductInsightsForProduct, type ProductInsight, type ProductIns
  */
 
 export type ProductProfile = {
-  product: NonNullable<Awaited<ReturnType<typeof>>>;
+  product: NonNullable<Awaited<ReturnType<typeof getProductById>>>;
   revenue: ProductRevenueProfile;
   customerDemand: ProductCustomerDemandSummary;
   requestedDemand: ProductRequestedDemand;

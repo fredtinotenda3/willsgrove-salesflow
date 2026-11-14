@@ -30,6 +30,12 @@ const EMPTY_FILTERS = {
   currency: null,
   lostSalesReason: null,
   includeDemo: false,
+  productCategory: null,
+  productSearch: null,
+  sapItemCode: null,
+  decisionCategory: null,
+  priority: null,
+  recommendationStatus: null,
 } as const;
 
 const LOST_SALE_REASON_OPTIONS = Object.entries(LOST_SALE_REASON_LABELS).map(([value, label]) => ({ value, label }));

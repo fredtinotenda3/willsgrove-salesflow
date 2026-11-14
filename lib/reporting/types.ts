@@ -101,6 +101,27 @@ export type ReportFilters = {
   currency: string | null;
   /** Milestone 12. LostSaleReason enum value or null -- applied by lib/reporting/sales-performance.ts's lost-sales-by-salesperson breakdown. */
   lostSalesReason: string | null;
+  /**
+   * Milestone 14 (Product Intelligence). Three new, deliberately optional
+   * filters, all validated only for length in lib/reporting/filters.ts's
+   * parseReportFilters (never against a fixed enum -- see that function's
+   * own comment on why each one is free text).
+   */
+  /** Product.category free text, or null for "no restriction." */
+  productCategory: string | null;
+  /** Free-text search term applied across product name/SAP item code, or null. */
+  productSearch: string | null;
+  /** Product.sapItemCode / SapInvoiceLine.sapItemCode -- an opaque SAP-supplied string, or null. */
+  sapItemCode: string | null;
+  /**
+   * Milestone 15 (Decision Intelligence). Each maps onto exactly one new
+   * schema enum (DecisionCategory/DecisionPriority/DecisionRecommendationStatus)
+   * and, like orderStatus/quotationStatus/claimStatus/lostSalesReason above,
+   * IS centrally validated in parseReportFilters.
+   */
+  decisionCategory: string | null;
+  priority: string | null;
+  recommendationStatus: string | null;
 };
 
 export type PaginationParams = {
