@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   decimalStringSchema,
   recordPickedLineSchema,
+  completePickingRequestSchema,
   parseScaledDecimal,
   exceedsRequested,
   fullyAccountsFor,
@@ -49,6 +50,61 @@ describe("recordPickedLineSchema", () => {
   it("rejects a missing or invalid quantity", () => {
     expect(recordPickedLineSchema.safeParse({ unavailableQuantity: "0" }).success).toBe(false);
     expect(recordPickedLineSchema.safeParse({ foundQuantity: "-1", unavailableQuantity: "0" }).success).toBe(false);
+  });
+});
+
+/**
+ * Final Operational Enhancements (spec Part 2.1). The "Complete Picking"
+ * request body: zero or more not-yet-individually-saved line edits to
+ * save atomically together with completion itself.
+ */
+describe("completePickingRequestSchema", () => {
+  it("accepts an empty body (lineEdits is optional, defaults to none)", () => {
+    expect(completePickingRequestSchema.safeParse({}).success).toBe(true);
+  });
+
+  it("accepts a batch of valid line edits", () => {
+    const parsed = completePickingRequestSchema.safeParse({
+      lineEdits: [
+        { orderLineId: "line-1", foundQuantity: "20.0000", unavailableQuantity: "0.0000" },
+        { orderLineId: "line-2", foundQuantity: "10.0000", unavailableQuantity: "5.0000", notes: "5 damaged" },
+      ],
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("rejects a line edit with a missing or malformed quantity", () => {
+    expect(
+      completePickingRequestSchema.safeParse({ lineEdits: [{ orderLineId: "line-1", foundQuantity: "20" }] }).success
+    ).toBe(false);
+    expect(
+      completePickingRequestSchema.safeParse({
+        lineEdits: [{ orderLineId: "line-1", foundQuantity: "-1", unavailableQuantity: "0" }],
+      }).success
+    ).toBe(false);
+  });
+
+  it("rejects a line edit missing orderLineId", () => {
+    expect(
+      completePickingRequestSchema.safeParse({ lineEdits: [{ foundQuantity: "20", unavailableQuantity: "0" }] }).success
+    ).toBe(false);
+  });
+
+  it("rejects an overly long notes field on a line edit", () => {
+    expect(
+      completePickingRequestSchema.safeParse({
+        lineEdits: [{ orderLineId: "line-1", foundQuantity: "20", unavailableQuantity: "0", notes: "x".repeat(2001) }],
+      }).success
+    ).toBe(false);
+  });
+
+  it("rejects a pathologically large batch (guards against an abusive payload)", () => {
+    const lineEdits = Array.from({ length: 501 }, (_, i) => ({
+      orderLineId: `line-${i}`,
+      foundQuantity: "1",
+      unavailableQuantity: "0",
+    }));
+    expect(completePickingRequestSchema.safeParse({ lineEdits }).success).toBe(false);
   });
 });
 

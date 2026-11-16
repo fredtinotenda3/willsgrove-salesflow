@@ -179,13 +179,58 @@ export default async function FinancialExposureReportPage({ searchParams }: Rout
               </Link>
             </SectionCard>
           </section>
+
+          <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
+            <h2 className="text-sm font-bold text-[#17251E]">Lost sales, by source</h2>
+            <p className="mt-1 text-xs text-[#849087]">{report.lostSalesBySource.note}</p>
+            <div className="mt-4 grid grid-cols-1 gap-6 xl:grid-cols-2">
+              <div>
+                <p className="text-xs font-semibold text-[#17251E]">{report.lostSalesBySource.sourceA.label}</p>
+                <p className="mt-1 text-[11px] text-[#849087]">{report.lostSalesBySource.sourceA.description}</p>
+                {report.lostSalesBySource.sourceA.exposureByCurrency.length === 0 ? (
+                  <EmptyState message="No claim exposure recorded." />
+                ) : (
+                  <div className="mt-3 overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead className="text-[11px] uppercase tracking-wide text-[#849087]">
+                        <tr>
+                          <th className="py-2 pr-4">Currency</th>
+                          <th className="py-2">Affected value (estimate/exposure)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#EEF1ED]">
+                        {report.lostSalesBySource.sourceA.exposureByCurrency.map((row) => (
+                          <tr key={row.currencyCode}>
+                            <td className="py-2 pr-4 font-semibold">{row.currencyCode}</td>
+                            <td className="py-2 tabular-nums">{row.potentialCreditExposure}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-[#17251E]">{report.lostSalesBySource.sourceB.label}</p>
+                <p className="mt-1 text-[11px] text-[#849087]">{report.lostSalesBySource.sourceB.description}</p>
+                <div className="mt-3 space-y-2 text-sm">
+                  <Row label="Estimated supply lost sales value" value={report.lostSalesBySource.sourceB.estimatedValue} />
+                  <Row label="Lost-sale records priced" value={String(report.lostSalesBySource.sourceB.recordsWithEstimate)} />
+                  <Row label="Lost-sale records without a price (excluded)" value={String(report.lostSalesBySource.sourceB.recordsWithoutEstimate)} />
+                </div>
+              </div>
+            </div>
+            <Link href="/lost-sales" className="mt-4 inline-block text-xs font-semibold text-[#173D2E] hover:text-[#28583F]">
+              Full lost-sales list →
+            </Link>
+          </section>
         </div>
       </main>
     </div>
   );
 }
 
-function Row({ label, value }: { label: string; value: number }) {
+function Row({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="flex items-center justify-between">
       <span className="text-[#536158]">{label}</span>

@@ -82,6 +82,13 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
   let adminId: string;
   let customer1Id: string;
   let customer2Id: string;
+  // Final Operational Enhancements (spec Part 3.3): createDispatchRecord
+  // now requires a real, ACTIVE Personnel/Vehicle record -- these
+  // fixtures stand in for "registered Settings records" for this file's
+  // own createDispatchRecord call below.
+  let driverId: string;
+  let assistantId: string;
+  let vehicleId: string;
   const uniqueSuffix = `m14test-${Date.now()}`;
   let invoiceCounter = 0;
 
@@ -92,6 +99,8 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
   const createdProductIds: string[] = [];
   const createdOrderIds: string[] = [];
   const createdDispatchRecordIds: string[] = [];
+  const createdPersonnelIds: string[] = [];
+  const createdVehicleIds: string[] = [];
 
   beforeAll(async () => {
     const { prisma } = await import("@/lib/prisma");
@@ -112,6 +121,16 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
     adminId = admin.id;
     customer1Id = customer1.id;
     customer2Id = customer2.id;
+
+    const driver = await prisma.personnel.create({ data: { name: `M14 Driver ${uniqueSuffix}`, role: "DRIVER", createdById: adminId, isDemo: true }, select: { id: true } });
+    createdPersonnelIds.push(driver.id);
+    const assistant = await prisma.personnel.create({ data: { name: `M14 Assistant ${uniqueSuffix}`, role: "DRIVER_ASSISTANT", createdById: adminId, isDemo: true }, select: { id: true } });
+    createdPersonnelIds.push(assistant.id);
+    const vehicle = await prisma.vehicle.create({ data: { registrationNumber: `M14-${uniqueSuffix}`, createdById: adminId, isDemo: true }, select: { id: true } });
+    createdVehicleIds.push(vehicle.id);
+    driverId = driver.id;
+    assistantId = assistant.id;
+    vehicleId = vehicle.id;
   });
 
   afterAll(async () => {
@@ -140,6 +159,10 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
       await prisma.sapInvoice.deleteMany({ where: { id: { in: createdSapInvoiceIds } } });
       await prisma.sapInvoiceImportBatch.deleteMany({ where: { id: { in: createdImportBatchIds } } });
       await prisma.product.deleteMany({ where: { id: { in: createdProductIds } } });
+      // Personnel/Vehicle fixtures last -- every DispatchRecord
+      // referencing them was already removed above.
+      await prisma.personnel.deleteMany({ where: { id: { in: createdPersonnelIds } } });
+      await prisma.vehicle.deleteMany({ where: { id: { in: createdVehicleIds } } });
     } finally {
       await prisma.$disconnect();
     }
@@ -634,7 +657,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
       const authorized = await authorizePickingSession(started.session.id, adminId);
       if (!authorized.ok) throw new Error(authorized.message);
 
-      const dispatch = await createDispatchRecord(order.id, adminId, { lines: [{ orderLineId: lineId, quantity: "10.0000" }] });
+      const dispatch = await createDispatchRecord(order.id, adminId, { lines: [{ orderLineId: lineId, quantity: "10.0000" }], driverId, assistantId, vehicleId });
       if (!dispatch.ok) throw new Error(dispatch.message);
       createdDispatchRecordIds.push(dispatch.dispatchRecordId);
 

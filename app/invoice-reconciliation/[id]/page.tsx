@@ -15,6 +15,7 @@ import Sidebar from "../../components/sidebar";
 import { ArrowLeft, Ban } from "lucide-react";
 import ReconciliationPanel from "./reconciliation-panel";
 import ReconciliationNoteForm from "./reconciliation-note-form";
+import DeliveryOutcomePanel from "./delivery-outcome-panel";
 
 /**
  * Milestone 5 (SAP Invoice Reconciliation). One SAP invoice's full detail
@@ -152,6 +153,8 @@ export default async function InvoiceDetailPage({ params }: RouteParams) {
               </table>
             </div>
           </section>
+
+          <DeliveryOutcomePanel invoiceId={invoice.id} matchedCustomerId={invoice.matchedCustomerId} lines={invoice.lines} />
 
           <section className="rounded-xl border border-[#E8EBE6] bg-white p-5">
             <h2 className="text-sm font-bold text-[#17251E]">Reconciliation Notes</h2>

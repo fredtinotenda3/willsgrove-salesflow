@@ -374,4 +374,73 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 6A: invoice claims managem
     expect(summary?.actualCreditShortfall).toBe("0.0000");
     expect(summary?.actualExceedsApproved).toBe(false);
   });
+
+  /**
+   * Final Operational Enhancements (spec Part 6): reasonCategory is
+   * persisted per-line, independently of the claim-level category, and a
+   * single claim/invoice can mix different reasons across its lines.
+   */
+  it("persists a distinct reasonCategory per line, independent of the claim-level category, and across a mix of dispute types", async () => {
+    if (skipAll) return;
+    const { createInvoiceClaim } = await import("@/lib/invoice-claims/create-claim");
+    const { getClaimDetail } = await import("@/lib/invoice-claims/queries");
+
+    const { invoiceId, lineIds } = await createSapInvoice([
+      { quantityInvoiced: "30.0000", unitPrice: "4.0000" },
+      { quantityInvoiced: "20.0000", unitPrice: "6.0000" },
+    ]);
+
+    const result = await createInvoiceClaim(
+      {
+        sapInvoiceId: invoiceId,
+        customerId,
+        category: "OTHER",
+        categoryDetail: "Mixed reasons across lines",
+        description: "One line short-delivered, the other wrongly priced",
+        claimDate: new Date().toISOString().slice(0, 10),
+        lines: [
+          { sapInvoiceLineId: lineIds[0]!, disputeType: "QUANTITY", acceptedQuantity: "25.0000", rejectedQuantity: "5.0000", reason: "5 short", reasonCategory: "SHORT_DELIVERY" },
+          { sapInvoiceLineId: lineIds[1]!, disputeType: "AMOUNT_ONLY", disputedAmount: "15.0000", reason: "Wrong price list applied", reasonCategory: "PRICING_DISPUTE" },
+        ],
+      },
+      adminId
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    createdClaimIds.push(result.id);
+
+    const detail = await getClaimDetail(result.id);
+    expect(detail?.lines).toHaveLength(2);
+    const byLineId = new Map(detail!.lines.map((l) => [l.sapInvoiceLineId, l]));
+    expect(byLineId.get(lineIds[0]!)?.reasonCategory).toBe("SHORT_DELIVERY");
+    expect(byLineId.get(lineIds[1]!)?.reasonCategory).toBe("PRICING_DISPUTE");
+    // The claim-level category is an independent field -- still exactly
+    // what was submitted, unaffected by either line's own reasonCategory.
+    expect(detail?.category).toBe("OTHER");
+  });
+
+  it("reasonCategory is optional -- a claim created without it on any line still succeeds (backward compatible)", async () => {
+    if (skipAll) return;
+    const { createInvoiceClaim } = await import("@/lib/invoice-claims/create-claim");
+    const { getClaimDetail } = await import("@/lib/invoice-claims/queries");
+
+    const { invoiceId, lineIds } = await createSapInvoice([{ quantityInvoiced: "10.0000", unitPrice: "1.0000" }]);
+    const result = await createInvoiceClaim(
+      {
+        sapInvoiceId: invoiceId,
+        customerId,
+        category: "QUALITY_ISSUE",
+        description: "No reasonCategory supplied",
+        claimDate: new Date().toISOString().slice(0, 10),
+        lines: [{ sapInvoiceLineId: lineIds[0]!, disputeType: "QUANTITY", acceptedQuantity: "9.0000", rejectedQuantity: "1.0000", reason: "1 unit damaged" }],
+      },
+      adminId
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    createdClaimIds.push(result.id);
+
+    const detail = await getClaimDetail(result.id);
+    expect(detail?.lines[0]?.reasonCategory).toBeNull();
+  });
 });

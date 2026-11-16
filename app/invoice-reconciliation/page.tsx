@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { listSapInvoices } from "@/lib/invoice-reconciliation/queries";
 import { INVOICE_RECONCILIATION_STATUS_LABELS, INVOICE_RECONCILIATION_STATUS_STYLES } from "@/lib/invoice-reconciliation/display";
+import type { InvoiceDeliveryStatusValue } from "@/lib/invoice-delivery/queries";
 import { initialsFor, avatarColorFor } from "@/lib/order-display";
 import Sidebar from "../components/sidebar";
 import { Receipt, ChevronRight, ChevronLeft, Upload, BarChart3, Ban } from "lucide-react";
@@ -23,7 +24,20 @@ const PAGE_SIZE = 25;
 
 const STATUS_FILTERS = ["UNMATCHED", "PARTIALLY_MATCHED", "RECONCILIATION_REQUIRED", "MATCHED", "CANCELLED_REVERSED"];
 
-type RouteParams = { searchParams: Promise<{ page?: string; status?: string }> };
+// Final Operational Enhancements (spec Part 5): the derived, SalesFlow-
+// only "Ready for Invoice" / "Delivered" workflow status, filterable
+// alongside (and independently of) SAP's own reconciliationStatus above.
+const DELIVERY_STATUS_FILTERS: InvoiceDeliveryStatusValue[] = ["READY_FOR_INVOICE", "DELIVERED"];
+const DELIVERY_STATUS_LABELS: Record<InvoiceDeliveryStatusValue, string> = {
+  READY_FOR_INVOICE: "Ready for invoice",
+  DELIVERED: "Delivered",
+};
+const DELIVERY_STATUS_STYLES: Record<InvoiceDeliveryStatusValue, string> = {
+  READY_FOR_INVOICE: "bg-amber-50 text-amber-700",
+  DELIVERED: "bg-emerald-50 text-emerald-700",
+};
+
+type RouteParams = { searchParams: Promise<{ page?: string; status?: string; deliveryStatus?: string }> };
 
 export default async function InvoiceReconciliationPage({ searchParams }: RouteParams) {
   const user = await getCurrentUser();
@@ -35,10 +49,16 @@ export default async function InvoiceReconciliationPage({ searchParams }: RouteP
   const requestedPage = Number(resolved.page);
   const page = Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
   const reconciliationStatus = resolved.status && STATUS_FILTERS.includes(resolved.status) ? resolved.status : undefined;
+  const deliveryStatus =
+    resolved.deliveryStatus && DELIVERY_STATUS_FILTERS.includes(resolved.deliveryStatus as InvoiceDeliveryStatusValue)
+      ? (resolved.deliveryStatus as InvoiceDeliveryStatusValue)
+      : undefined;
 
-  const { invoices, pagination } = await listSapInvoices({ page, pageSize: PAGE_SIZE, reconciliationStatus });
+  const { invoices, pagination } = await listSapInvoices({ page, pageSize: PAGE_SIZE, reconciliationStatus, deliveryStatus });
 
   const statusQuery = (targetStatus: string | undefined) => (targetStatus ? `&status=${targetStatus}` : "");
+  const deliveryStatusQuery = (targetStatus: string | undefined) => (targetStatus ? `&deliveryStatus=${targetStatus}` : "");
+  const combinedQuery = `${statusQuery(reconciliationStatus)}${deliveryStatusQuery(deliveryStatus)}`;
 
   return (
     <div className="min-h-screen bg-[#F7F8F6]">
@@ -90,12 +110,35 @@ export default async function InvoiceReconciliationPage({ searchParams }: RouteP
             {STATUS_FILTERS.map((value) => (
               <Link
                 key={value}
-                href={`/invoice-reconciliation?page=1${statusQuery(value)}`}
+                href={`/invoice-reconciliation?page=1${statusQuery(value)}${deliveryStatusQuery(deliveryStatus)}`}
                 className={`rounded-full px-3 py-1.5 text-[11px] font-semibold ${
                   reconciliationStatus === value ? "bg-[#173D2E] text-white" : "bg-white text-gray-500 border border-gray-200"
                 }`}
               >
                 {INVOICE_RECONCILIATION_STATUS_LABELS[value] ?? value}
+              </Link>
+            ))}
+          </section>
+
+          <section className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">Delivery:</span>
+            <Link
+              href={`/invoice-reconciliation?page=1${statusQuery(reconciliationStatus)}`}
+              className={`rounded-full px-3 py-1.5 text-[11px] font-semibold ${
+                !deliveryStatus ? "bg-[#173D2E] text-white" : "bg-white text-gray-500 border border-gray-200"
+              }`}
+            >
+              All
+            </Link>
+            {DELIVERY_STATUS_FILTERS.map((value) => (
+              <Link
+                key={value}
+                href={`/invoice-reconciliation?page=1${statusQuery(reconciliationStatus)}${deliveryStatusQuery(value)}`}
+                className={`rounded-full px-3 py-1.5 text-[11px] font-semibold ${
+                  deliveryStatus === value ? "bg-[#173D2E] text-white" : "bg-white text-gray-500 border border-gray-200"
+                }`}
+              >
+                {DELIVERY_STATUS_LABELS[value]}
               </Link>
             ))}
           </section>
@@ -121,6 +164,7 @@ export default async function InvoiceReconciliationPage({ searchParams }: RouteP
                       <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Total</th>
                       <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Lines</th>
                       <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Status</th>
+                      <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Delivery</th>
                       <th className="px-6 py-3" />
                     </tr>
                   </thead>
@@ -176,6 +220,11 @@ export default async function InvoiceReconciliationPage({ searchParams }: RouteP
                             {INVOICE_RECONCILIATION_STATUS_LABELS[invoice.reconciliationStatus] ?? invoice.reconciliationStatus}
                           </span>
                         </td>
+                        <td className="whitespace-nowrap px-6 py-4">
+                          <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-semibold ${DELIVERY_STATUS_STYLES[invoice.deliveryStatus]}`}>
+                            {DELIVERY_STATUS_LABELS[invoice.deliveryStatus]}
+                          </span>
+                        </td>
                         <td className="whitespace-nowrap px-6 py-4 text-right">
                           <Link
                             href={`/invoice-reconciliation/${invoice.id}`}
@@ -196,7 +245,7 @@ export default async function InvoiceReconciliationPage({ searchParams }: RouteP
           {pagination.totalPages > 1 && (
             <nav className="flex items-center justify-between">
               <Link
-                href={`/invoice-reconciliation?page=${Math.max(1, page - 1)}${statusQuery(reconciliationStatus)}`}
+                href={`/invoice-reconciliation?page=${Math.max(1, page - 1)}${combinedQuery}`}
                 aria-disabled={page <= 1}
                 className={`flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-600 transition hover:bg-gray-50 ${
                   page <= 1 ? "pointer-events-none opacity-40" : ""
@@ -209,7 +258,7 @@ export default async function InvoiceReconciliationPage({ searchParams }: RouteP
                 Page {pagination.page} of {pagination.totalPages}
               </p>
               <Link
-                href={`/invoice-reconciliation?page=${Math.min(pagination.totalPages, page + 1)}${statusQuery(reconciliationStatus)}`}
+                href={`/invoice-reconciliation?page=${Math.min(pagination.totalPages, page + 1)}${combinedQuery}`}
                 aria-disabled={page >= pagination.totalPages}
                 className={`flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-600 transition hover:bg-gray-50 ${
                   page >= pagination.totalPages ? "pointer-events-none opacity-40" : ""

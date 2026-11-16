@@ -478,4 +478,50 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management",
     const reasonEntry = summary.lossReasonBreakdown.find((r) => r.reason === "PRODUCT_UNAVAILABLE");
     expect(reasonEntry).toBeDefined();
   });
+
+  /**
+   * Final Operational Enhancements (spec Part 7, Source B): "Estimated
+   * Supply Lost Sales = Unavailable Quantity x Applicable Selling Price,"
+   * summed across every LostSaleRecord that has a resolvable price --
+   * never inventing one for a record that has none (see
+   * lib/lost-sales/estimate-value.ts's own comment, exercised above by
+   * "estimates a lost sale's value...").
+   */
+  it("Source B: getSupplyShortageLostSalesValue sums estimatedValue across LostSaleRecords, excluding (and counting separately) those with no resolvable price", async () => {
+    if (skipAll) return;
+    const { getSupplyShortageLostSalesValue } = await import("@/lib/lost-sales/queries");
+    const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
+    const { confirmLostSale } = await import("@/lib/lost-sales/confirm-lost-sale");
+    const { prisma } = await import("@/lib/prisma");
+
+    const before = await getSupplyShortageLostSalesValue({ includeDemo: true });
+
+    // line2 was created with approvedUnitPrice "15.5000"; confirming 8 of
+    // it as lost gives a known, exact estimatedValue of 124.0000 (15.5 * 8)
+    // -- see "estimates a lost sale's value..." above for the same math.
+    const { line2Id } = await createThreeLineOrderAndAuthorize();
+    const demand = await prisma.unfulfilledDemand.findFirstOrThrow({ where: { orderLineId: line2Id } });
+    await recordCustomerDecision(
+      { unfulfilledDemandId: demand.id, decisionType: "ACCEPT_PARTIAL_CANCEL_REMAINDER", source: "CUSTOMER_EMAIL" },
+      adminId
+    );
+    const confirmed = await confirmLostSale(
+      { unfulfilledDemandId: demand.id, quantity: "8.0000", reason: "PRODUCT_UNAVAILABLE", decisionSource: "CUSTOMER_EMAIL" },
+      adminId
+    );
+    expect(confirmed.ok).toBe(true);
+
+    const after = await getSupplyShortageLostSalesValue({ includeDemo: true });
+    // The sum grew by exactly 124.0000 -- not re-derived from scratch,
+    // not blended with any other figure (e.g. invoice-claims exposure).
+    expect(Number(after.estimatedValue) - Number(before.estimatedValue)).toBeCloseTo(124, 4);
+    expect(after.recordsWithEstimate).toBeGreaterThan(before.recordsWithEstimate);
+    // recordsWithEstimate + recordsWithoutEstimate always accounts for
+    // every LostSaleRecord that exists -- never silently understating the
+    // true total by pretending every record was priced. includeDemo:true
+    // sums over ALL records regardless of isDemo, so compare against the
+    // unfiltered total.
+    const totalRecordsIncludingDemo = await prisma.lostSaleRecord.count();
+    expect(after.recordsWithEstimate + after.recordsWithoutEstimate).toBe(totalRecordsIncludingDemo);
+  });
 });

@@ -54,6 +54,46 @@ export type ClaimStatus = (typeof CLAIM_STATUSES)[number];
 export const CLAIM_LINE_DISPUTE_TYPES = ["QUANTITY", "AMOUNT_ONLY"] as const;
 export type ClaimLineDisputeType = (typeof CLAIM_LINE_DISPUTE_TYPES)[number];
 
+/**
+ * Final Operational Enhancements (spec Part 6): the 10 named, mutually
+ * distinguishable claim reasons the sample claim document requires,
+ * mapped 1:1 to prisma/schema.prisma's InvoiceClaimCategory enum values
+ * (CLAIM_LINE_REASON_CATEGORY_LABELS below carries the exact spec wording
+ * for display -- the enum identifiers themselves predate or extend the
+ * existing claim-level `category` vocabulary above). This is a per-LINE
+ * field (InvoiceClaimLine.reasonCategory), independent of the claim-level
+ * `category` enum: a single claim/invoice can legitimately mix reasons
+ * across its lines (spec: "support multiple claim lines/different
+ * reasons per invoice"), which the claim-level category alone cannot
+ * express.
+ */
+export const CLAIM_LINE_REASON_CATEGORIES = [
+  "PRICING_DISPUTE",
+  "QUALITY_ISSUE",
+  "SHORT_DELIVERY",
+  "PRODUCT_NOT_ORDERED",
+  "PRODUCT_NOT_DELIVERED",
+  "OVERSUPPLY",
+  "EXPIRED_PRODUCT",
+  "NO_BARCODE",
+  "BARCODE_SCANNING_ISSUE",
+  "DUPLICATE_ENTRY",
+] as const;
+export type ClaimLineReasonCategory = (typeof CLAIM_LINE_REASON_CATEGORIES)[number];
+
+export const CLAIM_LINE_REASON_CATEGORY_LABELS: Record<ClaimLineReasonCategory, string> = {
+  PRICING_DISPUTE: "Price claim",
+  QUALITY_ISSUE: "Poor-quality product",
+  SHORT_DELIVERY: "Short delivery",
+  PRODUCT_NOT_ORDERED: "Product not ordered",
+  PRODUCT_NOT_DELIVERED: "Product not delivered",
+  OVERSUPPLY: "Oversupply",
+  EXPIRED_PRODUCT: "Expired product",
+  NO_BARCODE: "No barcode / missing barcode",
+  BARCODE_SCANNING_ISSUE: "Barcode scanning problems",
+  DUPLICATE_ENTRY: "Duplicate products / duplicate entries",
+};
+
 // Spec Part 1 section 6, verbatim (reworded to identifiers).
 export const RESOLUTION_DECISIONS = [
   "NO_ACTION_REQUIRED",
@@ -273,6 +313,10 @@ const quantityLineSchema = z.object({
   rejectedQuantity: decimalStringSchema,
   disputedUnitPrice: decimalStringSchema.optional(),
   reason: z.string().min(1).max(2000),
+  // Final Operational Enhancements (spec Part 6): optional for backward
+  // compatibility with any existing claim-creation caller that predates
+  // this field, but the /invoice-claims/new form always sends one.
+  reasonCategory: z.enum(CLAIM_LINE_REASON_CATEGORIES).optional(),
   evidenceNotes: z.string().max(4000).optional(),
 });
 
@@ -282,6 +326,7 @@ const amountOnlyLineSchema = z.object({
   disputedAmount: decimalStringSchema,
   disputedUnitPrice: decimalStringSchema.optional(),
   reason: z.string().min(1).max(2000),
+  reasonCategory: z.enum(CLAIM_LINE_REASON_CATEGORIES).optional(),
   evidenceNotes: z.string().max(4000).optional(),
 });
 

@@ -2,7 +2,9 @@ import "server-only";
 import { ClaimResolutionDecision } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getInvoiceClaimsDashboard, type InvoiceClaimsDashboard } from "@/lib/invoice-claims/dashboard";
+import type { CurrencyExposureBucket } from "@/lib/invoice-claims/financial";
 import { getInvoiceReconciliationReports, type InvoiceReconciliationReports } from "@/lib/invoice-reconciliation/queries";
+import { getSupplyShortageLostSalesValue, type SupplyShortageLostSalesValue } from "@/lib/lost-sales/queries";
 import type { ReportFilters } from "@/lib/reporting/types";
 import { demoWhere, dateRangeToTimestampFilter, defaultDateRange } from "@/lib/reporting/filters";
 
@@ -59,12 +61,47 @@ export type ReturnsAndCreditNotesSummary = {
   creditNotesIssuedCountInPeriod: number;
 };
 
+/**
+ * Final Operational Enhancements (spec Part 7): the two lost-sales
+ * sources this business must track SEPARATELY, never blended into one
+ * number:
+ *   - Source A ("invoice claims after delivery"): "Affected Value =
+ *     Affected Quantity x Applicable Unit Price," as an estimate/
+ *     exposure -- this is exactly `claims.exposureByCurrency` above
+ *     (lib/invoice-claims/financial.ts's potentialCreditExposure,
+ *     unchanged, reused by reference rather than recomputed).
+ *   - Source B ("insufficient supply at fulfilment"): "Estimated Supply
+ *     Lost Sales = Unavailable Quantity x Applicable Selling Price" --
+ *     lib/lost-sales/queries.ts's getSupplyShortageLostSalesValue(),
+ *     likewise unchanged/reused.
+ *
+ * These cannot double-count by construction, not merely by convention:
+ * Source A requires an actual SapInvoiceLine to dispute (InvoiceClaim is
+ * always linked to one), while Source B's quantity is, by
+ * UnfulfilledDemand's own definition, exactly the portion that was NEVER
+ * dispatched or invoiced in the first place. The same physical units can
+ * therefore never appear in both sources at once. Source A is
+ * per-currency (claims can span multiple SAP invoice currencies); Source
+ * B is reported as a single total because lib/lost-sales/estimate-value.ts
+ * itself never records a currency (same scope this project's Milestone 4
+ * design already settled on) -- the two are presented side by side, with
+ * a combined grand total deliberately NOT computed here, since summing
+ * across an unlabeled Source B total and a per-currency Source A
+ * breakdown would silently assume they share one currency.
+ */
+export type LostSalesBySourceReport = {
+  sourceA: { label: string; description: string; exposureByCurrency: CurrencyExposureBucket[] };
+  sourceB: { label: string; description: string } & SupplyShortageLostSalesValue;
+  note: string;
+};
+
 export type FinancialExposureReport = {
   dateFrom: string;
   dateTo: string;
   claims: InvoiceClaimsDashboard;
   reconciliation: InvoiceReconciliationReports;
   returnsAndCreditNotes: ReturnsAndCreditNotesSummary;
+  lostSalesBySource: LostSalesBySourceReport;
 };
 
 const CREDIT_RECOMMENDING_DECISIONS: ClaimResolutionDecision[] = [ClaimResolutionDecision.PARTIAL_CREDIT_RECOMMENDED, ClaimResolutionDecision.FULL_CREDIT_RECOMMENDED];
@@ -115,11 +152,27 @@ export async function getFinancialExposureReport(filters: ReportFilters): Promis
   const effectiveTo = filters.dateTo ?? dateTo;
   const range = dateRangeToTimestampFilter({ dateFrom: effectiveFrom, dateTo: effectiveTo });
 
-  const [claims, reconciliation, returnsAndCreditNotes] = await Promise.all([
+  const [claims, reconciliation, returnsAndCreditNotes, supplyShortage] = await Promise.all([
     getInvoiceClaimsDashboard({ includeDemo: filters.includeDemo }),
     getInvoiceReconciliationReports({ includeDemo: filters.includeDemo }),
     getReturnsAndCreditNotesSummary(filters, range),
+    getSupplyShortageLostSalesValue({ includeDemo: filters.includeDemo }),
   ]);
 
-  return { dateFrom: effectiveFrom, dateTo: effectiveTo, claims, reconciliation, returnsAndCreditNotes };
+  const lostSalesBySource: LostSalesBySourceReport = {
+    sourceA: {
+      label: "Source A: Invoice claims (after delivery)",
+      description: "Affected value = affected quantity x applicable unit price, per claim line -- an estimate/exposure figure, not confirmed lost revenue (not every claim is accepted or credited).",
+      exposureByCurrency: claims.exposureByCurrency,
+    },
+    sourceB: {
+      label: "Source B: Insufficient supply at fulfilment",
+      description: "Estimated supply lost sales = unavailable quantity x applicable selling price, per lost-sale record -- only computed where a real price was available (never invented).",
+      ...supplyShortage,
+    },
+    note:
+      "Source A and Source B never overlap: Source A requires an actual invoiced line to dispute, while Source B's quantity was by definition never dispatched or invoiced. They are kept separate rather than summed into one figure -- Source A is broken down by currency (claims can span multiple SAP invoice currencies); Source B has none recorded, so adding the two would wrongly assume a shared currency.",
+  };
+
+  return { dateFrom: effectiveFrom, dateTo: effectiveTo, claims, reconciliation, returnsAndCreditNotes, lostSalesBySource };
 }

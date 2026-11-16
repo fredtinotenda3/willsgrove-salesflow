@@ -2,6 +2,11 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { computeOrderLineReconciliation, type OrderLineInvoiceStatusValue } from "@/lib/invoice-reconciliation/reconcile";
+import {
+  getDeliveredSapInvoiceIds,
+  getDeliveryStatusesForInvoiceIds,
+  type InvoiceDeliveryStatusValue,
+} from "@/lib/invoice-delivery/queries";
 
 /**
  * Milestone 5 (SAP Invoice Reconciliation). Read-only helpers for the
@@ -42,6 +47,12 @@ export type ListSapInvoicesOptions = {
   // Optional and backward-compatible -- every existing caller that omits
   // it sees unchanged behavior.
   search?: string;
+  // Final Operational Enhancements (spec Part 5): filters by the
+  // derived, SalesFlow-only "Ready for Invoice" / "Delivered" workflow
+  // status (lib/invoice-delivery/queries.ts) -- never a column on
+  // SapInvoice itself, so this is implemented as an id subquery, not a
+  // `where` clause on a stored field.
+  deliveryStatus?: InvoiceDeliveryStatusValue;
 };
 
 export type ParsedSapInvoiceListQuery = { ok: true; query: ListSapInvoicesOptions } | { ok: false; message: string };
@@ -64,7 +75,16 @@ export function parseSapInvoiceListQuery(params: URLSearchParams): ParsedSapInvo
   const includeDemo = params.get("includeDemo") === "true";
   const search = params.get("search")?.trim() || undefined;
 
-  return { ok: true, query: { page, pageSize, reconciliationStatus, customerId, includeDemo, search } };
+  const rawDeliveryStatus = (params.get("deliveryStatus") ?? "").trim().toUpperCase();
+  let deliveryStatus: InvoiceDeliveryStatusValue | undefined;
+  if (rawDeliveryStatus !== "" && rawDeliveryStatus !== "ALL") {
+    if (rawDeliveryStatus !== "READY_FOR_INVOICE" && rawDeliveryStatus !== "DELIVERED") {
+      return { ok: false, message: "Invalid deliveryStatus filter." };
+    }
+    deliveryStatus = rawDeliveryStatus;
+  }
+
+  return { ok: true, query: { page, pageSize, reconciliationStatus, customerId, includeDemo, search, deliveryStatus } };
 }
 
 export type SapInvoiceSummary = {
@@ -86,6 +106,8 @@ export type SapInvoiceSummary = {
   unresolvedLineCount: number;
   isDemo: boolean;
   createdAt: string;
+  /** Final Operational Enhancements (spec Part 5): derived, never a stored field -- see this file's own import comment. Filled in by listSapInvoices/getSapInvoiceDetail after the base row is read; defaults to "READY_FOR_INVOICE" wherever a caller constructs this type without it. */
+  deliveryStatus: InvoiceDeliveryStatusValue;
 };
 
 const INVOICE_SUMMARY_SELECT = {
@@ -128,7 +150,7 @@ type InvoiceSummaryRow = {
   lines: { matchStatus: string }[];
 };
 
-function toInvoiceSummary(row: InvoiceSummaryRow): SapInvoiceSummary {
+function toInvoiceSummary(row: InvoiceSummaryRow, deliveryStatus: InvoiceDeliveryStatusValue = "READY_FOR_INVOICE"): SapInvoiceSummary {
   return {
     id: row.id,
     sapDocNum: row.sapDocNum,
@@ -148,6 +170,7 @@ function toInvoiceSummary(row: InvoiceSummaryRow): SapInvoiceSummary {
     unresolvedLineCount: row.lines.filter((line) => line.matchStatus === "UNMATCHED").length,
     isDemo: row.isDemo,
     createdAt: row.createdAt.toISOString(),
+    deliveryStatus,
   };
 }
 
@@ -170,6 +193,19 @@ export async function listSapInvoices(options: ListSapInvoicesOptions): Promise<
     ];
   }
 
+  // Final Operational Enhancements (spec Part 5): "Ready for Invoice" /
+  // "Delivered" is derived, not stored (see this file's own import
+  // comment), so filtering by it is an id subquery against
+  // InvoiceDeliveryRecord rather than a `where` clause on SapInvoice
+  // itself. Delivered invoices are expected to be a small minority of
+  // the table at any time, so an `in`/`notIn` over that smaller set (not
+  // the other way around) keeps this cheap even as the invoice table
+  // grows.
+  if (options.deliveryStatus) {
+    const deliveredIds = await getDeliveredSapInvoiceIds();
+    where.id = options.deliveryStatus === "DELIVERED" ? { in: deliveredIds } : { notIn: deliveredIds };
+  }
+
   const [totalItems, rows] = await Promise.all([
     prisma.sapInvoice.count({ where }),
     prisma.sapInvoice.findMany({
@@ -181,8 +217,10 @@ export async function listSapInvoices(options: ListSapInvoicesOptions): Promise<
     }),
   ]);
 
+  const deliveryStatusById = await getDeliveryStatusesForInvoiceIds(rows.map((row) => row.id));
+
   return {
-    invoices: rows.map(toInvoiceSummary),
+    invoices: rows.map((row) => toInvoiceSummary(row, deliveryStatusById.get(row.id))),
     pagination: { page: options.page, pageSize: options.pageSize, totalItems, totalPages: Math.max(1, Math.ceil(totalItems / options.pageSize)) },
   };
 }
@@ -651,13 +689,14 @@ export async function getInvoiceReconciliationReports(options?: { includeDemo?: 
     prisma.sapInvoice.findMany({ where: { ...invoiceWhere, reconciliationStatus: "UNMATCHED" }, orderBy: { createdAt: "desc" }, select: INVOICE_SUMMARY_SELECT }),
     prisma.sapInvoice.findMany({ where: { ...invoiceWhere, reconciliationStatus: "RECONCILIATION_REQUIRED" }, orderBy: { createdAt: "desc" }, select: INVOICE_SUMMARY_SELECT }),
   ]);
+  const exceptionDeliveryStatusById = await getDeliveryStatusesForInvoiceIds([...unmatchedRows, ...exceptionRows].map((row) => row.id));
 
   return {
     fullyInvoicedLines: buckets.FULLY_INVOICED,
     partiallyInvoicedLines: buckets.PARTIALLY_INVOICED,
     awaitingInvoicingLines: buckets.NOT_YET_INVOICED,
     overInvoicedLines: buckets.OVER_INVOICED,
-    unmatchedInvoices: unmatchedRows.map(toInvoiceSummary),
-    reconciliationExceptions: exceptionRows.map(toInvoiceSummary),
+    unmatchedInvoices: unmatchedRows.map((row) => toInvoiceSummary(row, exceptionDeliveryStatusById.get(row.id))),
+    reconciliationExceptions: exceptionRows.map((row) => toInvoiceSummary(row, exceptionDeliveryStatusById.get(row.id))),
   };
 }

@@ -32,6 +32,34 @@ export const recordPickedLineSchema = z.object({
 export type RecordPickedLineInput = z.infer<typeof recordPickedLineSchema>;
 
 /**
+ * Final Operational Enhancements (spec Part 2.1). The "Complete Picking"
+ * request body: zero or more not-yet-individually-saved line edits to
+ * save atomically together with completion itself (see
+ * lib/picking/complete-picking.ts's own comment). `orderLineId` is
+ * app-level identified here, not re-validated for shape beyond being a
+ * non-empty string -- isValidId()'s stricter check happens at the route
+ * layer for the session/order ids in the URL; this one is only ever
+ * compared against the session's own known line ids server-side, never
+ * used to build a query by itself, so no shape check beyond non-empty is
+ * needed.
+ */
+export const completePickingRequestSchema = z.object({
+  lineEdits: z
+    .array(
+      z.object({
+        orderLineId: z.string().min(1),
+        foundQuantity: decimalStringSchema,
+        unavailableQuantity: decimalStringSchema,
+        notes: z.string().max(2000).optional(),
+      })
+    )
+    .max(500) // generous ceiling -- no real order has anywhere near this many lines; guards against a pathological payload
+    .optional(),
+});
+
+export type CompletePickingRequestInput = z.infer<typeof completePickingRequestSchema>;
+
+/**
  * Parses a non-negative decimal string into an exact integer scaled by
  * 10,000. Returns null for anything that doesn't match
  * DECIMAL_STRING_PATTERN -- callers that already validated the string

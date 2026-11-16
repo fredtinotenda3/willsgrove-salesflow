@@ -10,6 +10,9 @@ import {
   validateDisputedAmount,
   CLAIM_STATUSES,
   RESOLUTION_DECISIONS,
+  CLAIM_LINE_REASON_CATEGORIES,
+  CLAIM_LINE_REASON_CATEGORY_LABELS,
+  claimLineInputSchema,
 } from "@/lib/invoice-claims/validation";
 
 /**
@@ -184,5 +187,97 @@ describe("Milestone 6A: amount-only dispute validation", () => {
   it("accepts a disputed amount within the invoice line's own total", () => {
     const result = validateDisputedAmount("99.9999", "100.0000");
     expect(result.ok).toBe(true);
+  });
+});
+
+/**
+ * Final Operational Enhancements (spec Part 6): the 10 named,
+ * distinguishable per-line claim reasons the sample claim document
+ * requires -- 3 reusing an existing equivalent category identifier
+ * (PRICING_DISPUTE/QUALITY_ISSUE/SHORT_DELIVERY, each already present in
+ * CLAIM_CATEGORIES for a different purpose -- the claim-LEVEL category),
+ * 7 newly added. This is a per-LINE field (InvoiceClaimLine.reasonCategory),
+ * independent of the claim-level category: a claim can legitimately mix
+ * reasons across its lines.
+ */
+describe("Final Operational Enhancements Part 6: CLAIM_LINE_REASON_CATEGORIES", () => {
+  it("has exactly the 10 spec-named reasons, no more, no fewer", () => {
+    expect(CLAIM_LINE_REASON_CATEGORIES).toHaveLength(10);
+    expect(new Set(CLAIM_LINE_REASON_CATEGORIES).size).toBe(10); // no duplicates
+  });
+
+  it("reuses the 3 existing equivalent categories by identifier (not reinvented under a new name)", () => {
+    expect(CLAIM_LINE_REASON_CATEGORIES).toContain("PRICING_DISPUTE"); // Price claim
+    expect(CLAIM_LINE_REASON_CATEGORIES).toContain("QUALITY_ISSUE"); // Poor-quality product
+    expect(CLAIM_LINE_REASON_CATEGORIES).toContain("SHORT_DELIVERY"); // Short delivery
+  });
+
+  it("has exactly the 7 newly added reasons", () => {
+    for (const expected of [
+      "PRODUCT_NOT_ORDERED",
+      "PRODUCT_NOT_DELIVERED",
+      "OVERSUPPLY",
+      "EXPIRED_PRODUCT",
+      "NO_BARCODE",
+      "BARCODE_SCANNING_ISSUE",
+      "DUPLICATE_ENTRY",
+    ]) {
+      expect(CLAIM_LINE_REASON_CATEGORIES).toContain(expected);
+    }
+  });
+
+  it("has a display label for every one of the 10 categories, and only those 10", () => {
+    const labelKeys = Object.keys(CLAIM_LINE_REASON_CATEGORY_LABELS);
+    expect(labelKeys.sort()).toEqual([...CLAIM_LINE_REASON_CATEGORIES].sort());
+    for (const category of CLAIM_LINE_REASON_CATEGORIES) {
+      expect(CLAIM_LINE_REASON_CATEGORY_LABELS[category]).toBeTruthy();
+    }
+  });
+
+  it("claimLineInputSchema accepts a valid reasonCategory on both a QUANTITY and an AMOUNT_ONLY line", () => {
+    expect(
+      claimLineInputSchema.safeParse({
+        sapInvoiceLineId: "line-1",
+        disputeType: "QUANTITY",
+        acceptedQuantity: "8",
+        rejectedQuantity: "2",
+        reason: "2 short",
+        reasonCategory: "SHORT_DELIVERY",
+      }).success
+    ).toBe(true);
+    expect(
+      claimLineInputSchema.safeParse({
+        sapInvoiceLineId: "line-1",
+        disputeType: "AMOUNT_ONLY",
+        disputedAmount: "10",
+        reason: "Wrong price list applied",
+        reasonCategory: "PRICING_DISPUTE",
+      }).success
+    ).toBe(true);
+  });
+
+  it("reasonCategory is optional (backward compatible with a caller that predates this field)", () => {
+    expect(
+      claimLineInputSchema.safeParse({
+        sapInvoiceLineId: "line-1",
+        disputeType: "QUANTITY",
+        acceptedQuantity: "8",
+        rejectedQuantity: "2",
+        reason: "2 short",
+      }).success
+    ).toBe(true);
+  });
+
+  it("rejects a reasonCategory outside the 10 named values", () => {
+    expect(
+      claimLineInputSchema.safeParse({
+        sapInvoiceLineId: "line-1",
+        disputeType: "QUANTITY",
+        acceptedQuantity: "8",
+        rejectedQuantity: "2",
+        reason: "2 short",
+        reasonCategory: "SOMETHING_ELSE",
+      }).success
+    ).toBe(false);
   });
 });

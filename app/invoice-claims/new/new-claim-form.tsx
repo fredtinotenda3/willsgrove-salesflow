@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Search, Plus, AlertTriangle } from "lucide-react";
 import { CLAIM_CATEGORY_LABELS, CLAIM_PRIORITY_LABELS } from "@/lib/invoice-claims/display";
+import { CLAIM_LINE_REASON_CATEGORIES, CLAIM_LINE_REASON_CATEGORY_LABELS } from "@/lib/invoice-claims/validation";
 
 /**
  * Milestone 6A. Claim creation workflow: pick a SAP invoice, select
@@ -59,6 +60,11 @@ type LineDraft = {
   disputedAmount: string;
   disputedUnitPrice: string;
   reason: string;
+  // Final Operational Enhancements (spec Part 6): one of the 10 named
+  // claim reasons, required per disputed line (never free-typed) --
+  // distinct from the free-text `reason` above and from the claim-level
+  // `category` below.
+  reasonCategory: string;
   evidenceNotes: string;
 };
 
@@ -66,7 +72,7 @@ const CATEGORY_VALUES = Object.keys(CLAIM_CATEGORY_LABELS);
 const PRIORITY_VALUES = Object.keys(CLAIM_PRIORITY_LABELS);
 
 function emptyLineDraft(): LineDraft {
-  return { disputed: false, disputeType: "QUANTITY", acceptedQuantity: "", rejectedQuantity: "", disputedAmount: "", disputedUnitPrice: "", reason: "", evidenceNotes: "" };
+  return { disputed: false, disputeType: "QUANTITY", acceptedQuantity: "", rejectedQuantity: "", disputedAmount: "", disputedUnitPrice: "", reason: "", reasonCategory: "", evidenceNotes: "" };
 }
 
 async function readJson(response: Response): Promise<Record<string, unknown>> {
@@ -185,6 +191,7 @@ export default function NewClaimForm() {
             rejectedQuantity: draft.rejectedQuantity || "0",
             disputedUnitPrice: draft.disputedUnitPrice || undefined,
             reason: draft.reason,
+            reasonCategory: draft.reasonCategory || undefined,
             evidenceNotes: draft.evidenceNotes || undefined,
           };
         }
@@ -194,6 +201,7 @@ export default function NewClaimForm() {
           disputedAmount: draft.disputedAmount || "0",
           disputedUnitPrice: draft.disputedUnitPrice || undefined,
           reason: draft.reason,
+          reasonCategory: draft.reasonCategory || undefined,
           evidenceNotes: draft.evidenceNotes || undefined,
         };
       });
@@ -204,6 +212,10 @@ export default function NewClaimForm() {
     }
     if (lines.some((line) => !line.reason.trim())) {
       setError("Every disputed line needs a reason.");
+      return;
+    }
+    if (lines.some((line) => !line.reasonCategory)) {
+      setError("Every disputed line needs a claim reason category.");
       return;
     }
 
@@ -396,6 +408,19 @@ export default function NewClaimForm() {
                           <input value={draft.disputedUnitPrice} onChange={(event) => updateLine(line.id, { disputedUnitPrice: event.target.value })} className="w-full rounded-lg border border-gray-200 px-2 py-1.5" />
                         </label>
 
+                        <label className="col-span-2 space-y-1">
+                          <span className="font-medium text-gray-600">Claim reason category (required)</span>
+                          <select
+                            value={draft.reasonCategory}
+                            onChange={(event) => updateLine(line.id, { reasonCategory: event.target.value })}
+                            className="w-full rounded-lg border border-gray-200 px-2 py-1.5"
+                          >
+                            <option value="">-- select a reason --</option>
+                            {CLAIM_LINE_REASON_CATEGORIES.map((value) => (
+                              <option key={value} value={value}>{CLAIM_LINE_REASON_CATEGORY_LABELS[value]}</option>
+                            ))}
+                          </select>
+                        </label>
                         <label className="col-span-2 space-y-1">
                           <span className="font-medium text-gray-600">Reason (required)</span>
                           <textarea value={draft.reason} onChange={(event) => updateLine(line.id, { reason: event.target.value })} rows={2} className="w-full rounded-lg border border-gray-200 px-2 py-1.5" />

@@ -8,6 +8,17 @@ export type OrderLineFulfilmentStatus = {
   lineNumber: number;
   originalProductDescription: string;
   requestedQuantity: string;
+  /**
+   * Final Operational Enhancements (spec Part 3): surfaced so the dispatch
+   * screen can auto-populate its lines with product code/UOM instead of
+   * requiring manual re-entry, without changing what this function has
+   * always computed (outstanding-to-dispatch quantities). Both fields are
+   * nullable/optional on OrderLine itself (a line without a resolved SAP
+   * item code, or predating requestedUnitCode being required, still has a
+   * fulfilment status).
+   */
+  sapItemCodeSnapshot: string | null;
+  requestedUnitCode: string;
   /** Total PickingLine.foundQuantity across every AUTHORIZED PickingSession for this line -- see this function's own comment. */
   authorizedFoundQuantity: string;
   /** Total DispatchLine.dispatchedQuantity across every non-CANCELLED DispatchRecord for this line. */
@@ -45,7 +56,14 @@ export async function getOrderFulfilmentStatus(orderId: string): Promise<OrderFu
     select: {
       id: true,
       lines: {
-        select: { id: true, lineNumber: true, originalProductDescription: true, requestedQuantity: true },
+        select: {
+          id: true,
+          lineNumber: true,
+          originalProductDescription: true,
+          requestedQuantity: true,
+          sapItemCodeSnapshot: true,
+          requestedUnitCode: true,
+        },
         orderBy: { lineNumber: "asc" },
       },
     },
@@ -93,6 +111,8 @@ export async function getOrderFulfilmentStatus(orderId: string): Promise<OrderFu
       lineNumber: line.lineNumber,
       originalProductDescription: line.originalProductDescription,
       requestedQuantity: line.requestedQuantity.toString(),
+      sapItemCodeSnapshot: line.sapItemCodeSnapshot,
+      requestedUnitCode: line.requestedUnitCode,
       authorizedFoundQuantity: formatScaledDecimal(authorizedFoundScaled),
       dispatchedQuantity: formatScaledDecimal(dispatchedScaled),
       outstandingQuantity: formatScaledDecimal(outstandingScaled),
@@ -112,6 +132,10 @@ export type DispatchRecordSummary = {
   createdAt: string;
   lineCount: number;
   deliveryOutcome: string | null;
+  /** Final Operational Enhancements (spec Part 3.3): the registered driver/assistant/vehicle recorded for this dispatch. Null only for a dispatch created before this feature existed. */
+  driver: { id: string; name: string } | null;
+  assistant: { id: string; name: string } | null;
+  vehicle: { id: string; registrationNumber: string } | null;
 };
 
 /**
@@ -132,6 +156,9 @@ export async function listDispatchRecordsForOrder(orderId: string): Promise<Disp
       createdAt: true,
       _count: { select: { lines: true } },
       deliveryRecord: { select: { outcome: true } },
+      driver: { select: { id: true, name: true } },
+      assistant: { select: { id: true, name: true } },
+      vehicle: { select: { id: true, registrationNumber: true } },
     },
   });
 
@@ -145,6 +172,9 @@ export async function listDispatchRecordsForOrder(orderId: string): Promise<Disp
     createdAt: record.createdAt.toISOString(),
     lineCount: record._count.lines,
     deliveryOutcome: record.deliveryRecord?.outcome ?? null,
+    driver: record.driver,
+    assistant: record.assistant,
+    vehicle: record.vehicle,
   }));
 }
 
@@ -162,6 +192,9 @@ export type DispatchRecordDetail = {
   cancelledById: string | null;
   cancelledAt: string | null;
   cancellationReason: string | null;
+  driver: { id: string; name: string } | null;
+  assistant: { id: string; name: string } | null;
+  vehicle: { id: string; registrationNumber: string } | null;
   lines: { id: string; orderLineId: string; lineNumber: number; originalProductDescription: string; dispatchedQuantity: string }[];
   delivery: {
     id: string;
@@ -193,6 +226,9 @@ export async function getDispatchRecordDetail(dispatchRecordId: string): Promise
       cancelledById: true,
       cancelledAt: true,
       cancellationReason: true,
+      driver: { select: { id: true, name: true } },
+      assistant: { select: { id: true, name: true } },
+      vehicle: { select: { id: true, registrationNumber: true } },
       lines: {
         select: { id: true, orderLineId: true, dispatchedQuantity: true, orderLine: { select: { lineNumber: true, originalProductDescription: true } } },
       },
@@ -227,6 +263,9 @@ export async function getDispatchRecordDetail(dispatchRecordId: string): Promise
     cancelledById: record.cancelledById,
     cancelledAt: record.cancelledAt ? record.cancelledAt.toISOString() : null,
     cancellationReason: record.cancellationReason,
+    driver: record.driver,
+    assistant: record.assistant,
+    vehicle: record.vehicle,
     lines: record.lines
       .slice()
       .sort((a, b) => a.orderLine.lineNumber - b.orderLine.lineNumber)

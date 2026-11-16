@@ -64,6 +64,14 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
 
   let adminId: string;
   let customerId: string;
+  // Final Operational Enhancements (spec Part 3.3): createDispatchRecord
+  // now requires a real, ACTIVE Personnel/Vehicle record for every
+  // dispatch -- these fixtures stand in for "registered Settings
+  // records" for the two createDispatchRecord calls this file's own
+  // fulfilment-intelligence fixtures make below.
+  let driverId: string;
+  let assistantId: string;
+  let vehicleId: string;
   const uniqueSuffix = `m11test-${Date.now()}`;
 
   const createdOrderIds: string[] = [];
@@ -72,6 +80,8 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
   const createdImportBatchIds: string[] = [];
   const createdSapInvoiceIds: string[] = [];
   const createdClaimIds: string[] = [];
+  const createdPersonnelIds: string[] = [];
+  const createdVehicleIds: string[] = [];
 
   beforeAll(async () => {
     const { prisma } = await import("@/lib/prisma");
@@ -90,6 +100,16 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
 
     adminId = admin.id;
     customerId = customer.id;
+
+    const driver = await prisma.personnel.create({ data: { name: `M11 Driver ${uniqueSuffix}`, role: "DRIVER", createdById: adminId, isDemo: true }, select: { id: true } });
+    createdPersonnelIds.push(driver.id);
+    const assistant = await prisma.personnel.create({ data: { name: `M11 Assistant ${uniqueSuffix}`, role: "DRIVER_ASSISTANT", createdById: adminId, isDemo: true }, select: { id: true } });
+    createdPersonnelIds.push(assistant.id);
+    const vehicle = await prisma.vehicle.create({ data: { registrationNumber: `M11-${uniqueSuffix}`, createdById: adminId, isDemo: true }, select: { id: true } });
+    createdVehicleIds.push(vehicle.id);
+    driverId = driver.id;
+    assistantId = assistant.id;
+    vehicleId = vehicle.id;
   });
 
   afterAll(async () => {
@@ -120,6 +140,11 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       for (const orderId of createdOrderIds) {
         await prisma.customerOrder.delete({ where: { id: orderId } }).catch(() => undefined);
       }
+      // Personnel/Vehicle fixtures last -- every DispatchRecord
+      // referencing them (onDelete: Restrict on both FKs) was already
+      // removed by the loop above.
+      await prisma.personnel.deleteMany({ where: { id: { in: createdPersonnelIds } } });
+      await prisma.vehicle.deleteMany({ where: { id: { in: createdVehicleIds } } });
     } finally {
       await prisma.$disconnect();
     }
@@ -331,7 +356,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       // amount, and dispatchesDelivered must NOT, until an actual
       // DeliveryRecord exists (spec's "never treat dispatched as
       // delivered").
-      const dispatch = await createDispatchRecord(orderId, adminId, { lines: [{ orderLineId: lineId, quantity: "7.0000" }] });
+      const dispatch = await createDispatchRecord(orderId, adminId, { lines: [{ orderLineId: lineId, quantity: "7.0000" }], driverId, assistantId, vehicleId });
       if (!dispatch.ok) throw new Error(dispatch.message);
       await departDispatchRecord(dispatch.dispatchRecordId, adminId);
 
@@ -416,7 +441,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       const { listDeliveryExceptions } = await import("@/lib/reporting/management-reports");
 
       const { orderId, lineId, reference } = await createPartiallyPickedOrder("4.0000", "4.0000");
-      const dispatch = await createDispatchRecord(orderId, adminId, { lines: [{ orderLineId: lineId, quantity: "4.0000" }] });
+      const dispatch = await createDispatchRecord(orderId, adminId, { lines: [{ orderLineId: lineId, quantity: "4.0000" }], driverId, assistantId, vehicleId });
       if (!dispatch.ok) throw new Error(dispatch.message);
       await departDispatchRecord(dispatch.dispatchRecordId, adminId);
       const detail = await getDispatchRecordDetail(dispatch.dispatchRecordId);
@@ -676,6 +701,57 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       expect(Number(usdBucket!.potentialCreditExposure)).toBeCloseTo(100, 0); // 10 units * $10
       expect(Number(zwgBucket!.potentialCreditExposure)).toBeCloseTo(100, 0); // 5 units * ZWG 20
       expect(usdBucket!.currencyCode).not.toBe(zwgBucket!.currencyCode);
+    });
+
+    /**
+     * Final Operational Enhancements (spec Part 7): getFinancialExposureReport
+     * composes Source A (invoice claims) and Source B (supply shortage)
+     * from the two already-independently-tested functions
+     * (lib/invoice-claims/dashboard.ts's exposureByCurrency, already
+     * proven above, and lib/lost-sales/queries.ts's
+     * getSupplyShortageLostSalesValue, proven in
+     * tests/lost-sales-db.integration.test.ts) WITHOUT re-deriving either
+     * one's figures and WITHOUT ever computing a combined total across
+     * them (this file's own documented scope: re-deriving a lost-sales
+     * fixture here would just duplicate that already-independently-tested
+     * suite, so this test verifies composition, not the underlying math).
+     */
+    it("lostSalesBySource exposes Source A and Source B as the exact same figures their own dedicated functions report, with no combined total anywhere on the object", async () => {
+      if (skipAll) return;
+      const { getFinancialExposureReport } = await import("@/lib/reporting/financial-exposure");
+      const { getSupplyShortageLostSalesValue } = await import("@/lib/lost-sales/queries");
+
+      const directSourceB = await getSupplyShortageLostSalesValue({ includeDemo: true });
+
+      const report = await getFinancialExposureReport({
+        dateFrom: null,
+        dateTo: null,
+        customerId: null,
+        productId: null,
+        salespersonId: null,
+        orderStatus: null,
+        quotationStatus: null,
+        fulfilmentStatus: null,
+        claimStatus: null,
+        communicationStatus: null,
+        currency: null,
+        lostSalesReason: null,
+        includeDemo: true,
+      } as never);
+
+      // Source A is the SAME claims.exposureByCurrency array this report
+      // already computes for its own "claims" section -- reused by
+      // reference, not recomputed a second time.
+      expect(report.lostSalesBySource.sourceA.exposureByCurrency).toEqual(report.claims.exposureByCurrency);
+
+      // Source B matches the dedicated function's own figures exactly.
+      expect(report.lostSalesBySource.sourceB.estimatedValue).toBe(directSourceB.estimatedValue);
+      expect(report.lostSalesBySource.sourceB.recordsWithEstimate).toBe(directSourceB.recordsWithEstimate);
+      expect(report.lostSalesBySource.sourceB.recordsWithoutEstimate).toBe(directSourceB.recordsWithoutEstimate);
+
+      // No blended/combined total field anywhere on the object -- the
+      // only keys are the two sources themselves plus the explanatory note.
+      expect(Object.keys(report.lostSalesBySource).sort()).toEqual(["note", "sourceA", "sourceB"]);
     });
   });
 });

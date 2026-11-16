@@ -247,6 +247,141 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 3A: warehouse picking", ()
     if (!editAfterComplete.ok) expect(editAfterComplete.status).toBe(409);
   });
 
+  /**
+   * Final Operational Enhancements (spec Part 2.1). completePickingSession
+   * now accepts an optional `lineEdits` batch so the caller can save
+   * every not-yet-individually-saved line AND complete the session in one
+   * atomic call ("save ALL entered records together, not just already-
+   * individually-saved ones"). Every check is identical to the existing
+   * per-line save path (exceedsRequested/fullyAccountsFor) -- this suite
+   * exercises that the batch path enforces the exact same rules, is
+   * genuinely all-or-nothing, can mix with already-individually-saved
+   * lines, and leaves an identical audit trail.
+   */
+  it("completePickingSession's lineEdits batch saves every line and completes atomically, with no pre-existing per-line saves at all", async () => {
+    if (skipAll) return;
+    const { prisma } = await import("@/lib/prisma");
+    const { startPickingSession } = await import("@/lib/picking/start-picking");
+    const { completePickingSession } = await import("@/lib/picking/complete-picking");
+
+    const order = await createTwoLineOrder();
+    const started = await startPickingSession(order.id, adminId);
+    if (!started.ok) throw new Error(started.message);
+    const [line1, line2] = order.lines;
+
+    const completed = await completePickingSession(started.session.id, adminId, [
+      { orderLineId: line1!.id, foundQuantity: "20.0000", unavailableQuantity: "0.0000" },
+      { orderLineId: line2!.id, foundQuantity: "10.0000", unavailableQuantity: "5.0000", notes: "5 damaged in transit" },
+    ]);
+    expect(completed.ok).toBe(true);
+    if (completed.ok) expect(completed.session.status).toBe("COMPLETED");
+
+    const persistedLines = await prisma.pickingLine.findMany({
+      where: { pickingSessionId: started.session.id },
+      select: { orderLineId: true, foundQuantity: true, unavailableQuantity: true, notes: true, pickedById: true },
+    });
+    const byOrderLineId = new Map(persistedLines.map((l) => [l.orderLineId, l]));
+    expect(byOrderLineId.get(line1!.id)!.foundQuantity!.toString()).toBe("20.0000");
+    expect(byOrderLineId.get(line2!.id)!.foundQuantity!.toString()).toBe("10.0000");
+    expect(byOrderLineId.get(line2!.id)!.unavailableQuantity!.toString()).toBe("5.0000");
+    expect(byOrderLineId.get(line2!.id)!.notes).toBe("5 damaged in transit");
+    expect(byOrderLineId.get(line1!.id)!.pickedById).toBe(adminId);
+
+    // Each batched line save leaves the exact same shape of audit event a
+    // record-picked-line.ts individual save would, just flagged with
+    // viaCompletePicking: true (lib/picking/complete-picking.ts's own
+    // comment on why) -- entityId is the PickingLine's own id, not the
+    // session id, so look it up via the persisted lines fetched above.
+    const persistedWithIds = await prisma.pickingLine.findMany({
+      where: { pickingSessionId: started.session.id },
+      select: { id: true, orderLineId: true },
+    });
+    const auditEvents = await prisma.auditEvent.findMany({
+      where: { action: "PICKING_LINE_RECORDED", entityId: { in: persistedWithIds.map((l) => l.id) } },
+    });
+    expect(auditEvents).toHaveLength(2);
+    expect(auditEvents.every((e) => (e.afterData as { viaCompletePicking?: boolean } | null)?.viaCompletePicking === true)).toBe(true);
+  });
+
+  it("completePickingSession's lineEdits batch is all-or-nothing: one invalid edit means NOTHING is written, not even a valid sibling edit", async () => {
+    if (skipAll) return;
+    const { prisma } = await import("@/lib/prisma");
+    const { startPickingSession } = await import("@/lib/picking/start-picking");
+    const { completePickingSession } = await import("@/lib/picking/complete-picking");
+
+    const order = await createTwoLineOrder();
+    const started = await startPickingSession(order.id, adminId);
+    if (!started.ok) throw new Error(started.message);
+    const [line1, line2] = order.lines; // requested 20 and 15
+
+    // line1's edit is perfectly valid; line2's edit exceeds its requested
+    // quantity (16 > 15) -- the whole batch must be refused, and line1's
+    // otherwise-valid edit must NOT have been written either.
+    const result = await completePickingSession(started.session.id, adminId, [
+      { orderLineId: line1!.id, foundQuantity: "20.0000", unavailableQuantity: "0.0000" },
+      { orderLineId: line2!.id, foundQuantity: "16.0000", unavailableQuantity: "0.0000" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.status).toBe(400);
+
+    const sessionAfter = await prisma.pickingSession.findUniqueOrThrow({ where: { id: started.session.id }, select: { status: true } });
+    expect(sessionAfter.status).toBe("IN_PROGRESS"); // never completed
+
+    const line1After = await prisma.pickingLine.findFirstOrThrow({ where: { pickingSessionId: started.session.id, orderLineId: line1!.id } });
+    expect(line1After.foundQuantity).toBeNull(); // the valid sibling edit was NOT written
+  });
+
+  it("completePickingSession's lineEdits rejects an edit for an order line not in this session, and a duplicate orderLineId within one batch", async () => {
+    if (skipAll) return;
+    const { startPickingSession } = await import("@/lib/picking/start-picking");
+    const { completePickingSession } = await import("@/lib/picking/complete-picking");
+
+    const order = await createTwoLineOrder();
+    const started = await startPickingSession(order.id, adminId);
+    if (!started.ok) throw new Error(started.message);
+    const [line1] = order.lines;
+
+    const foreignLine = await completePickingSession(started.session.id, adminId, [
+      { orderLineId: "not-part-of-this-session", foundQuantity: "1.0000", unavailableQuantity: "0.0000" },
+    ]);
+    expect(foreignLine.ok).toBe(false);
+    if (!foreignLine.ok) expect(foreignLine.status).toBe(400);
+
+    const duplicateInBatch = await completePickingSession(started.session.id, adminId, [
+      { orderLineId: line1!.id, foundQuantity: "20.0000", unavailableQuantity: "0.0000" },
+      { orderLineId: line1!.id, foundQuantity: "19.0000", unavailableQuantity: "1.0000" },
+    ]);
+    expect(duplicateInBatch.ok).toBe(false);
+    if (!duplicateInBatch.ok) expect(duplicateInBatch.status).toBe(400);
+  });
+
+  it("completePickingSession's lineEdits can mix with an already-individually-saved line -- the edit overrides a line in the batch, the persisted value is used for a line not in it", async () => {
+    if (skipAll) return;
+    const { startPickingSession } = await import("@/lib/picking/start-picking");
+    const { recordPickedLine } = await import("@/lib/picking/record-picked-line");
+    const { completePickingSession } = await import("@/lib/picking/complete-picking");
+    const { prisma } = await import("@/lib/prisma");
+
+    const order = await createTwoLineOrder();
+    const started = await startPickingSession(order.id, adminId);
+    if (!started.ok) throw new Error(started.message);
+    const [line1, line2] = order.lines;
+
+    // line2 is saved individually, the ordinary way, ahead of time.
+    await recordPickedLine(started.session.id, line2!.id, "15.0000", "0.0000", undefined, adminId);
+
+    // Only line1 is supplied via the batch; line2 is left to its already-
+    // persisted value and must still be checked (and must still pass).
+    const completed = await completePickingSession(started.session.id, adminId, [
+      { orderLineId: line1!.id, foundQuantity: "20.0000", unavailableQuantity: "0.0000" },
+    ]);
+    expect(completed.ok).toBe(true);
+
+    const persisted = await prisma.pickingLine.findMany({ where: { pickingSessionId: started.session.id }, select: { orderLineId: true, foundQuantity: true } });
+    expect(persisted.find((l) => l.orderLineId === line1!.id)!.foundQuantity!.toString()).toBe("20.0000");
+    expect(persisted.find((l) => l.orderLineId === line2!.id)!.foundQuantity!.toString()).toBe("15.0000");
+  });
+
   it("authorizePickingSession refuses before completion, then moves the order to READY_TO_INVOICE once authorized", async () => {
     if (skipAll) return;
     const { prisma } = await import("@/lib/prisma");

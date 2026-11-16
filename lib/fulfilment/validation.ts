@@ -16,6 +16,18 @@ export const createDispatchLineSchema = z.object({
 
 export const createDispatchSchema = z.object({
   lines: z.array(createDispatchLineSchema).min(1, "At least one line is required."),
+  // Final Operational Enhancements (spec Part 3.3): "every confirmed
+  // dispatch must record Driver, Driver's Assistant, and Truck
+  // Registration, selected from registered Settings records" -- all
+  // three required (not optional) for every dispatch created from this
+  // point forward; see lib/fulfilment/dispatch.ts's createDispatchRecord
+  // for the live existence/role/status checks against Personnel/Vehicle.
+  driverId: z.string().min(1, "A driver is required."),
+  assistantId: z.string().min(1, "A driver's assistant is required."),
+  vehicleId: z.string().min(1, "A vehicle is required."),
+  // Free-text fallback/supplement -- kept alongside the structured fields
+  // above (never replaced by them), e.g. for a courier company name with
+  // no registered Vehicle record of its own.
   vehicleOrCourierReference: z.string().max(200).optional(),
   plannedDepartureAt: z.string().datetime().optional(),
   notes: z.string().max(2000).optional(),

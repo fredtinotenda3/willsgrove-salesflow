@@ -37,8 +37,17 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 10: dispatch and delivery 
 
   let adminId: string;
   let customerId: string;
+  // Final Operational Enhancements (spec Part 3.3): every dispatch now
+  // requires a real, ACTIVE Personnel/Vehicle record -- these three
+  // fixtures stand in for "registered Settings records" for every
+  // createDispatchRecord call in this file.
+  let driverId: string;
+  let assistantId: string;
+  let vehicleId: string;
 
   const createdOrderIds: string[] = [];
+  const createdPersonnelIds: string[] = [];
+  const createdVehicleIds: string[] = [];
   const uniqueSuffix = `inttest-${Date.now()}`;
 
   beforeAll(async () => {
@@ -61,6 +70,26 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 10: dispatch and delivery 
 
     adminId = admin.id;
     customerId = customer.id;
+
+    const driver = await prisma.personnel.create({
+      data: { name: `Test Driver ${uniqueSuffix}`, role: "DRIVER", createdById: adminId, isDemo: true },
+      select: { id: true },
+    });
+    createdPersonnelIds.push(driver.id);
+    const assistant = await prisma.personnel.create({
+      data: { name: `Test Assistant ${uniqueSuffix}`, role: "DRIVER_ASSISTANT", createdById: adminId, isDemo: true },
+      select: { id: true },
+    });
+    createdPersonnelIds.push(assistant.id);
+    const vehicle = await prisma.vehicle.create({
+      data: { registrationNumber: `TEST-${uniqueSuffix}`, createdById: adminId, isDemo: true },
+      select: { id: true },
+    });
+    createdVehicleIds.push(vehicle.id);
+
+    driverId = driver.id;
+    assistantId = assistant.id;
+    vehicleId = vehicle.id;
   });
 
   afterAll(async () => {
@@ -85,6 +114,11 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 10: dispatch and delivery 
       for (const orderId of createdOrderIds) {
         await prisma.customerOrder.delete({ where: { id: orderId } }).catch(() => undefined);
       }
+      // Personnel/Vehicle fixtures are deleted last -- every DispatchRecord
+      // referencing them (onDelete: Restrict on both FKs) was already
+      // removed by the loop above.
+      await prisma.personnel.deleteMany({ where: { id: { in: createdPersonnelIds } } });
+      await prisma.vehicle.deleteMany({ where: { id: { in: createdVehicleIds } } });
     } finally {
       await prisma.$disconnect();
     }
@@ -165,7 +199,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 10: dispatch and delivery 
 
     const { orderId, line1 } = await createReadyToInvoiceOrder();
 
-    const overDispatch = await createDispatchRecord(orderId, adminId, { lines: [{ orderLineId: line1.id, quantity: "20.0001" }] });
+    const overDispatch = await createDispatchRecord(orderId, adminId, { lines: [{ orderLineId: line1.id, quantity: "20.0001" }], driverId, assistantId, vehicleId });
     expect(overDispatch.ok).toBe(false);
     if (!overDispatch.ok) expect(overDispatch.status).toBe(400);
 
@@ -184,7 +218,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 10: dispatch and delivery 
       select: { id: true, lines: { select: { id: true } } },
     });
     createdOrderIds.push(notReady.id);
-    const notReadyResult = await createDispatchRecord(notReady.id, adminId, { lines: [{ orderLineId: notReady.lines[0]!.id, quantity: "1" }] });
+    const notReadyResult = await createDispatchRecord(notReady.id, adminId, { lines: [{ orderLineId: notReady.lines[0]!.id, quantity: "1" }], driverId, assistantId, vehicleId });
     expect(notReadyResult.ok).toBe(false);
     if (!notReadyResult.ok) expect(notReadyResult.status).toBe(409);
   });
@@ -201,6 +235,9 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 10: dispatch and delivery 
         { orderLineId: line1.id, quantity: "12.0000" },
         { orderLineId: line2.id, quantity: "15.0000" },
       ],
+      driverId,
+      assistantId,
+      vehicleId,
     });
     expect(first.ok).toBe(true);
     if (!first.ok) throw new Error(first.message);
@@ -214,10 +251,10 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 10: dispatch and delivery 
     // than that must still be refused even though the first dispatch has
     // not yet departed.
     const { createDispatchRecord: createAgain } = await import("@/lib/fulfilment/dispatch");
-    const overDispatchRemaining = await createAgain(orderId, adminId, { lines: [{ orderLineId: line1.id, quantity: "8.0001" }] });
+    const overDispatchRemaining = await createAgain(orderId, adminId, { lines: [{ orderLineId: line1.id, quantity: "8.0001" }], driverId, assistantId, vehicleId });
     expect(overDispatchRemaining.ok).toBe(false);
 
-    const second = await createAgain(orderId, adminId, { lines: [{ orderLineId: line1.id, quantity: "8.0000" }] });
+    const second = await createAgain(orderId, adminId, { lines: [{ orderLineId: line1.id, quantity: "8.0000" }], driverId, assistantId, vehicleId });
     expect(second.ok).toBe(true);
     if (!second.ok) throw new Error(second.message);
 
@@ -254,12 +291,21 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 10: dispatch and delivery 
         { orderLineId: line1.id, quantity: "20.0000" },
         { orderLineId: line2.id, quantity: "15.0000" },
       ],
+      driverId,
+      assistantId,
+      vehicleId,
     });
     if (!dispatch.ok) throw new Error(dispatch.message);
     await departDispatchRecord(dispatch.dispatchRecordId, adminId);
 
     const detail = await getDispatchRecordDetail(dispatch.dispatchRecordId);
     expect(detail).not.toBeNull();
+    // Final Operational Enhancements (spec Part 3.3): the registered
+    // driver/assistant/vehicle are persisted on the dispatch record
+    // itself, not just accepted and discarded.
+    expect(detail!.driver?.id).toBe(driverId);
+    expect(detail!.assistant?.id).toBe(assistantId);
+    expect(detail!.vehicle?.id).toBe(vehicleId);
     const [dLine1, dLine2] = detail!.lines;
 
     // accepted + rejected must equal dispatched exactly (20 here).
@@ -303,5 +349,80 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 10: dispatch and delivery 
     }, {});
     expect(duplicate.ok).toBe(false);
     if (!duplicate.ok) expect(duplicate.status).toBe(409);
+  });
+
+  /**
+   * Final Operational Enhancements (spec Part 3.3): the driver/assistant/
+   * vehicle ids are re-validated server-side against REAL, ACTIVE
+   * Personnel/Vehicle records of the correct role -- never trusting a
+   * stale or tampered client selection. Each of the four ways this check
+   * can fail is exercised independently: wrong role, inactive record, and
+   * a vehicle that was deactivated after being selected.
+   */
+  it("createDispatchRecord refuses a driver/assistant of the wrong role, an inactive driver, and an inactive vehicle", async () => {
+    if (skipAll) return;
+    const { prisma } = await import("@/lib/prisma");
+    const { createDispatchRecord } = await import("@/lib/fulfilment/dispatch");
+
+    const { orderId, line1 } = await createReadyToInvoiceOrder();
+
+    // A driver's-assistant record used AS the driver -- wrong role.
+    const wrongRole = await createDispatchRecord(orderId, adminId, {
+      lines: [{ orderLineId: line1.id, quantity: "5.0000" }],
+      driverId: assistantId,
+      assistantId,
+      vehicleId,
+    });
+    expect(wrongRole.ok).toBe(false);
+    if (!wrongRole.ok) expect(wrongRole.status).toBe(400);
+
+    // A driver who has since been deactivated.
+    const inactiveDriver = await prisma.personnel.create({
+      data: { name: `Inactive Driver ${uniqueSuffix}`, role: "DRIVER", status: "INACTIVE", createdById: adminId, isDemo: true },
+      select: { id: true },
+    });
+    createdPersonnelIds.push(inactiveDriver.id);
+    const inactiveDriverResult = await createDispatchRecord(orderId, adminId, {
+      lines: [{ orderLineId: line1.id, quantity: "5.0000" }],
+      driverId: inactiveDriver.id,
+      assistantId,
+      vehicleId,
+    });
+    expect(inactiveDriverResult.ok).toBe(false);
+    if (!inactiveDriverResult.ok) expect(inactiveDriverResult.status).toBe(400);
+
+    // A vehicle that has since been deactivated.
+    const inactiveVehicle = await prisma.vehicle.create({
+      data: { registrationNumber: `INACTIVE-${uniqueSuffix}`, status: "INACTIVE", createdById: adminId, isDemo: true },
+      select: { id: true },
+    });
+    createdVehicleIds.push(inactiveVehicle.id);
+    const inactiveVehicleResult = await createDispatchRecord(orderId, adminId, {
+      lines: [{ orderLineId: line1.id, quantity: "5.0000" }],
+      driverId,
+      assistantId,
+      vehicleId: inactiveVehicle.id,
+    });
+    expect(inactiveVehicleResult.ok).toBe(false);
+    if (!inactiveVehicleResult.ok) expect(inactiveVehicleResult.status).toBe(400);
+
+    // A non-existent id for any of the three is refused the same way.
+    const unknownId = await createDispatchRecord(orderId, adminId, {
+      lines: [{ orderLineId: line1.id, quantity: "5.0000" }],
+      driverId: "does-not-exist",
+      assistantId,
+      vehicleId,
+    });
+    expect(unknownId.ok).toBe(false);
+
+    // Confirm the valid, ACTIVE fixtures still succeed (the refusals above
+    // are specific to the bad input, not a side effect on the order).
+    const valid = await createDispatchRecord(orderId, adminId, {
+      lines: [{ orderLineId: line1.id, quantity: "5.0000" }],
+      driverId,
+      assistantId,
+      vehicleId,
+    });
+    expect(valid.ok).toBe(true);
   });
 });

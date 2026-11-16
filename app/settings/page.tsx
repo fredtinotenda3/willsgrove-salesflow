@@ -27,6 +27,10 @@ import {
   Copy,
   Loader2,
   AlertTriangle,
+  Truck,
+  UserCog,
+  Trash2,
+  Search,
 } from "lucide-react";
 import Sidebar from "../components/sidebar";
 
@@ -47,9 +51,45 @@ const ROLE_LABELS: Record<AppUser["role"], string> = {
   ADMINISTRATOR: "Administrator",
 };
 
+// Final Operational Enhancements (spec Part 4). Personnel (drivers,
+// driver's assistants, other named operational roles with no login
+// account) and Vehicles -- see prisma/schema.prisma's Personnel model
+// comment for why this is a separate roster from Users & Roles above,
+// not a duplicate of it.
+type Personnel = {
+  id: string;
+  name: string;
+  role: "DRIVER" | "DRIVER_ASSISTANT" | "OTHER";
+  roleDetail: string | null;
+  phone: string | null;
+  notes: string | null;
+  status: "ACTIVE" | "INACTIVE";
+  isDemo: boolean;
+  createdAt: string;
+  dispatchHistoryCount: number;
+};
+
+const PERSONNEL_ROLE_LABELS: Record<Personnel["role"], string> = {
+  DRIVER: "Driver",
+  DRIVER_ASSISTANT: "Driver's Assistant",
+  OTHER: "Other",
+};
+
+type Vehicle = {
+  id: string;
+  registrationNumber: string;
+  description: string | null;
+  notes: string | null;
+  status: "ACTIVE" | "INACTIVE";
+  isDemo: boolean;
+  createdAt: string;
+  dispatchHistoryCount: number;
+};
+
 type SettingsSection =
   | "workspace"
   | "users"
+  | "personnel"
   | "processing"
   | "notifications"
   | "system";
@@ -152,6 +192,34 @@ export default function SettingsPage() {
   // never retrievable again after this (see lib/auth/password.ts).
   const [createdCredential, setCreatedCredential] = useState<{ email: string; password: string } | null>(null);
 
+  // Final Operational Enhancements (spec Part 4). Personnel & Vehicles.
+  const [personnel, setPersonnel] = useState<Personnel[]>([]);
+  const [personnelLoading, setPersonnelLoading] = useState(true);
+  const [personnelError, setPersonnelError] = useState<string | null>(null);
+  const [personnelSearch, setPersonnelSearch] = useState("");
+
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [vehiclesLoading, setVehiclesLoading] = useState(true);
+  const [vehiclesError, setVehiclesError] = useState<string | null>(null);
+  const [vehicleSearch, setVehicleSearch] = useState("");
+
+  const [showAddPersonnel, setShowAddPersonnel] = useState(false);
+  const [newPersonnel, setNewPersonnel] = useState<{ name: string; role: Personnel["role"]; roleDetail: string; phone: string }>({
+    name: "",
+    role: "DRIVER",
+    roleDetail: "",
+    phone: "",
+  });
+  const [addPersonnelError, setAddPersonnelError] = useState<string | null>(null);
+  const [addingPersonnel, setAddingPersonnel] = useState(false);
+  const [pendingPersonnelAction, setPendingPersonnelAction] = useState<string | null>(null);
+
+  const [showAddVehicle, setShowAddVehicle] = useState(false);
+  const [newVehicle, setNewVehicle] = useState<{ registrationNumber: string; description: string }>({ registrationNumber: "", description: "" });
+  const [addVehicleError, setAddVehicleError] = useState<string | null>(null);
+  const [addingVehicle, setAddingVehicle] = useState(false);
+  const [pendingVehicleAction, setPendingVehicleAction] = useState<string | null>(null);
+
   // Pure fetch + parse, with no setState calls, so it can be safely called
   // directly from the mount effect below without tripping the
   // react-hooks/set-state-in-effect rule (calling setState synchronously
@@ -191,6 +259,62 @@ export default function SettingsPage() {
     setUsersLoading(false);
   }
 
+  // Final Operational Enhancements (spec Part 4). Same fetch/parse shape
+  // as fetchUsersList()/loadUsers() above.
+  async function fetchPersonnelList(search?: string): Promise<{ success: true; personnel: Personnel[] } | { success: false; message: string }> {
+    try {
+      const query = search && search.trim() ? `?search=${encodeURIComponent(search.trim())}` : "";
+      const response = await fetch(`/api/personnel${query}`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        return { success: false, message: data.message ?? "Unable to load personnel." };
+      }
+      return { success: true, personnel: data.personnel };
+    } catch {
+      return { success: false, message: "Could not reach the server. Check your connection and try again." };
+    }
+  }
+
+  async function loadPersonnel(search?: string) {
+    setPersonnelLoading(true);
+    setPersonnelError(null);
+    const result = await fetchPersonnelList(search);
+    if (!result.success) {
+      setPersonnelError(result.message);
+      setPersonnelLoading(false);
+      return;
+    }
+    setPersonnel(result.personnel);
+    setPersonnelLoading(false);
+  }
+
+  async function fetchVehiclesList(search?: string): Promise<{ success: true; vehicles: Vehicle[] } | { success: false; message: string }> {
+    try {
+      const query = search && search.trim() ? `?search=${encodeURIComponent(search.trim())}` : "";
+      const response = await fetch(`/api/vehicles${query}`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        return { success: false, message: data.message ?? "Unable to load vehicles." };
+      }
+      return { success: true, vehicles: data.vehicles };
+    } catch {
+      return { success: false, message: "Could not reach the server. Check your connection and try again." };
+    }
+  }
+
+  async function loadVehicles(search?: string) {
+    setVehiclesLoading(true);
+    setVehiclesError(null);
+    const result = await fetchVehiclesList(search);
+    if (!result.success) {
+      setVehiclesError(result.message);
+      setVehiclesLoading(false);
+      return;
+    }
+    setVehicles(result.vehicles);
+    setVehiclesLoading(false);
+  }
+
   useEffect(() => {
     let ignore = false;
 
@@ -218,6 +342,26 @@ export default function SettingsPage() {
       })
       .catch(() => {});
 
+    fetchPersonnelList().then((result) => {
+      if (ignore) return;
+      if (!result.success) {
+        setPersonnelError(result.message);
+      } else {
+        setPersonnel(result.personnel);
+      }
+      setPersonnelLoading(false);
+    });
+
+    fetchVehiclesList().then((result) => {
+      if (ignore) return;
+      if (!result.success) {
+        setVehiclesError(result.message);
+      } else {
+        setVehicles(result.vehicles);
+      }
+      setVehiclesLoading(false);
+    });
+
     return () => {
       ignore = true;
     };
@@ -240,6 +384,12 @@ export default function SettingsPage() {
       label: "Users & Roles",
       description: "Application users and access roles",
       icon: Users,
+    },
+    {
+      id: "personnel",
+      label: "Personnel & Vehicles",
+      description: "Drivers, assistants and the vehicle register",
+      icon: Truck,
     },
     {
       id: "processing",
@@ -340,6 +490,163 @@ export default function SettingsPage() {
       showSaved("Could not reach the server. Check your connection and try again.");
     } finally {
       setPendingUserAction(null);
+    }
+  }
+
+  // Final Operational Enhancements (spec Part 4). Personnel actions.
+  async function addPersonnel() {
+    setAddPersonnelError(null);
+    if (!newPersonnel.name.trim()) {
+      setAddPersonnelError("Please enter a name.");
+      return;
+    }
+    if (newPersonnel.role === "OTHER" && !newPersonnel.roleDetail.trim()) {
+      setAddPersonnelError("Please enter a detail for the Other role.");
+      return;
+    }
+
+    setAddingPersonnel(true);
+    try {
+      const response = await fetch("/api/personnel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newPersonnel.name.trim(),
+          role: newPersonnel.role,
+          roleDetail: newPersonnel.roleDetail.trim() || undefined,
+          phone: newPersonnel.phone.trim() || undefined,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        setAddPersonnelError(data.fieldErrors?.name ?? data.fieldErrors?.roleDetail ?? data.message ?? "Unable to create this personnel record.");
+        return;
+      }
+      setNewPersonnel({ name: "", role: "DRIVER", roleDetail: "", phone: "" });
+      setShowAddPersonnel(false);
+      await loadPersonnel(personnelSearch);
+    } catch {
+      setAddPersonnelError("Could not reach the server. Check your connection and try again.");
+    } finally {
+      setAddingPersonnel(false);
+    }
+  }
+
+  async function togglePersonnelStatus(record: Personnel) {
+    const nextStatus = record.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+    setPendingPersonnelAction(record.id);
+    try {
+      const response = await fetch(`/api/personnel/${record.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        showSaved(data.message ?? "Unable to update this personnel record.");
+        return;
+      }
+      await loadPersonnel(personnelSearch);
+      showSaved(`${record.name} is now ${nextStatus === "ACTIVE" ? "active" : "inactive"}.`);
+    } catch {
+      showSaved("Could not reach the server. Check your connection and try again.");
+    } finally {
+      setPendingPersonnelAction(null);
+    }
+  }
+
+  async function removePersonnel(record: Personnel) {
+    if (!window.confirm(`Delete ${record.name}? This cannot be undone.`)) return;
+    setPendingPersonnelAction(record.id);
+    try {
+      const response = await fetch(`/api/personnel/${record.id}`, { method: "DELETE" });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        showSaved(data.message ?? "Unable to delete this personnel record.");
+        return;
+      }
+      await loadPersonnel(personnelSearch);
+      showSaved(`${record.name} was deleted.`);
+    } catch {
+      showSaved("Could not reach the server. Check your connection and try again.");
+    } finally {
+      setPendingPersonnelAction(null);
+    }
+  }
+
+  // Final Operational Enhancements (spec Part 4). Vehicle actions --
+  // exact mirror of the Personnel actions above.
+  async function addVehicle() {
+    setAddVehicleError(null);
+    if (!newVehicle.registrationNumber.trim()) {
+      setAddVehicleError("Please enter a registration number.");
+      return;
+    }
+
+    setAddingVehicle(true);
+    try {
+      const response = await fetch("/api/vehicles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          registrationNumber: newVehicle.registrationNumber.trim(),
+          description: newVehicle.description.trim() || undefined,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        setAddVehicleError(data.fieldErrors?.registrationNumber ?? data.message ?? "Unable to create this vehicle.");
+        return;
+      }
+      setNewVehicle({ registrationNumber: "", description: "" });
+      setShowAddVehicle(false);
+      await loadVehicles(vehicleSearch);
+    } catch {
+      setAddVehicleError("Could not reach the server. Check your connection and try again.");
+    } finally {
+      setAddingVehicle(false);
+    }
+  }
+
+  async function toggleVehicleStatus(vehicle: Vehicle) {
+    const nextStatus = vehicle.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+    setPendingVehicleAction(vehicle.id);
+    try {
+      const response = await fetch(`/api/vehicles/${vehicle.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        showSaved(data.message ?? "Unable to update this vehicle.");
+        return;
+      }
+      await loadVehicles(vehicleSearch);
+      showSaved(`${vehicle.registrationNumber} is now ${nextStatus === "ACTIVE" ? "active" : "inactive"}.`);
+    } catch {
+      showSaved("Could not reach the server. Check your connection and try again.");
+    } finally {
+      setPendingVehicleAction(null);
+    }
+  }
+
+  async function removeVehicle(vehicle: Vehicle) {
+    if (!window.confirm(`Delete ${vehicle.registrationNumber}? This cannot be undone.`)) return;
+    setPendingVehicleAction(vehicle.id);
+    try {
+      const response = await fetch(`/api/vehicles/${vehicle.id}`, { method: "DELETE" });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        showSaved(data.message ?? "Unable to delete this vehicle.");
+        return;
+      }
+      await loadVehicles(vehicleSearch);
+      showSaved(`${vehicle.registrationNumber} was deleted.`);
+    } catch {
+      showSaved("Could not reach the server. Check your connection and try again.");
+    } finally {
+      setPendingVehicleAction(null);
     }
   }
 
@@ -808,6 +1115,229 @@ export default function SettingsPage() {
                 </>
               )}
 
+              {activeSection === "personnel" && (
+                <>
+                  <SettingsPanel
+                    title="Drivers & Assistants"
+                    description="The roster dispatch selects from -- people with no login account. This section is live."
+                    icon={UserCog}
+                    action={
+                      isAdmin ? (
+                        <button
+                          onClick={() => {
+                            setAddPersonnelError(null);
+                            setShowAddPersonnel(true);
+                          }}
+                          className="flex items-center gap-2 rounded-xl bg-[#183B2D] px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#24513D]"
+                        >
+                          <UserPlus size={15} />
+                          Add Personnel
+                        </button>
+                      ) : undefined
+                    }
+                  >
+                    {!isAdmin && (
+                      <div className="mb-5 flex items-start gap-2 rounded-xl border border-[#E8EDE8] bg-[#F7F9F6] p-3 text-xs text-[#68766D]">
+                        <ShieldCheck size={15} className="mt-0.5 shrink-0" />
+                        Only an Administrator can add, edit or deactivate personnel.
+                      </div>
+                    )}
+
+                    <div className="mb-4 flex items-center gap-2">
+                      <div className="relative flex-1 max-w-sm">
+                        <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#9AA49D]" />
+                        <input
+                          value={personnelSearch}
+                          onChange={(e) => setPersonnelSearch(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void loadPersonnel(personnelSearch);
+                          }}
+                          placeholder="Search by name or phone"
+                          className="settings-input w-full pl-8"
+                        />
+                      </div>
+                      <button
+                        onClick={() => void loadPersonnel(personnelSearch)}
+                        className="rounded-lg border border-[#E3E9E3] px-3 py-2 text-xs font-semibold text-[#52645A] hover:bg-[#F7F9F6]"
+                      >
+                        Search
+                      </button>
+                    </div>
+
+                    {personnelError && (
+                      <div className="mb-5 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+                        <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                        {personnelError}
+                      </div>
+                    )}
+
+                    {personnelLoading ? (
+                      <div className="flex items-center justify-center gap-2 py-10 text-xs text-[#849087]">
+                        <Loader2 size={16} className="animate-spin" />
+                        Loading personnel…
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {personnel.map((record) => (
+                          <div
+                            key={record.id}
+                            className="flex flex-col justify-between gap-4 rounded-xl border border-[#E8EDE8] p-4 sm:flex-row sm:items-center"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold">{record.name}</p>
+                              <p className="mt-1 text-xs font-medium text-[#52645A]">
+                                {PERSONNEL_ROLE_LABELS[record.role]}
+                                {record.role === "OTHER" && record.roleDetail ? ` -- ${record.roleDetail}` : ""}
+                              </p>
+                              <p className="mt-0.5 text-[11px] text-[#9AA49D]">
+                                {record.phone ?? "No phone on file"} · {record.dispatchHistoryCount} dispatch
+                                {record.dispatchHistoryCount === 1 ? "" : "es"} on record
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                                  record.status === "ACTIVE" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"
+                                }`}
+                              >
+                                {record.status === "ACTIVE" ? "Active" : "Inactive"}
+                              </span>
+
+                              {isAdmin && (
+                                <>
+                                  <button
+                                    onClick={() => togglePersonnelStatus(record)}
+                                    disabled={pendingPersonnelAction === record.id}
+                                    className="rounded-lg border border-[#E3E9E3] px-3 py-2 text-xs font-semibold text-[#52645A] hover:bg-[#F7F9F6] disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {record.status === "ACTIVE" ? "Deactivate" : "Activate"}
+                                  </button>
+                                  <button
+                                    onClick={() => removePersonnel(record)}
+                                    disabled={pendingPersonnelAction === record.id}
+                                    title={record.dispatchHistoryCount > 0 ? "Has dispatch history -- deactivate instead" : "Delete"}
+                                    className="rounded-lg border border-[#E3E9E3] p-2 text-[#9B3B3B] hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {pendingPersonnelAction === record.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+
+                        {personnel.length === 0 && <p className="py-6 text-center text-xs text-[#849087]">No personnel found.</p>}
+                      </div>
+                    )}
+                  </SettingsPanel>
+
+                  <SettingsPanel
+                    title="Vehicles"
+                    description="The registered truck/vehicle list dispatch selects from. This section is live."
+                    icon={Truck}
+                    action={
+                      isAdmin ? (
+                        <button
+                          onClick={() => {
+                            setAddVehicleError(null);
+                            setShowAddVehicle(true);
+                          }}
+                          className="flex items-center gap-2 rounded-xl bg-[#183B2D] px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#24513D]"
+                        >
+                          <Truck size={15} />
+                          Add Vehicle
+                        </button>
+                      ) : undefined
+                    }
+                  >
+                    <div className="mb-4 flex items-center gap-2">
+                      <div className="relative flex-1 max-w-sm">
+                        <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#9AA49D]" />
+                        <input
+                          value={vehicleSearch}
+                          onChange={(e) => setVehicleSearch(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void loadVehicles(vehicleSearch);
+                          }}
+                          placeholder="Search by registration or description"
+                          className="settings-input w-full pl-8"
+                        />
+                      </div>
+                      <button
+                        onClick={() => void loadVehicles(vehicleSearch)}
+                        className="rounded-lg border border-[#E3E9E3] px-3 py-2 text-xs font-semibold text-[#52645A] hover:bg-[#F7F9F6]"
+                      >
+                        Search
+                      </button>
+                    </div>
+
+                    {vehiclesError && (
+                      <div className="mb-5 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+                        <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                        {vehiclesError}
+                      </div>
+                    )}
+
+                    {vehiclesLoading ? (
+                      <div className="flex items-center justify-center gap-2 py-10 text-xs text-[#849087]">
+                        <Loader2 size={16} className="animate-spin" />
+                        Loading vehicles…
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {vehicles.map((vehicle) => (
+                          <div
+                            key={vehicle.id}
+                            className="flex flex-col justify-between gap-4 rounded-xl border border-[#E8EDE8] p-4 sm:flex-row sm:items-center"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold">{vehicle.registrationNumber}</p>
+                              <p className="mt-1 text-xs text-[#52645A]">{vehicle.description ?? "No description on file"}</p>
+                              <p className="mt-0.5 text-[11px] text-[#9AA49D]">
+                                {vehicle.dispatchHistoryCount} dispatch{vehicle.dispatchHistoryCount === 1 ? "" : "es"} on record
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                                  vehicle.status === "ACTIVE" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"
+                                }`}
+                              >
+                                {vehicle.status === "ACTIVE" ? "Active" : "Inactive"}
+                              </span>
+
+                              {isAdmin && (
+                                <>
+                                  <button
+                                    onClick={() => toggleVehicleStatus(vehicle)}
+                                    disabled={pendingVehicleAction === vehicle.id}
+                                    className="rounded-lg border border-[#E3E9E3] px-3 py-2 text-xs font-semibold text-[#52645A] hover:bg-[#F7F9F6] disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {vehicle.status === "ACTIVE" ? "Deactivate" : "Activate"}
+                                  </button>
+                                  <button
+                                    onClick={() => removeVehicle(vehicle)}
+                                    disabled={pendingVehicleAction === vehicle.id}
+                                    title={vehicle.dispatchHistoryCount > 0 ? "Has dispatch history -- deactivate instead" : "Delete"}
+                                    className="rounded-lg border border-[#E3E9E3] p-2 text-[#9B3B3B] hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {pendingVehicleAction === vehicle.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+
+                        {vehicles.length === 0 && <p className="py-6 text-center text-xs text-[#849087]">No vehicles found.</p>}
+                      </div>
+                    )}
+                  </SettingsPanel>
+                </>
+              )}
+
               {activeSection === "processing" && (
                 <SettingsPanel
                   title="Order Processing Rules"
@@ -1156,6 +1686,153 @@ export default function SettingsPage() {
               >
                 {addingUser && <Loader2 size={15} className="animate-spin" />}
                 {addingUser ? "Adding…" : "Add User"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Final Operational Enhancements (spec Part 4): Add personnel modal */}
+      {showAddPersonnel && isAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <div className="mb-5 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold">Add Personnel</h2>
+                <p className="mt-1 text-xs text-[#849087]">A named roster entry with no login account.</p>
+              </div>
+              <button onClick={() => setShowAddPersonnel(false)} className="rounded-lg p-2 text-[#849087] hover:bg-[#F3F5F2]" aria-label="Close">
+                <X size={19} />
+              </button>
+            </div>
+
+            {addPersonnelError && (
+              <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                {addPersonnelError}
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <Field label="Full Name">
+                <input
+                  value={newPersonnel.name}
+                  onChange={(e) => setNewPersonnel({ ...newPersonnel, name: e.target.value })}
+                  placeholder="Enter full name"
+                  className="settings-input"
+                />
+              </Field>
+
+              <Field label="Role">
+                <select
+                  value={newPersonnel.role}
+                  onChange={(e) => setNewPersonnel({ ...newPersonnel, role: e.target.value as Personnel["role"] })}
+                  className="settings-input"
+                >
+                  <option value="DRIVER">Driver</option>
+                  <option value="DRIVER_ASSISTANT">Driver&apos;s Assistant</option>
+                  <option value="OTHER">Other</option>
+                </select>
+              </Field>
+
+              {newPersonnel.role === "OTHER" && (
+                <Field label="Role Detail">
+                  <input
+                    value={newPersonnel.roleDetail}
+                    onChange={(e) => setNewPersonnel({ ...newPersonnel, roleDetail: e.target.value })}
+                    placeholder="Describe the role"
+                    className="settings-input"
+                  />
+                </Field>
+              )}
+
+              <Field label="Phone (optional)">
+                <input
+                  value={newPersonnel.phone}
+                  onChange={(e) => setNewPersonnel({ ...newPersonnel, phone: e.target.value })}
+                  placeholder="Enter phone number"
+                  className="settings-input"
+                />
+              </Field>
+            </div>
+
+            <div className="mt-6 flex gap-3">
+              <button
+                onClick={() => setShowAddPersonnel(false)}
+                disabled={addingPersonnel}
+                className="flex-1 rounded-xl border border-[#E3E9E3] px-4 py-3 text-sm font-semibold text-[#68766D] hover:bg-[#F7F9F6] disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={addPersonnel}
+                disabled={addingPersonnel}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#183B2D] px-4 py-3 text-sm font-semibold text-white hover:bg-[#24513D] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {addingPersonnel && <Loader2 size={15} className="animate-spin" />}
+                {addingPersonnel ? "Adding…" : "Add Personnel"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Final Operational Enhancements (spec Part 4): Add vehicle modal */}
+      {showAddVehicle && isAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <div className="mb-5 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold">Add Vehicle</h2>
+                <p className="mt-1 text-xs text-[#849087]">Registered for selection on the Dispatch screen.</p>
+              </div>
+              <button onClick={() => setShowAddVehicle(false)} className="rounded-lg p-2 text-[#849087] hover:bg-[#F3F5F2]" aria-label="Close">
+                <X size={19} />
+              </button>
+            </div>
+
+            {addVehicleError && (
+              <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                {addVehicleError}
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <Field label="Registration Number">
+                <input
+                  value={newVehicle.registrationNumber}
+                  onChange={(e) => setNewVehicle({ ...newVehicle, registrationNumber: e.target.value })}
+                  placeholder="e.g. ABC 1234"
+                  className="settings-input"
+                />
+              </Field>
+
+              <Field label="Description (optional)">
+                <input
+                  value={newVehicle.description}
+                  onChange={(e) => setNewVehicle({ ...newVehicle, description: e.target.value })}
+                  placeholder="e.g. Isuzu 5-tonne truck"
+                  className="settings-input"
+                />
+              </Field>
+            </div>
+
+            <div className="mt-6 flex gap-3">
+              <button
+                onClick={() => setShowAddVehicle(false)}
+                disabled={addingVehicle}
+                className="flex-1 rounded-xl border border-[#E3E9E3] px-4 py-3 text-sm font-semibold text-[#68766D] hover:bg-[#F7F9F6] disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={addVehicle}
+                disabled={addingVehicle}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#183B2D] px-4 py-3 text-sm font-semibold text-white hover:bg-[#24513D] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {addingVehicle && <Loader2 size={15} className="animate-spin" />}
+                {addingVehicle ? "Adding…" : "Add Vehicle"}
               </button>
             </div>
           </div>

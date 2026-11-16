@@ -1,5 +1,6 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { TRANSACTION_OPTIONS } from "@/lib/orders";
 import { dateOnlyStringToUtcDate } from "@/lib/dates";
@@ -37,13 +38,47 @@ export function generateClaimReference(): string {
   return `CLM-${datePart}-${randomPart}`;
 }
 
-export async function createInvoiceClaim(input: CreateInvoiceClaimInput, reportedById: string): Promise<CreateInvoiceClaimResult> {
+/**
+ * The full validate-then-insert core, written to run against ANY
+ * Prisma.TransactionClient -- the top-level `prisma` client itself
+ * (which satisfies Prisma.TransactionClient structurally: TransactionClient
+ * is PrismaClient minus a few top-level methods like `$transaction`/
+ * `$connect`, so every model delegate used here is present with no cast),
+ * or the `tx` handed to an ALREADY-OPEN transaction's callback.
+ *
+ * This split exists for the Final Operational Enhancements spec (Part 5):
+ * recording an invoice's delivery outcome as "With Claim" must create the
+ * InvoiceDeliveryRecord and one-or-more linked InvoiceClaim rows
+ * atomically in a single transaction (lib/invoice-delivery/record-outcome.ts),
+ * and Prisma has no nested transactions -- so that caller needs this exact
+ * validation+insert logic runnable against ITS OWN already-open `tx`,
+ * not a second one. createInvoiceClaim() below is the original,
+ * standalone entry point, now just a one-line wrapper that opens its own
+ * transaction and delegates to this function.
+ *
+ * Every check that used to run once "fast" before a transaction and then
+ * again "for real" inside it has been collapsed into a single pass here
+ * -- correct either way (nothing is written until every check has
+ * passed), and now unconditionally serialized by whichever transaction
+ * the caller is already inside.
+ *
+ * invoiceDeliveryRecordId is optional and the one genuinely new piece:
+ * when provided, it is persisted on the created claim so it is traceable
+ * back to the delivery-outcome recording that created it. Every other
+ * field, check and error shape below is unchanged Milestone 6A logic.
+ */
+export async function createInvoiceClaimCore(
+  tx: Prisma.TransactionClient,
+  input: CreateInvoiceClaimInput,
+  reportedById: string,
+  invoiceDeliveryRecordId?: string
+): Promise<CreateInvoiceClaimResult> {
   // "Other requires detail" -- category.
   if (claimCategoryRequiresDetail(input.category) && !input.categoryDetail?.trim()) {
     return { ok: false, status: 400, message: "A detail is required when category is OTHER.", fieldErrors: { categoryDetail: "Required when category is OTHER." } };
   }
 
-  const sapInvoice = await prisma.sapInvoice.findUnique({
+  const sapInvoice = await tx.sapInvoice.findUnique({
     where: { id: input.sapInvoiceId },
     select: { id: true, matchedCustomerId: true, isCancelledOrReversed: true },
   });
@@ -70,38 +105,32 @@ export async function createInvoiceClaim(input: CreateInvoiceClaimInput, reporte
     };
   }
 
-  const customer = await prisma.customer.findUnique({ where: { id: input.customerId }, select: { id: true } });
+  const customer = await tx.customer.findUnique({ where: { id: input.customerId }, select: { id: true } });
   if (!customer) {
     return { ok: false, status: 404, message: "Customer not found." };
   }
 
   if (input.orderId) {
-    const order = await prisma.customerOrder.findUnique({ where: { id: input.orderId }, select: { id: true } });
+    const order = await tx.customerOrder.findUnique({ where: { id: input.orderId }, select: { id: true } });
     if (!order) {
       return { ok: false, status: 404, message: "Order not found." };
     }
   }
 
   if (input.assignedToId) {
-    const assignee = await prisma.user.findUnique({ where: { id: input.assignedToId }, select: { id: true } });
+    const assignee = await tx.user.findUnique({ where: { id: input.assignedToId }, select: { id: true } });
     if (!assignee) {
       return { ok: false, status: 404, message: "Assigned user not found." };
     }
   }
 
-  // Validate every claimed line against the SAP invoice line it targets
-  // BEFORE opening the transaction, so a bad line fails fast with a
-  // specific field error rather than a generic transaction rollback
-  // message. Re-validated again inside the transaction (below) against a
-  // transaction-consistent read, since a concurrent claim against the
-  // same line could otherwise race between this check and the insert.
   const sapInvoiceLineIds = input.lines.map((line) => line.sapInvoiceLineId);
   const uniqueLineIds = new Set(sapInvoiceLineIds);
   if (uniqueLineIds.size !== sapInvoiceLineIds.length) {
     return { ok: false, status: 400, message: "Each invoice line may only be listed once per claim.", fieldErrors: { lines: "Duplicate invoice line in this claim." } };
   }
 
-  const sapInvoiceLines = await prisma.sapInvoiceLine.findMany({
+  const sapInvoiceLines = await tx.sapInvoiceLine.findMany({
     where: { id: { in: sapInvoiceLineIds }, sapInvoiceId: input.sapInvoiceId },
     select: { id: true, quantityInvoiced: true, lineTotal: true },
   });
@@ -110,16 +139,18 @@ export async function createInvoiceClaim(input: CreateInvoiceClaimInput, reporte
   }
   const lineById = new Map(sapInvoiceLines.map((line) => [line.id, line]));
 
+  // Each line's quantity/amount is validated against the SAME `tx` that
+  // will perform the insert below -- the already-claimed aggregate read
+  // (getAlreadyClaimedTotal) and this transaction's own insert are the
+  // same unit of work, which is what actually closes the race between two
+  // concurrent claims against the same invoice line (not merely "checking
+  // twice").
   for (const [index, line] of input.lines.entries()) {
     const sapLine = lineById.get(line.sapInvoiceLineId);
-    if (!sapLine) continue; // already reported above
+    if (!sapLine) continue; // already reported above via the count mismatch
 
     if (line.disputeType === "QUANTITY") {
-      // `prisma` (PrismaClient) satisfies Prisma.TransactionClient
-      // structurally -- TransactionClient is PrismaClient minus a few
-      // top-level methods (`$transaction`, `$connect`, ...), so every
-      // model delegate used here (aggregate) is present with no cast.
-      const alreadyClaimed = await getAlreadyClaimedTotal(prisma, line.sapInvoiceLineId);
+      const alreadyClaimed = await getAlreadyClaimedTotal(tx, line.sapInvoiceLineId);
       const result = validateClaimLineQuantities(sapLine.quantityInvoiced.toString(), alreadyClaimed, line.acceptedQuantity, line.rejectedQuantity);
       if (!result.ok) {
         return { ok: false, status: 400, message: result.message, fieldErrors: { [`lines.${index}`]: result.message } };
@@ -139,103 +170,95 @@ export async function createInvoiceClaim(input: CreateInvoiceClaimInput, reporte
   // as lib/price-list-import.ts's validFrom, a required DateTime field).
   const claimDate = dateOnlyStringToUtcDate(input.claimDate)!;
 
-  try {
-    const claim = await prisma.$transaction(async (tx) => {
-      // Re-check each line's live "already claimed" total inside the
-      // transaction, serialized by Postgres's own row locking on the
-      // SapInvoiceLine read below, to close the race window between the
-      // pre-check above and this insert.
-      for (const line of input.lines) {
-        if (line.disputeType !== "QUANTITY") continue;
-        const sapLine = lineById.get(line.sapInvoiceLineId)!;
-        const alreadyClaimed = await getAlreadyClaimedTotal(tx, line.sapInvoiceLineId);
-        const result = validateClaimLineQuantities(sapLine.quantityInvoiced.toString(), alreadyClaimed, line.acceptedQuantity, line.rejectedQuantity);
-        if (!result.ok) {
-          throw new ClaimLineConflictError(result.message);
-        }
-      }
+  const created = await tx.invoiceClaim.create({
+    data: {
+      claimReference,
+      sapInvoiceId: input.sapInvoiceId,
+      orderId: input.orderId ?? null,
+      customerId: input.customerId,
+      customerComplaintReference: input.customerComplaintReference ?? null,
+      category: input.category,
+      description: claimCategoryRequiresDetail(input.category) ? `${input.description}\n\n[OTHER category detail]: ${input.categoryDetail}` : input.description,
+      reportedById,
+      assignedToId: input.assignedToId ?? null,
+      priority: input.priority ?? "MEDIUM",
+      claimDate,
+      customerCommunicationNotes: input.customerCommunicationNotes ?? null,
+      // Final Operational Enhancements (spec Part 5): traceability back to
+      // the InvoiceDeliveryRecord this claim was created alongside, when
+      // this call came from recordInvoiceDeliveryOutcome() rather than the
+      // standalone /invoice-claims/new form.
+      invoiceDeliveryRecordId: invoiceDeliveryRecordId ?? null,
+      lines: {
+        create: input.lines.map((line) => ({
+          sapInvoiceLineId: line.sapInvoiceLineId,
+          // sapItemCodeSnapshot/sapItemDescriptionSnapshot: left null
+          // here and filled in by the batch update just below, once
+          // every line has a real id -- simpler than denormalizing
+          // the earlier fetch into this nested-create shape.
+          disputeType: line.disputeType,
+          acceptedQuantity: line.disputeType === "QUANTITY" ? line.acceptedQuantity : null,
+          rejectedQuantity: line.disputeType === "QUANTITY" ? line.rejectedQuantity : null,
+          disputedAmount: line.disputeType === "AMOUNT_ONLY" ? line.disputedAmount : null,
+          disputedUnitPrice: line.disputedUnitPrice ?? null,
+          reason: line.reason,
+          // Final Operational Enhancements (spec Part 6): the one new
+          // claim-line field -- a distinguishable category drawn from the
+          // 10 named claim reasons, reusing the existing 3 categories
+          // where they already matched (see lib/invoice-claims/validation.ts's
+          // CLAIM_CATEGORIES comment). Independent of `reason` (free text)
+          // and of the claim-level `category` enum above -- this is a
+          // per-LINE classification, since a single claim/invoice can
+          // legitimately mix reasons across its lines.
+          reasonCategory: line.reasonCategory ?? null,
+          evidenceNotes: line.evidenceNotes ?? null,
+        })),
+      },
+    },
+    select: { id: true, claimReference: true },
+  });
 
-      const created = await tx.invoiceClaim.create({
-        data: {
-          claimReference,
-          sapInvoiceId: input.sapInvoiceId,
-          orderId: input.orderId ?? null,
-          customerId: input.customerId,
-          customerComplaintReference: input.customerComplaintReference ?? null,
-          category: input.category,
-          description: claimCategoryRequiresDetail(input.category) ? `${input.description}\n\n[OTHER category detail]: ${input.categoryDetail}` : input.description,
-          reportedById,
-          assignedToId: input.assignedToId ?? null,
-          priority: input.priority ?? "MEDIUM",
-          claimDate,
-          customerCommunicationNotes: input.customerCommunicationNotes ?? null,
-          lines: {
-            create: input.lines.map((line) => ({
-              sapInvoiceLineId: line.sapInvoiceLineId,
-              // sapItemCodeSnapshot/sapItemDescriptionSnapshot: left null
-              // here and filled in by the batch update just below, once
-              // every line has a real id -- simpler than denormalizing
-              // the earlier fetch into this nested-create shape.
-              disputeType: line.disputeType,
-              acceptedQuantity: line.disputeType === "QUANTITY" ? line.acceptedQuantity : null,
-              rejectedQuantity: line.disputeType === "QUANTITY" ? line.rejectedQuantity : null,
-              disputedAmount: line.disputeType === "AMOUNT_ONLY" ? line.disputedAmount : null,
-              disputedUnitPrice: line.disputedUnitPrice ?? null,
-              reason: line.reason,
-              evidenceNotes: line.evidenceNotes ?? null,
-            })),
-          },
-        },
-        select: { id: true, claimReference: true },
-      });
-
-      // Snapshot sapItemCode/sapItemDescription onto each created line for
-      // display-without-a-join (schema comment on InvoiceClaimLine) --
-      // done as a batch update rather than threaded through the nested
-      // create above, since Prisma's nested-create API has no per-row
-      // computed-from-elsewhere field.
-      const createdLines = await tx.invoiceClaimLine.findMany({ where: { claimId: created.id }, select: { id: true, sapInvoiceLineId: true } });
-      const sapLineDetails = await tx.sapInvoiceLine.findMany({
-        where: { id: { in: createdLines.map((l) => l.sapInvoiceLineId) } },
-        select: { id: true, sapItemCode: true, sapItemDescription: true },
-      });
-      const sapDetailById = new Map(sapLineDetails.map((d) => [d.id, d]));
-      for (const createdLine of createdLines) {
-        const detail = sapDetailById.get(createdLine.sapInvoiceLineId);
-        if (!detail) continue;
-        await tx.invoiceClaimLine.update({
-          where: { id: createdLine.id },
-          data: { sapItemCodeSnapshot: detail.sapItemCode, sapItemDescriptionSnapshot: detail.sapItemDescription },
-        });
-      }
-
-      await tx.auditEvent.create({
-        data: {
-          actorId: reportedById,
-          action: "INVOICE_CLAIM_CREATED",
-          entityType: "InvoiceClaim",
-          entityId: created.id,
-          afterData: {
-            claimReference: created.claimReference,
-            sapInvoiceId: input.sapInvoiceId,
-            customerId: input.customerId,
-            category: input.category,
-            priority: input.priority ?? "MEDIUM",
-            lineCount: input.lines.length,
-          },
-        },
-      });
-
-      return created;
-    }, TRANSACTION_OPTIONS);
-
-    return { ok: true, id: claim.id, claimReference: claim.claimReference };
-  } catch (error) {
-    if (error instanceof ClaimLineConflictError) {
-      return { ok: false, status: 409, message: error.message };
-    }
-    throw error;
+  // Snapshot sapItemCode/sapItemDescription onto each created line for
+  // display-without-a-join (schema comment on InvoiceClaimLine) --
+  // done as a batch update rather than threaded through the nested
+  // create above, since Prisma's nested-create API has no per-row
+  // computed-from-elsewhere field.
+  const createdLines = await tx.invoiceClaimLine.findMany({ where: { claimId: created.id }, select: { id: true, sapInvoiceLineId: true } });
+  const sapLineDetails = await tx.sapInvoiceLine.findMany({
+    where: { id: { in: createdLines.map((l) => l.sapInvoiceLineId) } },
+    select: { id: true, sapItemCode: true, sapItemDescription: true },
+  });
+  const sapDetailById = new Map(sapLineDetails.map((d) => [d.id, d]));
+  for (const createdLine of createdLines) {
+    const detail = sapDetailById.get(createdLine.sapInvoiceLineId);
+    if (!detail) continue;
+    await tx.invoiceClaimLine.update({
+      where: { id: createdLine.id },
+      data: { sapItemCodeSnapshot: detail.sapItemCode, sapItemDescriptionSnapshot: detail.sapItemDescription },
+    });
   }
+
+  await tx.auditEvent.create({
+    data: {
+      actorId: reportedById,
+      action: "INVOICE_CLAIM_CREATED",
+      entityType: "InvoiceClaim",
+      entityId: created.id,
+      afterData: {
+        claimReference: created.claimReference,
+        sapInvoiceId: input.sapInvoiceId,
+        customerId: input.customerId,
+        category: input.category,
+        priority: input.priority ?? "MEDIUM",
+        lineCount: input.lines.length,
+        invoiceDeliveryRecordId: invoiceDeliveryRecordId ?? null,
+      },
+    },
+  });
+
+  return { ok: true, id: created.id, claimReference: created.claimReference };
 }
 
-class ClaimLineConflictError extends Error {}
+export async function createInvoiceClaim(input: CreateInvoiceClaimInput, reportedById: string): Promise<CreateInvoiceClaimResult> {
+  return prisma.$transaction((tx) => createInvoiceClaimCore(tx, input, reportedById), TRANSACTION_OPTIONS);
+}

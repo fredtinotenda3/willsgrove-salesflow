@@ -43,6 +43,29 @@ export async function createDispatchRecord(orderId: string, actorId: string, inp
     }
   }
 
+  // Final Operational Enhancements (spec Part 3.3): "every confirmed
+  // dispatch must record Driver, Driver's Assistant, and Truck
+  // Registration, selected from registered Settings records (not
+  // free-typed)." Re-validated here server-side (never trusting the
+  // client's dropdown selection alone) -- each id must reference an
+  // ACTIVE record of the correct kind/role. A record that was deactivated
+  // after being selected in the UI is rejected here, same as any other
+  // stale-selection race.
+  const [driver, assistant, vehicle] = await Promise.all([
+    prisma.personnel.findUnique({ where: { id: input.driverId }, select: { id: true, role: true, status: true } }),
+    prisma.personnel.findUnique({ where: { id: input.assistantId }, select: { id: true, role: true, status: true } }),
+    prisma.vehicle.findUnique({ where: { id: input.vehicleId }, select: { id: true, status: true } }),
+  ]);
+  if (!driver || driver.status !== "ACTIVE" || driver.role !== "DRIVER") {
+    return { ok: false, status: 400, message: "The selected driver is not a registered, active driver." };
+  }
+  if (!assistant || assistant.status !== "ACTIVE" || assistant.role !== "DRIVER_ASSISTANT") {
+    return { ok: false, status: 400, message: "The selected driver's assistant is not a registered, active driver's assistant." };
+  }
+  if (!vehicle || vehicle.status !== "ACTIVE") {
+    return { ok: false, status: 400, message: "The selected vehicle is not a registered, active vehicle." };
+  }
+
   const fulfilment = await getOrderFulfilmentStatus(orderId);
   if (!fulfilment) {
     return { ok: false, status: 404, message: "Order not found." };
@@ -81,6 +104,9 @@ export async function createDispatchRecord(orderId: string, actorId: string, inp
         orderId,
         createdById: actorId,
         pickingSessionId: input.pickingSessionId ?? null,
+        driverId: input.driverId,
+        assistantId: input.assistantId,
+        vehicleId: input.vehicleId,
         vehicleOrCourierReference: input.vehicleOrCourierReference ?? null,
         plannedDepartureAt: input.plannedDepartureAt ? new Date(input.plannedDepartureAt) : null,
         notes: input.notes ?? null,
@@ -97,7 +123,7 @@ export async function createDispatchRecord(orderId: string, actorId: string, inp
         action: "DISPATCH_RECORD_CREATED",
         entityType: "DispatchRecord",
         entityId: record.id,
-        afterData: { orderId, lines: input.lines },
+        afterData: { orderId, lines: input.lines, driverId: input.driverId, assistantId: input.assistantId, vehicleId: input.vehicleId },
       },
     });
 

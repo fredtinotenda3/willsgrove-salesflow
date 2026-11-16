@@ -30,6 +30,18 @@ export async function GET(request: NextRequest) {
       { key: "actualSapCreditedAmount", header: "Actual SAP-credited amount" },
     ]);
 
+    // Final Operational Enhancements (spec Part 7): Source A (lost-sales
+    // claim exposure) is already in exposureCsv above (it IS
+    // report.claims.exposureByCurrency) -- only Source B (supply
+    // shortage) is new here, kept in its own clearly-labeled block so it
+    // is never mistaken for a column that sums with Source A's.
+    const sourceBCsv = buildCsv(
+      [{ metric: "Estimated supply lost sales value", value: report.lostSalesBySource.sourceB.estimatedValue },
+       { metric: "Lost-sale records priced", value: String(report.lostSalesBySource.sourceB.recordsWithEstimate) },
+       { metric: "Lost-sale records without a price (excluded)", value: String(report.lostSalesBySource.sourceB.recordsWithoutEstimate) }],
+      [{ key: "metric", header: "Source B: Insufficient supply at fulfilment" }, { key: "value", header: "Value" }]
+    );
+
     const otherRows = [
       ...flattenToKeyValueRows(report.claims.statusCounts, "claims.statusCounts"),
       ...flattenToKeyValueRows(report.claims.categoryCounts, "claims.categoryCounts"),
@@ -40,16 +52,17 @@ export async function GET(request: NextRequest) {
     ];
     const otherCsv = buildCsv(otherRows, [{ key: "metric", header: "Metric" }, { key: "value", header: "Value" }]);
 
-    // One file: the exposure table, a blank separator line, then the
-    // flattened figures -- a single export per spec section 8, not two
-    // downloads for one report.
-    const csv = exposureCsv + "\r\n" + otherCsv;
+    // One file: the exposure table (Source A), a blank separator, Source
+    // B's totals, a blank separator, then everything else flattened --
+    // a single export per spec section 8, not two downloads for one
+    // report.
+    const csv = exposureCsv + "\r\n" + sourceBCsv + "\r\n" + otherCsv;
 
     await recordReportExport({
       actorId: auth.user.id,
       reportId: "financial-exposure",
       filters: { ...parsed.filters, dateFrom: report.dateFrom, dateTo: report.dateTo },
-      rowCount: report.claims.exposureByCurrency.length + otherRows.length,
+      rowCount: report.claims.exposureByCurrency.length + 3 + otherRows.length,
     });
 
     return new NextResponse(csv, { headers: csvResponseHeaders("financial-exposure") });

@@ -14,6 +14,7 @@ import {
   RESOLUTION_DECISION_LABELS,
   RESOLUTIONS_IMPLYING_6B_FOLLOWUP,
 } from "@/lib/invoice-claims/display";
+import { CLAIM_LINE_REASON_CATEGORY_LABELS } from "@/lib/invoice-claims/validation";
 import { listClaimReturns, listCreditNotesForClaim } from "@/lib/returns-credits/queries";
 import { RETURN_CONDITION_LABELS, RETURN_CONDITION_STYLES, CREDIT_NOTE_MATCH_STATUS_LABELS, CREDIT_NOTE_MATCH_STATUS_STYLES } from "@/lib/returns-credits/display";
 import Sidebar from "../../components/sidebar";
@@ -128,6 +129,7 @@ export default async function InvoiceClaimDetailPage({ params }: RouteParams) {
                   <tr className="border-y border-gray-100 bg-gray-50/70">
                     <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">SAP item</th>
                     <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Dispute type</th>
+                    <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Reason category</th>
                     <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Invoiced</th>
                     <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Accepted</th>
                     <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Rejected/disputed</th>
@@ -147,6 +149,9 @@ export default async function InvoiceClaimDetailPage({ params }: RouteParams) {
                           )}
                         </td>
                         <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">{CLAIM_LINE_DISPUTE_TYPE_LABELS[line.disputeType] ?? line.disputeType}</td>
+                        <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">
+                          {line.reasonCategory ? (CLAIM_LINE_REASON_CATEGORY_LABELS[line.reasonCategory as keyof typeof CLAIM_LINE_REASON_CATEGORY_LABELS] ?? line.reasonCategory) : "—"}
+                        </td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{line.sapInvoiceLine.quantityInvoiced.toString()}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{line.acceptedQuantity?.toString() ?? "-"}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{line.disputeType === "QUANTITY" ? (line.rejectedQuantity?.toString() ?? "-") : (line.disputedAmount?.toString() ?? "-")}</td>

@@ -349,6 +349,19 @@ model User {
   decisionRecommendationStatusChanges  DecisionRecommendation[]      @relation("DecisionRecommendationStatusActor")
   decisionRecommendationEvents         DecisionRecommendationEvent[] @relation("DecisionRecommendationEventActor")
 
+  // Final Operational Enhancements. Personnel/Vehicle management (spec
+  // Part 4) has no dedicated role of its own beyond the existing
+  // ADMINISTRATOR-only gate this project already uses for Settings >
+  // Users & Roles (enforced at the API route, see app/api/personnel/* and
+  // app/api/vehicles/*, not here). Recording an invoice's delivery/return
+  // outcome (spec Part 5) follows the same "no dedicated role" convention
+  // as picking/lost-sales/dispatch recording above.
+  createdPersonnel            Personnel[]              @relation("PersonnelCreator")
+  statusChangedPersonnel      Personnel[]               @relation("PersonnelStatusChanger")
+  createdVehicles             Vehicle[]                @relation("VehicleCreator")
+  statusChangedVehicles       Vehicle[]                 @relation("VehicleStatusChanger")
+  recordedInvoiceDeliveries   InvoiceDeliveryRecord[]  @relation("InvoiceDeliveryRecorder")
+
   @@index([isDemo])
 }
 
@@ -1906,6 +1919,14 @@ model SapInvoice {
   // credit note's base-invoice reference against this row.
   creditNotes CreditNote[]
 
+  // Final Operational Enhancements (spec Part 5). At most one per
+  // invoice (the FK + @@unique live on InvoiceDeliveryRecord.sapInvoiceId
+  // -- see that model's own comment) -- null means this invoice has not
+  // yet had its post-delivery No Claim/With Claim outcome recorded, the
+  // structural definition of this schema's "Ready for Invoice" bucket;
+  // non-null means "Delivered" (see lib/invoice-delivery/queries.ts).
+  deliveryRecord InvoiceDeliveryRecord?
+
   @@index([importBatchId])
   @@index([matchedCustomerId])
   @@index([matchedOrderId])
@@ -2008,6 +2029,26 @@ enum InvoiceClaimCategory {
   INCORRECT_INVOICE
   CUSTOMER_REJECTION
   OTHER
+
+  // Final Operational Enhancements (spec Part 6). The spec names 10
+  // required, distinguishable claim reasons. Three already had an exact
+  // equivalent above (reused, not duplicated): Price claim ->
+  // PRICING_DISPUTE, Poor-quality product -> QUALITY_ISSUE, Short
+  // delivery -> SHORT_DELIVERY. The remaining 7 have no exact existing
+  // equivalent -- conflating them with a near-sounding value above (e.g.
+  // "Product not ordered" into WRONG_PRODUCT_SUPPLIED, which means the
+  // customer received a different product than ordered, a different
+  // fact from an invoice line for a product never ordered at all) would
+  // have lost the "distinguishable categories" requirement, so they are
+  // added here instead. Purely additive: Postgres ADD VALUE, no existing
+  // value removed/reordered/renamed (see this migration's own file).
+  PRODUCT_NOT_ORDERED // invoice/order line for a product the customer never ordered at all
+  PRODUCT_NOT_DELIVERED // invoiced but never physically delivered (distinct from SHORT_DELIVERY, which is a quantity shortfall on a product that WAS delivered)
+  OVERSUPPLY // more of a product delivered than invoiced/ordered
+  EXPIRED_PRODUCT
+  NO_BARCODE // product received with no barcode / an unreadable or missing barcode
+  BARCODE_SCANNING_ISSUE // barcode present but the warehouse/till could not scan it
+  DUPLICATE_ENTRY // the same product/line duplicated on the invoice, or a duplicate claim entry
 }
 
 enum InvoiceClaimPriority {
@@ -2091,6 +2132,16 @@ model InvoiceClaim {
   customerComplaintReference String? // the customer's own reference number, if they supplied one -- never invented
   category                   InvoiceClaimCategory
   description                String
+
+  // Final Operational Enhancements (spec Part 5). Set only when this claim
+  // was created AS PART OF recording a WITH_CLAIM invoice delivery/return
+  // outcome (lib/invoice-delivery/record-outcome.ts) -- null for every
+  // claim created the ordinary way (the pre-existing /invoice-claims/new
+  // flow, unchanged). Never required: a claim can always be raised on its
+  // own against an invoice with no delivery/return outcome recorded at
+  // all, or before one is. Nullable FK, not a new required relation, so
+  // every existing InvoiceClaim row remains valid with no backfill.
+  invoiceDeliveryRecordId String?
   reportedById                String
   assignedToId                String? // "assigned person/team" -- a specific User; this codebase has no separate Team entity, so a team assignment is represented as a free-text note in customerCommunicationNotes/description if needed, not a new model
   priority                    InvoiceClaimPriority @default(MEDIUM)
@@ -2110,11 +2161,12 @@ model InvoiceClaim {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  sapInvoice SapInvoice     @relation(fields: [sapInvoiceId], references: [id], onDelete: Restrict)
-  order      CustomerOrder? @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  customer   Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  reportedBy User           @relation("ClaimReporter", fields: [reportedById], references: [id], onDelete: Restrict)
-  assignedTo User?          @relation("ClaimAssignee", fields: [assignedToId], references: [id], onDelete: Restrict)
+  sapInvoice             SapInvoice             @relation(fields: [sapInvoiceId], references: [id], onDelete: Restrict)
+  order                  CustomerOrder?         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  customer               Customer               @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  reportedBy             User                   @relation("ClaimReporter", fields: [reportedById], references: [id], onDelete: Restrict)
+  assignedTo             User?                  @relation("ClaimAssignee", fields: [assignedToId], references: [id], onDelete: Restrict)
+  invoiceDeliveryRecord  InvoiceDeliveryRecord? @relation(fields: [invoiceDeliveryRecordId], references: [id], onDelete: SetNull)
 
   lines       InvoiceClaimLine[]
   resolutions ClaimResolution[]
@@ -2139,6 +2191,7 @@ model InvoiceClaim {
   @@index([reportedById])
   @@index([assignedToId])
   @@index([claimDate])
+  @@index([invoiceDeliveryRecordId])
   @@index([isDemo])
 }
 
@@ -2177,6 +2230,19 @@ model InvoiceClaimLine {
   // amount based only on an estimated claim").
   disputedUnitPrice Decimal? @db.Decimal(18, 4)
 
+  // Final Operational Enhancements (spec Part 6). Optional, additive
+  // structured tag alongside the pre-existing free-text `reason` above --
+  // `reason` stays exactly as it was (never repurposed), this is purely
+  // new. Lets one claim carry several lines with DIFFERENT structured
+  // reasons (the sample claim document this was built from has 3 reason
+  // groups -- NOT DELIVERED / PRICE CLAIM / SHORT DELIVERY -- each with
+  // its own lines), without disturbing the claim HEADER's own required
+  // `category` (InvoiceClaim.category, the claim's overall/primary
+  // category, unchanged). Null for any claim line created before this
+  // field existed, or where a line-level category was never selected --
+  // the header category remains authoritative in that case.
+  reasonCategory InvoiceClaimCategory?
+
   reason               String
   evidenceNotes        String? // free-text evidence description; file evidence goes through InvoiceClaimAttachment instead
   investigationOutcome String? // mutable as investigation proceeds; audited via AuditEvent on every change, same convention as SapInvoice.reconciliationNotes
@@ -2204,6 +2270,7 @@ model InvoiceClaimLine {
   @@unique([claimId, sapInvoiceLineId])
   @@index([claimId])
   @@index([sapInvoiceLineId])
+  @@index([reasonCategory])
   @@index([isDemo])
 }
 
@@ -3812,8 +3879,25 @@ model DispatchRecord {
   // Free text -- a truck registration, a courier company name, or similar.
   // No fleet-management system is assumed or invented (spec's explicit
   // "do not invent external integrations" applies just as much to an
-  // imaginary logistics platform as to WhatsApp/email).
+  // imaginary logistics platform as to WhatsApp/email). Kept exactly as
+  // it was for every existing/historical DispatchRecord; never backfilled
+  // or repurposed by the structured fields below.
   vehicleOrCourierReference String?
+
+  // Final Operational Enhancements (spec Part 3.3). Structured,
+  // Settings-registered Driver / Driver's Assistant / Vehicle references
+  // -- additive alongside vehicleOrCourierReference above, never
+  // replacing it, so every pre-existing DispatchRecord (created before
+  // this field existed) stays valid with nothing to backfill. Nullable at
+  // the database level for that reason; lib/fulfilment/dispatch.ts's
+  // createDispatchRecord() is what actually makes all three REQUIRED for
+  // every NEW dispatch going forward ("every confirmed dispatch must
+  // record Driver, Driver's Assistant, and Truck Registration"), the same
+  // "nullable column, mandatory at the application layer" shape this
+  // schema already uses for e.g. OrderLine.productId.
+  driverId    String?
+  assistantId String?
+  vehicleId   String?
 
   plannedDepartureAt DateTime? @db.Timestamptz(6)
 
@@ -3840,12 +3924,19 @@ model DispatchRecord {
   departedBy  User? @relation("DispatchRecordDeparter", fields: [departedById], references: [id], onDelete: Restrict)
   cancelledBy User? @relation("DispatchRecordCanceller", fields: [cancelledById], references: [id], onDelete: Restrict)
 
+  driver    Personnel? @relation("DispatchDriver", fields: [driverId], references: [id], onDelete: Restrict)
+  assistant Personnel? @relation("DispatchAssistant", fields: [assistantId], references: [id], onDelete: Restrict)
+  vehicle   Vehicle?   @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+
   lines            DispatchLine[]
   deliveryRecord   DeliveryRecord?
   outboundMessages OutboundMessage[]
 
   @@index([orderId])
   @@index([status])
+  @@index([driverId])
+  @@index([assistantId])
+  @@index([vehicleId])
   @@index([isDemo])
 }
 
@@ -4145,4 +4236,173 @@ model DecisionRecommendationEvent {
 
   @@index([decisionRecommendationId])
   @@index([eventType])
+}
+
+// ============================================================================
+// Final Operational Enhancements -- Personnel & Vehicle registers (spec
+// Part 4) and Invoice Delivery/Return Outcome recording (spec Part 5).
+//
+// Entirely additive: no existing table, column, or enum value changes or
+// is removed. New FK columns added to pre-existing tables elsewhere in
+// this file (DispatchRecord.driverId/assistantId/vehicleId,
+// InvoiceClaim.invoiceDeliveryRecordId, InvoiceClaimLine.reasonCategory)
+// are all nullable, so every historical row remains valid untouched.
+//
+// Personnel is deliberately NOT a duplicate of User/sales-personnel
+// management: "sales personnel" already has a real, live management
+// screen (Settings > Users & Roles, backed by the User model with
+// role == SALESPERSON -- see app/settings/page.tsx and app/api/users/*,
+// unchanged here). This model is specifically for the roster of named
+// people who do NOT have (and do not need) a login account but must
+// still be selectable, structured records for operational purposes --
+// concretely, drivers and driver's assistants assigned to a dispatch
+// (spec Part 3.3), plus an OTHER escape value for any other named
+// operational role the business needs to register without inventing a
+// second value for something a login-based User already covers.
+// ============================================================================
+
+enum PersonnelRole {
+  DRIVER
+  DRIVER_ASSISTANT
+  OTHER // roleDetail is required (validated in lib/personnel/validation.ts) when this is used, same "Other requires detail" rule as LostSaleReason/InvoiceClaimCategory
+}
+
+// Soft-deactivation only (RecordStatus, same enum/convention User already
+// uses) -- a Personnel row referenced by any DispatchRecord can never be
+// hard-deleted (onDelete: Restrict on DispatchRecord.driver/assistant
+// below enforces this at the database level, not just by convention), so
+// historical dispatch records always keep a real name to display. A
+// Personnel row with NO dispatch history at all may still be hard-deleted
+// (lib/personnel/personnel.ts's deletePersonnel(), "delete-where-safe" per
+// spec Part 4) -- the Restrict FK is what makes "safe" a database-enforced
+// fact rather than an application-level guess.
+model Personnel {
+  id         String        @id @default(cuid())
+  name       String
+  role       PersonnelRole
+  roleDetail String? // required when role == OTHER
+  phone      String?
+  notes      String?
+  status     RecordStatus  @default(ACTIVE)
+
+  isDemo Boolean @default(false)
+
+  createdById       String
+  statusChangedById String?
+  statusChangedAt   DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  createdBy       User  @relation("PersonnelCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  statusChangedBy User? @relation("PersonnelStatusChanger", fields: [statusChangedById], references: [id], onDelete: Restrict)
+
+  dispatchesAsDriver    DispatchRecord[] @relation("DispatchDriver")
+  dispatchesAsAssistant DispatchRecord[] @relation("DispatchAssistant")
+
+  @@index([role])
+  @@index([status])
+  @@index([isDemo])
+}
+
+// Same soft-deactivation / delete-where-safe shape as Personnel above, for
+// exactly the same reason (a Vehicle referenced by dispatch history can
+// never be hard-deleted -- onDelete: Restrict on
+// DispatchRecord.vehicle below).
+model Vehicle {
+  id                  String       @id @default(cuid())
+  registrationNumber  String       @unique
+  description         String? // make/model/type, e.g. "Isuzu 5-tonne truck" -- free text, no fleet-management system assumed or invented
+  notes               String?
+  status              RecordStatus @default(ACTIVE)
+
+  isDemo Boolean @default(false)
+
+  createdById       String
+  statusChangedById String?
+  statusChangedAt   DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  createdBy       User  @relation("VehicleCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  statusChangedBy User? @relation("VehicleStatusChanger", fields: [statusChangedById], references: [id], onDelete: Restrict)
+
+  dispatchRecords DispatchRecord[]
+
+  @@index([status])
+  @@index([isDemo])
+}
+
+// Spec Part 5's central requirement: the outcome recorded when an invoice
+// "comes back" after delivery. Anchored to a REAL, already-imported
+// SapInvoice (@@unique sapInvoiceId -- at most one outcome per invoice,
+// the database-enforced guarantee behind "prevent duplicate return
+// recording"), deliberately NOT an extension of the pre-existing
+// DeliveryRecord model (Milestone 10): DeliveryRecord is a pre-invoice,
+// physical at-the-gate delivery-acceptance event anchored to a
+// DispatchRecord/CustomerOrder, and its own schema comment explicitly
+// defers real claim creation to later because "a claim is anchored to an
+// SAP invoice... which usually does not exist yet at delivery time." This
+// model IS that later event -- it can only be recorded once a real
+// SapInvoice exists, which is exactly what InvoiceClaim's own header
+// comment ("tracks what happens AFTER a customer receives a real SAP
+// invoice") already established for Milestone 6A. Reusing DeliveryRecord
+// for this would have meant either inventing a fake SapInvoiceId at
+// delivery time (fabricating data, forbidden throughout this spec) or
+// leaving the FK nullable and overloading one model with two genuinely
+// different lifecycle moments -- both worse than this small, purpose-
+// built model.
+//
+// NO_CLAIM is recorded as an explicit row here, never by leaving this
+// relation null -- a null deliveryRecord means "outcome not decided yet"
+// (still "Ready for Invoice"); a NO_CLAIM row means "decided, and the
+// decision was that there is no claim" (now "Delivered"). Collapsing
+// these two into one null state would have lost the spec's explicit "No
+// Claim must leave an explicit record, not just vanish."
+//
+// SAP's own invoice/accounting status (SapInvoice has no status field at
+// all besides the read-only-imported documentStatusRaw/
+// isCancelledOrReversed) is never written to by this model -- the
+// "Ready for Invoice" -> "Delivered" transition this record's presence/
+// absence implies (see SapInvoice.deliveryRecord's own comment, and
+// lib/invoice-delivery/queries.ts) is a SalesFlow-only, additional view,
+// derived the same "derive, don't store a second truth" way
+// InvoiceReconciliationStatus already is for Milestone 5.
+model InvoiceDeliveryRecord {
+  id           String                 @id @default(cuid())
+  sapInvoiceId String                 @unique
+  outcome      InvoiceDeliveryOutcome
+
+  // Proof-of-delivery reference, where one exists (e.g. the sample claim
+  // document's own "POD Ref" field) -- optional, never invented when the
+  // operator doesn't have one to hand.
+  podReference String?
+  notes        String?
+
+  recordedById String
+  recordedAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  isDemo Boolean @default(false)
+
+  sapInvoice SapInvoice @relation(fields: [sapInvoiceId], references: [id], onDelete: Restrict)
+  recordedBy User       @relation("InvoiceDeliveryRecorder", fields: [recordedById], references: [id], onDelete: Restrict)
+
+  // When outcome == WITH_CLAIM, one or more InvoiceClaim rows are created
+  // in the SAME transaction as this row (lib/invoice-delivery/
+  // record-outcome.ts) and linked back here. Empty for NO_CLAIM (and,
+  // defensively, never required to be non-empty at the database level --
+  // the lib layer is what enforces "With Claim allows one-or-more linked
+  // claim records" at creation time, consistent with every other
+  // business-rule-not-schema-constraint choice in this project).
+  claims InvoiceClaim[]
+
+  @@index([recordedById])
+  @@index([outcome])
+  @@index([isDemo])
+}
+
+enum InvoiceDeliveryOutcome {
+  NO_CLAIM
+  WITH_CLAIM
 }

@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Loader2, Truck, PackageCheck, XCircle, Send } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Loader2, Truck, PackageCheck, XCircle, Send, RotateCcw } from "lucide-react";
 
 /**
  * Milestone 10 (Communication Channels & Fulfilment). The dispatch/
@@ -19,6 +19,8 @@ type FulfilmentLine = {
   lineNumber: number;
   originalProductDescription: string;
   requestedQuantity: string;
+  sapItemCodeSnapshot: string | null;
+  requestedUnitCode: string;
   authorizedFoundQuantity: string;
   dispatchedQuantity: string;
   outstandingQuantity: string;
@@ -34,7 +36,14 @@ type DispatchSummary = {
   createdAt: string;
   lineCount: number;
   deliveryOutcome: string | null;
+  driver: { id: string; name: string } | null;
+  assistant: { id: string; name: string } | null;
+  vehicle: { id: string; registrationNumber: string } | null;
 };
+
+/** Final Operational Enhancements (spec Part 4): the registered-personnel/vehicle directory this panel's Driver/Assistant/Vehicle dropdowns are sourced from -- never free-typed. */
+type PersonnelOption = { id: string; name: string; role: string; status: string };
+type VehicleOption = { id: string; registrationNumber: string; status: string };
 
 type DispatchDetailLine = { id: string; orderLineId: string; lineNumber: number; originalProductDescription: string; dispatchedQuantity: string };
 type DispatchDetail = {
@@ -84,6 +93,16 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
+  // Final Operational Enhancements (spec Part 3.3): registered drivers,
+  // assistants and vehicles -- loaded from Settings (lib/personnel.ts /
+  // lib/vehicles.ts via /api/personnel, /api/vehicles), never free-typed.
+  const [drivers, setDrivers] = useState<PersonnelOption[]>([]);
+  const [assistants, setAssistants] = useState<PersonnelOption[]>([]);
+  const [vehicleOptions, setVehicleOptions] = useState<VehicleOption[]>([]);
+  const [driverId, setDriverId] = useState("");
+  const [assistantId, setAssistantId] = useState("");
+  const [vehicleId, setVehicleId] = useState("");
+
   const [actioningId, setActioningId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -117,19 +136,71 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
     }
   }
 
+  async function loadPersonnelAndVehicles() {
+    try {
+      const [driversRes, assistantsRes, vehiclesRes] = await Promise.all([
+        fetch(`/api/personnel?role=DRIVER&status=ACTIVE`, { cache: "no-store" }),
+        fetch(`/api/personnel?role=DRIVER_ASSISTANT&status=ACTIVE`, { cache: "no-store" }),
+        fetch(`/api/vehicles?status=ACTIVE`, { cache: "no-store" }),
+      ]);
+      const [driversBody, assistantsBody, vehiclesBody] = await Promise.all([
+        readJson(driversRes),
+        readJson(assistantsRes),
+        readJson(vehiclesRes),
+      ]);
+      if (driversRes.ok && driversBody.success) setDrivers((driversBody.personnel as PersonnelOption[]) ?? []);
+      if (assistantsRes.ok && assistantsBody.success) setAssistants((assistantsBody.personnel as PersonnelOption[]) ?? []);
+      if (vehiclesRes.ok && vehiclesBody.success) setVehicleOptions((vehiclesBody.vehicles as VehicleOption[]) ?? []);
+    } catch {
+      // Non-fatal: the driver/assistant/vehicle selects simply stay empty,
+      // and createDispatch() below cannot succeed without a selection --
+      // the user sees that failure as a normal validation error, not a
+      // silent one.
+    }
+  }
+
   useEffect(() => {
-    void Promise.resolve().then(() => load());
+    void Promise.resolve().then(() => {
+      void load();
+      void loadPersonnelAndVehicles();
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderId]);
+
+  // Final Operational Enhancements (spec Part 3): "auto-populate dispatch
+  // lines from invoiced products/quantities... instead of requiring manual
+  // re-entry," while keeping "reset-to-invoice and edit-before-confirm
+  // capability." The invoiced/outstanding quantity for each line is the
+  // default; `quantities` holds only the user's edits away from that
+  // default, so "Reset to invoice" is simply clearing those edits.
+  const defaultQuantities = useMemo(() => {
+    const defaults: Record<string, string> = {};
+    for (const line of lines ?? []) {
+      defaults[line.orderLineId] = line.outstandingQuantity;
+    }
+    return defaults;
+  }, [lines]);
+
+  function effectiveQuantity(orderLineId: string): string {
+    return quantities[orderLineId] ?? defaultQuantities[orderLineId] ?? "";
+  }
+
+  function resetToInvoice() {
+    setQuantities({});
+  }
 
   async function createDispatch() {
     if (!lines) return;
     const requestLines = lines
-      .map((line) => ({ orderLineId: line.orderLineId, quantity: (quantities[line.orderLineId] ?? "").trim() }))
+      .map((line) => ({ orderLineId: line.orderLineId, quantity: effectiveQuantity(line.orderLineId).trim() }))
       .filter((line) => line.quantity && Number(line.quantity) > 0);
 
     if (requestLines.length === 0) {
       setCreateError("Enter a quantity greater than zero for at least one line.");
+      return;
+    }
+    if (!driverId || !assistantId || !vehicleId) {
+      setCreateError("A driver, driver's assistant, and vehicle are all required to confirm a dispatch.");
       return;
     }
 
@@ -139,7 +210,7 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
       const response = await fetch(`/api/orders/${orderId}/dispatch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lines: requestLines }),
+        body: JSON.stringify({ lines: requestLines, driverId, assistantId, vehicleId }),
       });
       const body = await readJson(response);
       if (!response.ok || !body.success) {
@@ -147,6 +218,9 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
         return;
       }
       setQuantities({});
+      setDriverId("");
+      setAssistantId("");
+      setVehicleId("");
       await load();
     } catch {
       setCreateError("Could not reach the server.");
@@ -297,11 +371,25 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
     <section className="space-y-4">
       <div className="overflow-hidden rounded-xl border border-[#E8EBE6] bg-white">
         <div className="p-6">
-          <h2 className="text-[15px] font-bold text-[#17251E]">Dispatch</h2>
-          <p className="mt-1 text-xs text-gray-400">
-            Outstanding = authorized &amp; found by picking, minus what has already been dispatched. Enter a
-            quantity to dispatch now for one or more lines.
-          </p>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-[15px] font-bold text-[#17251E]">Dispatch</h2>
+              <p className="mt-1 text-xs text-gray-400">
+                Lines are pre-filled with the invoiced/outstanding quantity (authorized &amp; found by picking,
+                minus what has already been dispatched). Edit a line if the actual quantity to dispatch now
+                differs, or reset it back to the invoiced amount.
+              </p>
+            </div>
+            {dispatchableLines.length > 0 && (
+              <button
+                type="button"
+                onClick={resetToInvoice}
+                className="flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-[11px] font-semibold text-gray-600 transition hover:bg-gray-50"
+              >
+                <RotateCcw size={12} /> Reset to invoice
+              </button>
+            )}
+          </div>
         </div>
 
         {dispatchableLines.length === 0 ? (
@@ -313,8 +401,10 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                 <thead>
                   <tr className="border-y border-gray-100 bg-gray-50/70">
                     <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">#</th>
+                    <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Code</th>
                     <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Product</th>
-                    <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Outstanding</th>
+                    <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">UOM</th>
+                    <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Invoiced / outstanding</th>
                     <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Dispatch now</th>
                   </tr>
                 </thead>
@@ -322,13 +412,15 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                   {dispatchableLines.map((line) => (
                     <tr key={line.orderLineId} className="border-b border-gray-50">
                       <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-400">{line.lineNumber}</td>
+                      <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-500">{line.sapItemCodeSnapshot ?? "—"}</td>
                       <td className="px-6 py-4 text-xs font-medium text-gray-700">{line.originalProductDescription}</td>
+                      <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-500">{line.requestedUnitCode}</td>
                       <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">{line.outstandingQuantity}</td>
                       <td className="px-6 py-4">
                         <input
                           type="text"
                           inputMode="decimal"
-                          value={quantities[line.orderLineId] ?? ""}
+                          value={effectiveQuantity(line.orderLineId)}
                           onChange={(e) => setQuantities((prev) => ({ ...prev, [line.orderLineId]: e.target.value }))}
                           placeholder="0"
                           className="w-24 rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
@@ -338,6 +430,55 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                   ))}
                 </tbody>
               </table>
+            </div>
+            <div className="border-t border-gray-100 p-6">
+              <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                Driver, assistant &amp; vehicle (required to confirm dispatch)
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <select
+                  value={driverId}
+                  onChange={(e) => setDriverId(e.target.value)}
+                  className="rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-700"
+                >
+                  <option value="">Select driver…</option>
+                  {drivers.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={assistantId}
+                  onChange={(e) => setAssistantId(e.target.value)}
+                  className="rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-700"
+                >
+                  <option value="">Select driver&apos;s assistant…</option>
+                  {assistants.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={vehicleId}
+                  onChange={(e) => setVehicleId(e.target.value)}
+                  className="rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-700"
+                >
+                  <option value="">Select vehicle…</option>
+                  {vehicleOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.registrationNumber}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {(drivers.length === 0 || assistants.length === 0 || vehicleOptions.length === 0) && (
+                <p className="mt-2 text-[11px] text-gray-400">
+                  No registered {drivers.length === 0 ? "drivers" : assistants.length === 0 ? "assistants" : "vehicles"} found --
+                  add them under Settings &rsaquo; Personnel &amp; Vehicles first.
+                </p>
+              )}
             </div>
             <div className="p-6">
               {createError && <p className="mb-3 text-[11px] text-[#9B3B3B]">{createError}</p>}
@@ -384,6 +525,15 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                         {dispatch.departedAt ? ` · Departed ${formatDateTime(dispatch.departedAt)}` : ""}
                         {dispatch.cancelledAt ? ` · Cancelled ${formatDateTime(dispatch.cancelledAt)}` : ""}
                       </p>
+                      {(dispatch.driver || dispatch.assistant || dispatch.vehicle) && (
+                        <p className="mt-1 text-[11px] text-gray-400">
+                          {dispatch.driver ? `Driver: ${dispatch.driver.name}` : "Driver: —"}
+                          {" · "}
+                          {dispatch.assistant ? `Assistant: ${dispatch.assistant.name}` : "Assistant: —"}
+                          {" · "}
+                          {dispatch.vehicle ? `Vehicle: ${dispatch.vehicle.registrationNumber}` : "Vehicle: —"}
+                        </p>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       {dispatch.status === "PLANNED" && (

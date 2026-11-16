@@ -83,6 +83,49 @@ function emptyInput(): LineInput {
   return { found: "", unavailable: "", notes: "" };
 }
 
+/**
+ * Final Operational Enhancements (spec Part 2.2). Formats a non-negative
+ * number back into this panel's decimal-string shape (up to 4 decimal
+ * places, no trailing zeros) -- used only for the live Found/Unavailable
+ * auto-calculation below, never for anything sent to the server as-is
+ * without first re-matching DECIMAL_PATTERN, so a float-formatting edge
+ * case here can only ever affect a displayed suggestion, never bypass the
+ * server's own exact scaled-integer validation.
+ */
+function formatQuantity(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  const clamped = Math.max(0, value);
+  return Number(clamped.toFixed(4)).toString();
+}
+
+/**
+ * Final Operational Enhancements (spec Part 2.2): "Found/Unavailable
+ * fields must live-auto-calculate each other both directions, clamped to
+ * [0, Requested]." Only recalculates once the just-edited field is
+ * itself a syntactically COMPLETE decimal value (DECIMAL_PATTERN) --
+ * an in-progress keystroke like "10." deliberately leaves both fields
+ * alone rather than fighting the user's typing. requestedQuantity
+ * missing/non-numeric (should never happen -- every line always has one
+ * -- but defensively checked) also leaves both fields alone, same
+ * "never guess, never invent" convention as the rest of this codebase.
+ * Returns the (possibly clamped-down) value for the field just edited
+ * plus its auto-calculated complement -- both always sum to exactly
+ * requestedQuantity. This is a CLIENT-SIDE convenience only -- the server
+ * (lib/picking/record-picked-line.ts, lib/picking/complete-picking.ts)
+ * re-validates found+unavailable<=requested with its own exact
+ * scaled-integer arithmetic regardless of what this function computes,
+ * so a rounding edge case here can never let an invalid pair reach the
+ * database.
+ */
+function autoCalculate(editedValue: string, requestedQuantity: string): { edited: string; complement: string } | null {
+  const trimmed = editedValue.trim();
+  if (!DECIMAL_PATTERN.test(trimmed)) return null;
+  const requested = Number(requestedQuantity);
+  if (!Number.isFinite(requested) || requested < 0) return null;
+  const clampedEntered = Math.min(Math.max(Number(trimmed), 0), requested);
+  return { edited: formatQuantity(clampedEntered), complement: formatQuantity(requested - clampedEntered) };
+}
+
 // Milestone 3 completion (Warehouse Assembly Form & Partial Availability).
 // The spec's section 5 requires every line to be clearly identifiable as
 // fully available, partially available, or completely unavailable once
@@ -181,8 +224,21 @@ export default function PickingPanel({
     }
   }
 
-  function updateInput(orderLineId: string, field: keyof LineInput, value: string) {
-    setInputs((prev) => ({ ...prev, [orderLineId]: { ...(prev[orderLineId] ?? emptyInput()), [field]: value } }));
+  // `requestedQuantity` is only passed (and only has an effect) for the
+  // "found"/"unavailable" fields -- see autoCalculate()'s own comment.
+  // "notes" is untouched by auto-calculation, same as before this change.
+  function updateInput(orderLineId: string, field: keyof LineInput, value: string, requestedQuantity?: string) {
+    setInputs((prev) => {
+      const current = prev[orderLineId] ?? emptyInput();
+      if ((field === "found" || field === "unavailable") && requestedQuantity !== undefined) {
+        const result = autoCalculate(value, requestedQuantity);
+        if (result) {
+          const complementField: keyof LineInput = field === "found" ? "unavailable" : "found";
+          return { ...prev, [orderLineId]: { ...current, [field]: result.edited, [complementField]: result.complement } };
+        }
+      }
+      return { ...prev, [orderLineId]: { ...current, [field]: value } };
+    });
   }
 
   async function saveLine(orderLineId: string) {
@@ -225,7 +281,35 @@ export default function PickingPanel({
     setCompleting(true);
     setCompleteError(null);
     try {
-      const response = await fetch(`/api/orders/${orderId}/picking/${session.id}/complete`, { method: "POST" });
+      // Final Operational Enhancements (spec Part 2.1): bundle every
+      // currently-entered line value -- whether or not it was ever
+      // individually saved -- so Complete Picking saves ALL entered
+      // records together, atomically with completion itself. A line
+      // whose input box isn't currently a complete, valid decimal pair
+      // is simply left out (the server falls back to whatever that line
+      // last had persisted, exactly as before this change); the
+      // individual per-line Save button keeps working completely
+      // unchanged alongside this.
+      const lineEdits = session.lines
+        .map((line) => {
+          const input = inputs[line.orderLineId] ?? emptyInput();
+          const found = input.found.trim();
+          const unavailable = input.unavailable.trim();
+          if (!DECIMAL_PATTERN.test(found) || !DECIMAL_PATTERN.test(unavailable)) return null;
+          return {
+            orderLineId: line.orderLineId,
+            foundQuantity: found,
+            unavailableQuantity: unavailable,
+            notes: input.notes.trim() || undefined,
+          };
+        })
+        .filter((edit): edit is { orderLineId: string; foundQuantity: string; unavailableQuantity: string; notes: string | undefined } => edit !== null);
+
+      const response = await fetch(`/api/orders/${orderId}/picking/${session.id}/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lineEdits }),
+      });
       const body = await readJson(response);
       if (!response.ok || !body.success) {
         setCompleteError((body.message as string) ?? "Unable to complete picking for this order.");
@@ -357,8 +441,8 @@ export default function PickingPanel({
         <div className="p-6">
           <h2 className="text-[15px] font-bold text-[#17251E]">Order Lines</h2>
           <p className="mt-1 text-xs text-gray-400">
-            Enter what was actually found in the warehouse. Found + unavailable must account for the full requested
-            quantity before picking can be completed.
+            Enter what was actually found in the warehouse -- unavailable fills in automatically (and vice versa) so
+            the two always add up to the requested quantity. Override either one at any time if needed.
           </p>
         </div>
 
@@ -399,7 +483,7 @@ export default function PickingPanel({
                         inputMode="decimal"
                         disabled={locked}
                         value={input.found}
-                        onChange={(e) => updateInput(line.orderLineId, "found", e.target.value)}
+                        onChange={(e) => updateInput(line.orderLineId, "found", e.target.value, line.requestedQuantity)}
                         className="w-24 rounded-lg border border-gray-200 px-2 py-1.5 text-xs disabled:bg-gray-50 disabled:text-gray-400"
                         placeholder="0"
                       />
@@ -410,7 +494,7 @@ export default function PickingPanel({
                         inputMode="decimal"
                         disabled={locked}
                         value={input.unavailable}
-                        onChange={(e) => updateInput(line.orderLineId, "unavailable", e.target.value)}
+                        onChange={(e) => updateInput(line.orderLineId, "unavailable", e.target.value, line.requestedQuantity)}
                         className="w-24 rounded-lg border border-gray-200 px-2 py-1.5 text-xs disabled:bg-gray-50 disabled:text-gray-400"
                         placeholder="0"
                       />

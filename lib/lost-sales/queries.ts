@@ -378,6 +378,46 @@ async function describeBySapCode(sapCodes: (string | null)[]): Promise<Map<strin
   return map;
 }
 
+export type SupplyShortageLostSalesValue = {
+  /** Sum of LostSaleRecord.estimatedValue across every record that has one -- "Estimated Supply Lost Sales = Unavailable Quantity x Applicable Selling Price" (Final Operational Enhancements spec Part 7, Source B). Never a stored running total -- see lib/lost-sales/estimate-value.ts's own comment on why a price/value is never invented. */
+  estimatedValue: string;
+  /** How many LostSaleRecord rows contributed a real value to the sum above. */
+  recordsWithEstimate: number;
+  /** How many LostSaleRecord rows exist in total but had no resolvable price (estimatedValue is null) -- the UI must surface this count, never silently understate the true total by pretending every record was priced. */
+  recordsWithoutEstimate: number;
+};
+
+/**
+ * Final Operational Enhancements (spec Part 7): the money-value
+ * counterpart to getLostSalesReportSummary's quantity-only totals above
+ * -- Source B ("insufficient supply at fulfilment") in the spec's
+ * required Source A / Source B split, kept here as its own small,
+ * additive function rather than folded into getLostSalesReportSummary
+ * (whose own comment already documents a deliberate choice not to blend
+ * figures into one number -- adding a NEW figure to that same function
+ * risked exactly the kind of implicit blending that comment warns
+ * against). Composed with Source A (lib/invoice-claims/financial.ts's
+ * computeExposureByCurrency) only in lib/reporting/financial-exposure.ts,
+ * which is the one place spec Part 7 says must keep both sources
+ * "separately identifiable."
+ */
+export async function getSupplyShortageLostSalesValue(options?: { includeDemo?: boolean }): Promise<SupplyShortageLostSalesValue> {
+  const includeDemo = options?.includeDemo ?? false;
+  const where: Prisma.LostSaleRecordWhereInput = includeDemo ? {} : { unfulfilledDemand: { isDemo: false } };
+
+  const [valueAggregate, totalCount, withEstimateCount] = await Promise.all([
+    prisma.lostSaleRecord.aggregate({ where, _sum: { estimatedValue: true } }),
+    prisma.lostSaleRecord.count({ where }),
+    prisma.lostSaleRecord.count({ where: { ...where, estimatedValue: { not: null } } }),
+  ]);
+
+  return {
+    estimatedValue: (valueAggregate._sum.estimatedValue ?? new Prisma.Decimal(0)).toString(),
+    recordsWithEstimate: withEstimateCount,
+    recordsWithoutEstimate: totalCount - withEstimateCount,
+  };
+}
+
 /**
  * Spec section 7. Deliberately a handful of distinct, clearly-labeled
  * figures rather than one blended "lost sales" number -- the spec's own
