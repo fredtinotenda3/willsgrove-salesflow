@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { dateRangeToTimestampFilter, resolveEffectiveDateRange } from "@/lib/reporting/filters";
 import type { ReportFilters } from "@/lib/reporting/types";
 import {
+  bucketDateRange,
   bucketKeyForDate,
   bucketLabelForKey,
   buildHistogram,
@@ -37,6 +38,33 @@ import { listUnfulfilledDemands, type ListUnfulfilledDemandsResult } from "@/lib
  * not two numbers that must match. The analytics page says as much in
  * its own copy rather than silently mixing populations within one
  * chart.
+ *
+ * Chart intelligence enhancement (deep chart drill-down, product-level
+ * breakdown, rich tooltips): every aggregate figure this module already
+ * computed is now ALSO broken down by contributing product (and, for the
+ * trend, by date bucket too), with distinct affected-order/customer
+ * counts and an explicit estimated-vs-confirmed value split, still from
+ * this same single filtered row set and still without any extra query
+ * per product/bucket (see the one additional `product`/`lostSaleRecords`
+ * join added to the existing findMany below -- not a new query). Two
+ * deliberate, documented scope decisions carried through this
+ * enhancement:
+ *   1. UnfulfilledDemand.estimatedValue/LostSaleRecord.estimatedValue
+ *      carry NO currency code in this schema (a known, pre-existing
+ *      limitation from Milestone 4 -- see lib/reporting/
+ *      financial-exposure.ts's own module comment: "Source B... never
+ *      records a currency"). This module does not invent one; every
+ *      money figure it returns stays an un-prefixed plain amount, same
+ *      as every other Source B figure in this codebase, and the UI this
+ *      enhancement builds says so explicitly rather than silently
+ *      implying a single currency.
+ *   2. "Recovered value" / "subsequently fulfilled value" (in dollar
+ *      terms) is NOT computed anywhere in this codebase and is not
+ *      invented here -- UnfulfilledDemandStatus.RESOLVED and
+ *      substitutedQuantity are the real, already-tracked QUANTITY-level
+ *      signals for "this shortage stopped being a loss," and the UI
+ *      surfaces those honestly rather than pro-rating a dollar figure
+ *      nothing here actually tracks.
  */
 
 // A bound on how many individual UnfulfilledDemand rows this module will
@@ -58,6 +86,16 @@ const MIN_DEMAND_COUNT_FOR_RATE_RANKING = 3;
 
 const TOP_N = 10;
 
+// Chart intelligence enhancement (deep chart drill-down, product-level
+// breakdown, rich tooltips). How many individual products a trend
+// point's own tooltip shows before collapsing the rest into an
+// "+N more products" summary row -- keeps a date with many contributing
+// products from producing an unreadably long tooltip (spec's own "do not
+// overwhelm the chart itself... use rich tooltips and drill-down panels"
+// instruction), while the drilldown table/full breakdown charts below
+// remain the place to see every product with no cap.
+const MAX_PRODUCTS_PER_BUCKET_TOOLTIP = 8;
+
 type AnalyticsRow = {
   id: string;
   orderId: string;
@@ -66,6 +104,13 @@ type AnalyticsRow = {
   productId: string | null;
   sapItemCodeSnapshot: string | null;
   productDescriptionSnapshot: string;
+  // Chart intelligence enhancement: Product.unitOfMeasure, snapshotted
+  // via the live product relation (this demand itself stores no UOM of
+  // its own -- see this type's own join below). Null when productId is
+  // null (an unresolved product -- the same "never invent a value" rule
+  // as everywhere else in this module: an unknown unit is shown as
+  // unknown, never defaulted to a guessed one).
+  unitOfMeasure: string | null;
   requestedQuantity: number;
   foundQuantity: number;
   unavailableQuantity: number;
@@ -73,7 +118,16 @@ type AnalyticsRow = {
   cancelledQuantity: number;
   substitutedQuantity: number;
   confirmedLostQuantity: number;
+  estimatedUnitPrice: number | null;
   estimatedValue: number | null;
+  // Chart intelligence enhancement: this row's own confirmed-lost value,
+  // from LostSaleRecord.estimatedValue (Source B's manually-confirmed
+  // figure -- see lib/lost-sales/queries.ts's getSupplyShortageLostSalesValue
+  // module comment for the full Estimated-vs-Confirmed distinction this
+  // module preserves throughout). A demand can have at most one
+  // LostSaleRecord in practice (one confirmation event), but this sums
+  // defensively over all of them rather than assuming exactly one.
+  confirmedLostValue: number;
   status: string;
   createdAt: Date;
   salespersonId: string | null;
@@ -82,19 +136,48 @@ type AnalyticsRow = {
 export type LostSalesTrendPoint = {
   bucket: string;
   label: string;
+  /** Chart intelligence enhancement: this bucket's own inclusive dateFrom/dateTo (lib/reporting/types.ts's ReportFilters shape) -- for a drill-down link into this same page/-/lost-sales scoped to exactly this point, nothing invented. */
+  dateFrom: string;
+  dateTo: string;
   requestedQuantity: string;
+  foundQuantity: string;
   unavailableQuantity: string;
   estimatedLostValue: string;
+  /** Chart intelligence enhancement: Source B's confirmed (not merely estimated) value for demands created in this bucket -- see AnalyticsRow.confirmedLostValue. Never summed into estimatedLostValue above; always shown as its own, separately-labeled figure. */
+  confirmedLostValue: string;
   demandCount: number;
+  /** Chart intelligence enhancement: distinct CustomerOrder/Customer ids contributing to this bucket -- "how many orders/customers were affected," not re-derivable from demandCount alone (one order can have several affected lines). */
+  affectedOrderCount: number;
+  affectedCustomerCount: number;
+  availabilityRatePercent: number | null;
+  shortageRatePercent: number | null;
+  /** Chart intelligence enhancement: set only when every contributing row shares one Product.unitOfMeasure; null when two or more differ (or none is known) -- see this file's "do not combine incompatible UOMs" discipline below. */
+  quantityUnitCode: string | null;
+  mixedUnitsOfMeasure: boolean;
+  /** Top products contributing to this bucket by unavailable quantity, capped at MAX_PRODUCTS_PER_BUCKET_TOOLTIP -- see otherProductsCount/otherProductsUnavailableQuantity for what the cap leaves out. */
+  products: LostSalesProductBreakdown[];
+  otherProductsCount: number;
+  otherProductsUnavailableQuantity: string;
 };
 
 export type LostSalesProductBreakdown = {
   productId: string | null;
   sapItemCodeSnapshot: string | null;
   productDescriptionSnapshot: string;
+  /** Chart intelligence enhancement: Product.unitOfMeasure for this product (null when unresolved) -- so a quantity is never shown without the unit it's actually counted in. */
+  unitOfMeasure: string | null;
   requestedQuantity: string;
   foundQuantity: string;
   unavailableQuantity: string;
+  /** Chart intelligence enhancement: this product's own shortage rate within the scope this breakdown was computed over -- null for the same reason computeShortageRate returns null (zero requested), never gated by MIN_DEMAND_COUNT_FOR_RATE_RANKING here (that gate only applies to the dedicated shortageRateByProduct RANKING below, not to a per-product breakdown row that always shows its own real number). */
+  shortageRatePercent: number | null;
+  /** Chart intelligence enhancement: Source B automatic estimate, this product's share. */
+  estimatedValue: string;
+  /** Chart intelligence enhancement: Source B's actually-confirmed value, this product's share -- see LostSalesTrendPoint.confirmedLostValue's own comment on the distinction this never blurs. */
+  confirmedLostValue: string;
+  /** Chart intelligence enhancement: distinct orders/customers this product's contribution touches, within whatever scope (whole report or one bucket) this breakdown was computed over. */
+  affectedOrderCount: number;
+  affectedCustomerCount: number;
   demandCount: number;
 };
 
@@ -102,14 +185,13 @@ export type LostSalesCustomerBreakdown = {
   customerId: string;
   customerName: string;
   unavailableQuantity: string;
-  demandCount: number;
-};
-
-export type LostSalesShortageRateEntry = {
-  label: string;
-  shortageRatePercent: number;
+  /** Chart intelligence enhancement. */
   requestedQuantity: string;
-  unavailableQuantity: string;
+  foundQuantity: string;
+  estimatedValue: string;
+  confirmedLostValue: string;
+  affectedOrderCount: number;
+  shortageRatePercent: number | null;
   demandCount: number;
 };
 
@@ -137,11 +219,20 @@ export type LostSalesAnalyticsResult = {
   truncated: boolean;
   kpis: {
     totalRequestedQuantity: string;
+    totalFoundQuantity: string;
     totalUnavailableQuantity: string;
     totalOutstandingQuantity: string;
     totalConfirmedLostQuantity: string;
     totalEstimatedLostValue: string;
+    /** Chart intelligence enhancement: Source B's actually-confirmed value (LostSaleRecord.estimatedValue) across the whole filtered scope -- see LostSalesTrendPoint.confirmedLostValue's own comment. Never added to totalEstimatedLostValue. */
+    totalConfirmedLostValue: string;
     demandsWithoutEstimate: number;
+    /** Chart intelligence enhancement: distinct orders/customers across the whole filtered scope. */
+    affectedOrderCount: number;
+    affectedCustomerCount: number;
+    /** Chart intelligence enhancement: see LostSalesTrendPoint.quantityUnitCode/mixedUnitsOfMeasure's own comment -- same rule, applied over the whole filtered scope rather than one bucket. */
+    quantityUnitCode: string | null;
+    mixedUnitsOfMeasure: boolean;
     availabilityRatePercent: number | null;
     shortageRatePercent: number | null;
   };
@@ -149,11 +240,20 @@ export type LostSalesAnalyticsResult = {
   topUnavailableProducts: LostSalesProductBreakdown[];
   topUnavailableCustomers: LostSalesCustomerBreakdown[];
   requestedFoundUnavailableByProduct: LostSalesProductBreakdown[];
-  shortageRateByProduct: LostSalesShortageRateEntry[];
-  shortageRateByCustomer: LostSalesShortageRateEntry[];
+  /**
+   * Chart intelligence enhancement: these two now carry the SAME rich
+   * LostSalesProductBreakdown/LostSalesCustomerBreakdown shape every other
+   * product/customer chart on this page uses (value split, affected
+   * orders/customers, demandCount) rather than a narrower rate-only row --
+   * so the shortage-rate ranking charts can use the identical rich tooltip
+   * as every other chart, with no separate type and no duplicated
+   * aggregation logic (see rankByShortageRate below).
+   */
+  shortageRateByProduct: LostSalesProductBreakdown[];
+  shortageRateByCustomer: LostSalesCustomerBreakdown[];
   composition: LostSalesCompositionBreakdown;
   distribution: LostSalesDistribution;
-  lossReasonBreakdown: { reason: string; recordCount: number; totalQuantity: string }[];
+  lossReasonBreakdown: { reason: string; recordCount: number; totalQuantity: string; totalConfirmedValue: string }[];
   decisionTypeBreakdown: { decisionType: string; eventCount: number; totalQuantity: string }[];
   drilldown: ListUnfulfilledDemandsResult;
 };
@@ -242,6 +342,13 @@ export async function getLostSalesAnalytics(
         customerId: true,
         customer: { select: { name: true } },
         productId: true,
+        // Chart intelligence enhancement: unitOfMeasure joined from the
+        // live Product row (null when productId is null, or when the
+        // product has none recorded) -- this is the ONE extra join this
+        // enhancement adds to this already-single findMany, not a
+        // separate per-product query (no N+1: still one round trip
+        // regardless of how many distinct products are in scope).
+        product: { select: { unitOfMeasure: true } },
         sapItemCodeSnapshot: true,
         productDescriptionSnapshot: true,
         requestedQuantity: true,
@@ -251,17 +358,28 @@ export async function getLostSalesAnalytics(
         cancelledQuantity: true,
         substitutedQuantity: true,
         confirmedLostQuantity: true,
+        estimatedUnitPrice: true,
         estimatedValue: true,
         status: true,
         createdAt: true,
         order: { select: { salespersonId: true } },
+        // Chart intelligence enhancement: Source B's CONFIRMED value, if
+        // this demand has ever had a loss confirmed against it -- joined
+        // here (still one query) rather than a second groupBy/aggregate
+        // call, so every per-bucket/per-product figure below can
+        // distinguish "estimated" from "confirmed" without re-querying.
+        lostSaleRecords: { select: { estimatedValue: true } },
       },
     }),
     prisma.lostSaleRecord.groupBy({
       by: ["reason"],
       where: { unfulfilledDemand: where },
       _count: { _all: true },
-      _sum: { quantity: true },
+      // Chart intelligence enhancement: _sum.estimatedValue added so the
+      // "by loss reason" breakdown can show the confirmed value behind
+      // each reason, not only its quantity -- same groupBy call, no
+      // extra query.
+      _sum: { quantity: true, estimatedValue: true },
       orderBy: { _count: { reason: "desc" } },
     }),
     prisma.customerDecisionEvent.groupBy({
@@ -292,6 +410,7 @@ export async function getLostSalesAnalytics(
     customerId: row.customerId,
     customerName: row.customer.name,
     productId: row.productId,
+    unitOfMeasure: row.product?.unitOfMeasure ?? null,
     sapItemCodeSnapshot: row.sapItemCodeSnapshot,
     productDescriptionSnapshot: row.productDescriptionSnapshot,
     requestedQuantity: toNumber(row.requestedQuantity),
@@ -301,7 +420,12 @@ export async function getLostSalesAnalytics(
     cancelledQuantity: toNumber(row.cancelledQuantity),
     substitutedQuantity: toNumber(row.substitutedQuantity),
     confirmedLostQuantity: toNumber(row.confirmedLostQuantity),
+    estimatedUnitPrice: row.estimatedUnitPrice === null ? null : toNumber(row.estimatedUnitPrice),
     estimatedValue: row.estimatedValue === null ? null : toNumber(row.estimatedValue),
+    confirmedLostValue: row.lostSaleRecords.reduce(
+      (sum: number, record: { estimatedValue: { toString(): string } | null }) => sum + toNumber(record.estimatedValue),
+      0
+    ),
     status: row.status,
     createdAt: row.createdAt,
     salespersonId: row.order.salespersonId,
@@ -309,86 +433,264 @@ export async function getLostSalesAnalytics(
 
   // --- KPIs -----------------------------------------------------------
   let totalRequested = 0;
+  let totalFound = 0;
   let totalUnavailable = 0;
   let totalOutstanding = 0;
   let totalConfirmedLost = 0;
   let totalEstimatedValue = 0;
+  let totalConfirmedLostValue = 0;
   let demandsWithoutEstimate = 0;
+  const allOrderIds = new Set<string>();
+  const allCustomerIds = new Set<string>();
+  // Chart intelligence enhancement: "do not mix incompatible units of
+  // measurement" (spec section 9) -- tracked across the WHOLE filtered
+  // scope the same way as per-bucket below. unitOfMeasureSeen stays a
+  // Set (not just a boolean) so distinct units are actually counted,
+  // not merely detected.
+  const allUnitsOfMeasure = new Set<string>();
   for (const row of rows) {
     totalRequested += row.requestedQuantity;
+    totalFound += row.foundQuantity;
     totalUnavailable += row.unavailableQuantity;
     totalOutstanding += row.outstandingQuantity;
     totalConfirmedLost += row.confirmedLostQuantity;
+    totalConfirmedLostValue += row.confirmedLostValue;
     if (row.estimatedValue !== null) {
       totalEstimatedValue += row.estimatedValue;
     } else {
       demandsWithoutEstimate += 1;
     }
+    allOrderIds.add(row.orderId);
+    allCustomerIds.add(row.customerId);
+    if (row.unitOfMeasure) allUnitsOfMeasure.add(row.unitOfMeasure);
   }
   const shortageRate = computeShortageRate(totalUnavailable, totalRequested);
+  const mixedUnitsOfMeasure = allUnitsOfMeasure.size > 1;
+  const quantityUnitCode = allUnitsOfMeasure.size === 1 ? Array.from(allUnitsOfMeasure)[0] : null;
 
   // --- Trend ------------------------------------------------------------
-  const trendBuckets = new Map<
-    string,
-    { requested: number; unavailable: number; estimatedValue: number; count: number }
-  >();
-  for (const row of rows) {
-    const key = bucketKeyForDate(row.createdAt, period);
-    const bucket = trendBuckets.get(key) ?? { requested: 0, unavailable: 0, estimatedValue: 0, count: 0 };
-    bucket.requested += row.requestedQuantity;
-    bucket.unavailable += row.unavailableQuantity;
-    bucket.estimatedValue += row.estimatedValue ?? 0;
-    bucket.count += 1;
-    trendBuckets.set(key, bucket);
-  }
-  const trend: LostSalesTrendPoint[] = Array.from(trendBuckets.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([bucket, totals]) => ({
-      bucket,
-      label: bucketLabelForKey(bucket, period),
-      requestedQuantity: formatTotal(totals.requested),
-      unavailableQuantity: formatTotal(totals.unavailable),
-      estimatedLostValue: formatTotal(totals.estimatedValue),
-      demandCount: totals.count,
-    }));
-
-  // --- Per-product / per-customer aggregation (shared by several charts) ---
+  // Chart intelligence enhancement: a reusable per-product aggregate
+  // shape, built fresh for each trend bucket below AND for the
+  // whole-scope top-products/requested-found-unavailable breakdowns
+  // further down -- one shared helper (toProductBreakdown) turns either
+  // kind of Map into the same LostSalesProductBreakdown[] the UI
+  // consumes, so the two call sites can never drift into computing a
+  // product's shortage rate or confirmed value two different ways.
   type ProductAgg = {
     productId: string | null;
     sapItemCodeSnapshot: string | null;
     productDescriptionSnapshot: string;
+    unitOfMeasure: string | null;
     requested: number;
     found: number;
     unavailable: number;
+    estimatedValue: number;
+    confirmedLostValue: number;
     count: number;
+    orderIds: Set<string>;
+    customerIds: Set<string>;
   };
-  const byProduct = new Map<string, ProductAgg>();
-  type CustomerAgg = { customerId: string; customerName: string; unavailable: number; requested: number; count: number };
-  const byCustomer = new Map<string, CustomerAgg>();
+  function newProductAgg(row: AnalyticsRow): ProductAgg {
+    return {
+      productId: row.productId,
+      sapItemCodeSnapshot: row.sapItemCodeSnapshot,
+      productDescriptionSnapshot: row.productDescriptionSnapshot,
+      unitOfMeasure: row.unitOfMeasure,
+      requested: 0,
+      found: 0,
+      unavailable: 0,
+      estimatedValue: 0,
+      confirmedLostValue: 0,
+      count: 0,
+      orderIds: new Set(),
+      customerIds: new Set(),
+    };
+  }
+  function addRowToProductAgg(agg: ProductAgg, row: AnalyticsRow): void {
+    agg.requested += row.requestedQuantity;
+    agg.found += row.foundQuantity;
+    agg.unavailable += row.unavailableQuantity;
+    agg.estimatedValue += row.estimatedValue ?? 0;
+    agg.confirmedLostValue += row.confirmedLostValue;
+    agg.count += 1;
+    agg.orderIds.add(row.orderId);
+    agg.customerIds.add(row.customerId);
+  }
+  function productKeyFor(row: AnalyticsRow): string {
+    return row.sapItemCodeSnapshot ?? row.productId ?? `unresolved:${row.productDescriptionSnapshot}`;
+  }
+  function toProductBreakdown(agg: ProductAgg): LostSalesProductBreakdown {
+    return {
+      productId: agg.productId,
+      sapItemCodeSnapshot: agg.sapItemCodeSnapshot,
+      productDescriptionSnapshot: agg.productDescriptionSnapshot,
+      unitOfMeasure: agg.unitOfMeasure,
+      requestedQuantity: formatTotal(agg.requested),
+      foundQuantity: formatTotal(agg.found),
+      unavailableQuantity: formatTotal(agg.unavailable),
+      shortageRatePercent: (() => {
+        const rate = computeShortageRate(agg.unavailable, agg.requested);
+        return rate === null ? null : Math.round(rate * 10000) / 100;
+      })(),
+      estimatedValue: formatTotal(agg.estimatedValue),
+      confirmedLostValue: formatTotal(agg.confirmedLostValue),
+      affectedOrderCount: agg.orderIds.size,
+      affectedCustomerCount: agg.customerIds.size,
+      demandCount: agg.count,
+    };
+  }
 
+  const trendBuckets = new Map<
+    string,
+    {
+      requested: number;
+      found: number;
+      unavailable: number;
+      estimatedValue: number;
+      confirmedLostValue: number;
+      count: number;
+      orderIds: Set<string>;
+      customerIds: Set<string>;
+      unitsOfMeasure: Set<string>;
+      byProduct: Map<string, ProductAgg>;
+    }
+  >();
   for (const row of rows) {
-    const productKey = row.sapItemCodeSnapshot ?? row.productId ?? `unresolved:${row.productDescriptionSnapshot}`;
-    const productAgg =
-      byProduct.get(productKey) ?? {
-        productId: row.productId,
-        sapItemCodeSnapshot: row.sapItemCodeSnapshot,
-        productDescriptionSnapshot: row.productDescriptionSnapshot,
+    const key = bucketKeyForDate(row.createdAt, period);
+    const bucket =
+      trendBuckets.get(key) ??
+      {
         requested: 0,
         found: 0,
         unavailable: 0,
+        estimatedValue: 0,
+        confirmedLostValue: 0,
         count: 0,
+        orderIds: new Set<string>(),
+        customerIds: new Set<string>(),
+        unitsOfMeasure: new Set<string>(),
+        byProduct: new Map<string, ProductAgg>(),
       };
-    productAgg.requested += row.requestedQuantity;
-    productAgg.found += row.foundQuantity;
-    productAgg.unavailable += row.unavailableQuantity;
-    productAgg.count += 1;
+    bucket.requested += row.requestedQuantity;
+    bucket.found += row.foundQuantity;
+    bucket.unavailable += row.unavailableQuantity;
+    bucket.estimatedValue += row.estimatedValue ?? 0;
+    bucket.confirmedLostValue += row.confirmedLostValue;
+    bucket.count += 1;
+    bucket.orderIds.add(row.orderId);
+    bucket.customerIds.add(row.customerId);
+    if (row.unitOfMeasure) bucket.unitsOfMeasure.add(row.unitOfMeasure);
+
+    const productKey = productKeyFor(row);
+    const productAgg = bucket.byProduct.get(productKey) ?? newProductAgg(row);
+    addRowToProductAgg(productAgg, row);
+    bucket.byProduct.set(productKey, productAgg);
+
+    trendBuckets.set(key, bucket);
+  }
+  const trend: LostSalesTrendPoint[] = Array.from(trendBuckets.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([bucket, totals]) => {
+      const { dateFrom, dateTo } = bucketDateRange(bucket, period);
+      const shortageRateForBucket = computeShortageRate(totals.unavailable, totals.requested);
+      const sortedProducts = Array.from(totals.byProduct.values()).sort((a, b) => b.unavailable - a.unavailable);
+      const shownProducts = sortedProducts.slice(0, MAX_PRODUCTS_PER_BUCKET_TOOLTIP);
+      const hiddenProducts = sortedProducts.slice(MAX_PRODUCTS_PER_BUCKET_TOOLTIP);
+      return {
+        bucket,
+        label: bucketLabelForKey(bucket, period),
+        dateFrom,
+        dateTo,
+        requestedQuantity: formatTotal(totals.requested),
+        foundQuantity: formatTotal(totals.found),
+        unavailableQuantity: formatTotal(totals.unavailable),
+        estimatedLostValue: formatTotal(totals.estimatedValue),
+        confirmedLostValue: formatTotal(totals.confirmedLostValue),
+        demandCount: totals.count,
+        affectedOrderCount: totals.orderIds.size,
+        affectedCustomerCount: totals.customerIds.size,
+        availabilityRatePercent: shortageRateForBucket === null ? null : Math.round((1 - shortageRateForBucket) * 10000) / 100,
+        shortageRatePercent: shortageRateForBucket === null ? null : Math.round(shortageRateForBucket * 10000) / 100,
+        quantityUnitCode: totals.unitsOfMeasure.size === 1 ? Array.from(totals.unitsOfMeasure)[0] : null,
+        mixedUnitsOfMeasure: totals.unitsOfMeasure.size > 1,
+        products: shownProducts.map(toProductBreakdown),
+        otherProductsCount: hiddenProducts.length,
+        otherProductsUnavailableQuantity: formatTotal(hiddenProducts.reduce((sum, p) => sum + p.unavailable, 0)),
+      };
+    });
+
+  // --- Per-product / per-customer aggregation (shared by several charts) ---
+  // Chart intelligence enhancement: reuses the exact same ProductAgg/
+  // newProductAgg/addRowToProductAgg/toProductBreakdown helpers the trend
+  // section above uses per-bucket, just accumulated over the WHOLE
+  // filtered scope instead of one bucket at a time -- one aggregation
+  // rule, two scopes, never two separately-maintained implementations of
+  // "what does this product's row mean."
+  const byProduct = new Map<string, ProductAgg>();
+  type CustomerAgg = {
+    customerId: string;
+    customerName: string;
+    unavailable: number;
+    requested: number;
+    found: number;
+    estimatedValue: number;
+    confirmedLostValue: number;
+    count: number;
+    orderIds: Set<string>;
+  };
+  const byCustomer = new Map<string, CustomerAgg>();
+
+  /**
+   * Chart intelligence enhancement: shared by BOTH topUnavailableCustomers
+   * and the shortageRateByCustomer ranking below -- one implementation of
+   * "what a customer's contribution means," the same discipline
+   * toProductBreakdown already applies on the product side (this file's
+   * own module comment on why one aggregation rule must never have two
+   * separately-maintained implementations).
+   */
+  function toCustomerBreakdown(agg: CustomerAgg): LostSalesCustomerBreakdown {
+    return {
+      customerId: agg.customerId,
+      customerName: agg.customerName,
+      unavailableQuantity: formatTotal(agg.unavailable),
+      requestedQuantity: formatTotal(agg.requested),
+      foundQuantity: formatTotal(agg.found),
+      estimatedValue: formatTotal(agg.estimatedValue),
+      confirmedLostValue: formatTotal(agg.confirmedLostValue),
+      affectedOrderCount: agg.orderIds.size,
+      shortageRatePercent: (() => {
+        const rate = computeShortageRate(agg.unavailable, agg.requested);
+        return rate === null ? null : Math.round(rate * 10000) / 100;
+      })(),
+      demandCount: agg.count,
+    };
+  }
+
+  for (const row of rows) {
+    const productKey = productKeyFor(row);
+    const productAgg = byProduct.get(productKey) ?? newProductAgg(row);
+    addRowToProductAgg(productAgg, row);
     byProduct.set(productKey, productAgg);
 
     const customerAgg =
-      byCustomer.get(row.customerId) ?? { customerId: row.customerId, customerName: row.customerName, unavailable: 0, requested: 0, count: 0 };
+      byCustomer.get(row.customerId) ?? {
+        customerId: row.customerId,
+        customerName: row.customerName,
+        unavailable: 0,
+        requested: 0,
+        found: 0,
+        estimatedValue: 0,
+        confirmedLostValue: 0,
+        count: 0,
+        orderIds: new Set<string>(),
+      };
     customerAgg.unavailable += row.unavailableQuantity;
     customerAgg.requested += row.requestedQuantity;
+    customerAgg.found += row.foundQuantity;
+    customerAgg.estimatedValue += row.estimatedValue ?? 0;
+    customerAgg.confirmedLostValue += row.confirmedLostValue;
     customerAgg.count += 1;
+    customerAgg.orderIds.add(row.orderId);
     byCustomer.set(row.customerId, customerAgg);
   }
 
@@ -398,70 +700,40 @@ export async function getLostSalesAnalytics(
   const topUnavailableProducts: LostSalesProductBreakdown[] = [...productAggs]
     .sort((a, b) => b.unavailable - a.unavailable)
     .slice(0, TOP_N)
-    .map((agg) => ({
-      productId: agg.productId,
-      sapItemCodeSnapshot: agg.sapItemCodeSnapshot,
-      productDescriptionSnapshot: agg.productDescriptionSnapshot,
-      requestedQuantity: formatTotal(agg.requested),
-      foundQuantity: formatTotal(agg.found),
-      unavailableQuantity: formatTotal(agg.unavailable),
-      demandCount: agg.count,
-    }));
+    .map(toProductBreakdown);
 
   const topUnavailableCustomers: LostSalesCustomerBreakdown[] = [...customerAggs]
     .sort((a, b) => b.unavailable - a.unavailable)
     .slice(0, TOP_N)
-    .map((agg) => ({
-      customerId: agg.customerId,
-      customerName: agg.customerName,
-      unavailableQuantity: formatTotal(agg.unavailable),
-      demandCount: agg.count,
-    }));
+    .map(toCustomerBreakdown);
 
   // Spec: "requested vs found vs unavailable, grouped/stacked bars" --
   // same top-10-by-unavailable product set as above, just with all
   // three measures instead of one.
   const requestedFoundUnavailableByProduct = topUnavailableProducts;
 
-  const shortageRateByProduct: LostSalesShortageRateEntry[] = productAggs
-    .filter((agg) => agg.count >= MIN_DEMAND_COUNT_FOR_RATE_RANKING)
-    .map((agg) => ({
-      label: agg.productDescriptionSnapshot,
-      rate: computeShortageRate(agg.unavailable, agg.requested),
-      requested: agg.requested,
-      unavailable: agg.unavailable,
-      count: agg.count,
-    }))
-    .filter((entry): entry is { label: string; rate: number; requested: number; unavailable: number; count: number } => entry.rate !== null)
-    .sort((a, b) => b.rate - a.rate)
-    .slice(0, TOP_N)
-    .map((entry) => ({
-      label: entry.label,
-      shortageRatePercent: Math.round(entry.rate * 10000) / 100,
-      requestedQuantity: formatTotal(entry.requested),
-      unavailableQuantity: formatTotal(entry.unavailable),
-      demandCount: entry.count,
-    }));
+  // Chart intelligence enhancement: a single shared ranking helper for
+  // both products and customers -- computes each aggregate's shortage
+  // rate exactly once (never re-derived per sort comparison), applies
+  // MIN_DEMAND_COUNT_FOR_RATE_RANKING and the "rate must be defined"
+  // filter identically for both, then hands back the TOP_N raw aggregates
+  // (still ProductAgg/CustomerAgg) for the caller to map through
+  // toProductBreakdown/toCustomerBreakdown -- so the ranking charts below
+  // get the exact same rich per-entity shape (value split, affected
+  // orders/customers, drill-down ids) every other chart on this page
+  // already uses, with zero separate type and zero duplicated
+  // aggregation logic.
+  function rankByShortageRate<A extends { unavailable: number; requested: number; count: number }>(aggs: A[]): A[] {
+    return aggs
+      .map((agg) => ({ agg, rate: computeShortageRate(agg.unavailable, agg.requested) }))
+      .filter((entry): entry is { agg: A; rate: number } => entry.agg.count >= MIN_DEMAND_COUNT_FOR_RATE_RANKING && entry.rate !== null)
+      .sort((a, b) => b.rate - a.rate)
+      .slice(0, TOP_N)
+      .map((entry) => entry.agg);
+  }
 
-  const shortageRateByCustomer: LostSalesShortageRateEntry[] = customerAggs
-    .filter((agg) => agg.count >= MIN_DEMAND_COUNT_FOR_RATE_RANKING)
-    .map((agg) => ({
-      label: agg.customerName,
-      rate: computeShortageRate(agg.unavailable, agg.requested),
-      requested: agg.requested,
-      unavailable: agg.unavailable,
-      count: agg.count,
-    }))
-    .filter((entry): entry is { label: string; rate: number; requested: number; unavailable: number; count: number } => entry.rate !== null)
-    .sort((a, b) => b.rate - a.rate)
-    .slice(0, TOP_N)
-    .map((entry) => ({
-      label: entry.label,
-      shortageRatePercent: Math.round(entry.rate * 10000) / 100,
-      requestedQuantity: formatTotal(entry.requested),
-      unavailableQuantity: formatTotal(entry.unavailable),
-      demandCount: entry.count,
-    }));
+  const shortageRateByProduct: LostSalesProductBreakdown[] = rankByShortageRate(productAggs).map(toProductBreakdown);
+  const shortageRateByCustomer: LostSalesCustomerBreakdown[] = rankByShortageRate(customerAggs).map(toCustomerBreakdown);
 
   // --- Composition (spec: "composition stacked bar") -------------------
   let outstandingTotal = 0;
@@ -525,11 +797,17 @@ export async function getLostSalesAnalytics(
     truncated: totalMatching > MAX_ANALYTICS_ROWS,
     kpis: {
       totalRequestedQuantity: formatTotal(totalRequested),
+      totalFoundQuantity: formatTotal(totalFound),
       totalUnavailableQuantity: formatTotal(totalUnavailable),
       totalOutstandingQuantity: formatTotal(totalOutstanding),
       totalConfirmedLostQuantity: formatTotal(totalConfirmedLost),
       totalEstimatedLostValue: formatTotal(totalEstimatedValue),
+      totalConfirmedLostValue: formatTotal(totalConfirmedLostValue),
       demandsWithoutEstimate,
+      affectedOrderCount: allOrderIds.size,
+      affectedCustomerCount: allCustomerIds.size,
+      quantityUnitCode,
+      mixedUnitsOfMeasure,
       availabilityRatePercent: shortageRate === null ? null : Math.round((1 - shortageRate) * 10000) / 100,
       shortageRatePercent: shortageRate === null ? null : Math.round(shortageRate * 10000) / 100,
     },
@@ -545,6 +823,8 @@ export async function getLostSalesAnalytics(
       reason: group.reason,
       recordCount: group._count._all,
       totalQuantity: formatTotal(toNumber(group._sum.quantity)),
+      // Chart intelligence enhancement.
+      totalConfirmedValue: formatTotal(toNumber(group._sum.estimatedValue)),
     })),
     decisionTypeBreakdown: decisionGroups.map((group) => ({
       decisionType: group.decisionType,

@@ -1,7 +1,8 @@
 "use client";
 
 import { Area, CartesianGrid, ComposedChart, Line, XAxis, YAxis } from "recharts";
-import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartLegend, ChartLegendContent, type ChartConfig } from "@/components/ui/chart";
+import { ChartContainer, ChartTooltip, ChartLegend, ChartLegendContent, type ChartConfig } from "@/components/ui/chart";
+import { TrendTooltipContent, ValueTrendTooltipContent } from "@/components/charts/rich-tooltip";
 import type { LostSalesTrendPoint } from "@/lib/lost-sales/analytics-queries";
 
 /**
@@ -20,7 +21,19 @@ import type { LostSalesTrendPoint } from "@/lib/lost-sales/analytics-queries";
  * Color discipline (dataviz skill): requested=--chart-1, unavailable=
  * --chart-2 everywhere those series appear, matching every other lost-sales
  * chart in this codebase ("color follows the entity, never its rank").
+ *
+ * Chart intelligence enhancement: both charts now take optional
+ * `basePath`/`baseQuery` props so their rich, product-level tooltip can
+ * drill into a real page with the caller's own current filters preserved
+ * ("reuse existing pages, preserve existing filters" -- see
+ * components/charts/rich-tooltip.tsx's own module comment). Both default
+ * to the Lost Sales Analytics page with no extra filter, so the existing
+ * call from app/page.tsx's dashboard (which does not pass them) keeps
+ * working unchanged and simply gains the same drill-down for free.
  */
+
+const DEFAULT_BASE_PATH = "/lost-sales/analytics";
+const DEFAULT_BASE_QUERY: Record<string, string> = {};
 
 const QUANTITY_CHART_CONFIG: ChartConfig = {
   requestedQuantity: { label: "Requested", color: "var(--chart-1)" },
@@ -37,11 +50,27 @@ function TrendEmptyState({ message }: { message: string }) {
   return <div className="p-10 text-center text-sm text-[#849087]">{message}</div>;
 }
 
-/** "Trend line/area" for requested vs. unavailable quantity over time -- same unit (quantity), so one shared axis. */
-export function RequestedVsUnavailableTrendChart({ data }: { data: LostSalesTrendPoint[] }) {
+/**
+ * "Trend line/area" for requested vs. unavailable quantity over time --
+ * same unit (quantity), so one shared axis. Chart intelligence
+ * enhancement: each point in `data` keeps its own full breakdown
+ * (products/affected counts/rates), fed straight through to
+ * TrendTooltipContent rather than flattened to just the two plotted
+ * numbers -- the chart itself still only plots requested/unavailable
+ * (spec: "keep the main chart readable"), the rest lives in the tooltip.
+ */
+export function RequestedVsUnavailableTrendChart({
+  data,
+  basePath = DEFAULT_BASE_PATH,
+  baseQuery = DEFAULT_BASE_QUERY,
+}: {
+  data: LostSalesTrendPoint[];
+  basePath?: string;
+  baseQuery?: Record<string, string>;
+}) {
   if (data.length === 0) return <TrendEmptyState message="No demand records in the selected range." />;
   const rows = data.map((point) => ({
-    label: point.label,
+    ...point,
     requestedQuantity: Number(point.requestedQuantity),
     unavailableQuantity: Number(point.unavailableQuantity),
   }));
@@ -51,7 +80,7 @@ export function RequestedVsUnavailableTrendChart({ data }: { data: LostSalesTren
         <CartesianGrid vertical={false} />
         <XAxis dataKey="label" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} />
         <YAxis tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} width={48} />
-        <ChartTooltip content={<ChartTooltipContent />} />
+        <ChartTooltip content={<TrendTooltipContent basePath={basePath} baseQuery={baseQuery} />} />
         <ChartLegend content={<ChartLegendContent />} />
         <Area type="monotone" dataKey="unavailableQuantity" fill="var(--color-unavailableQuantity)" stroke="var(--color-unavailableQuantity)" fillOpacity={0.18} strokeWidth={2} />
         <Line type="monotone" dataKey="requestedQuantity" stroke="var(--color-requestedQuantity)" strokeWidth={2} dot={{ r: 3 }} />
@@ -60,17 +89,33 @@ export function RequestedVsUnavailableTrendChart({ data }: { data: LostSalesTren
   );
 }
 
-/** Estimated lost value over time -- a DIFFERENT scale (currency, not quantity) from the chart above, so its own chart and its own axis rather than a second y-axis bolted onto the same one. */
-export function EstimatedLostValueTrendChart({ data }: { data: LostSalesTrendPoint[] }) {
+/**
+ * Estimated lost value over time -- a DIFFERENT scale (currency, not
+ * quantity) from the chart above, so its own chart and its own axis
+ * rather than a second y-axis bolted onto the same one. Chart
+ * intelligence enhancement: tooltip now distinguishes estimated exposure
+ * from confirmed loss and shows the product contribution table spec
+ * section 4 asks for (ValueTrendTooltipContent), instead of a single
+ * unlabeled number.
+ */
+export function EstimatedLostValueTrendChart({
+  data,
+  basePath = DEFAULT_BASE_PATH,
+  baseQuery = DEFAULT_BASE_QUERY,
+}: {
+  data: LostSalesTrendPoint[];
+  basePath?: string;
+  baseQuery?: Record<string, string>;
+}) {
   if (data.length === 0) return <TrendEmptyState message="No demand records in the selected range." />;
-  const rows = data.map((point) => ({ label: point.label, estimatedLostValue: Number(point.estimatedLostValue) }));
+  const rows = data.map((point) => ({ ...point, estimatedLostValue: Number(point.estimatedLostValue) }));
   return (
     <ChartContainer config={VALUE_CHART_CONFIG} className="aspect-auto h-[220px] w-full">
       <ComposedChart data={rows} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
         <CartesianGrid vertical={false} />
         <XAxis dataKey="label" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} />
         <YAxis tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} width={56} />
-        <ChartTooltip content={<ChartTooltipContent />} />
+        <ChartTooltip content={<ValueTrendTooltipContent basePath={basePath} baseQuery={baseQuery} />} />
         <Area type="monotone" dataKey="estimatedLostValue" fill="var(--color-estimatedLostValue)" stroke="var(--color-estimatedLostValue)" fillOpacity={0.18} strokeWidth={2} />
       </ComposedChart>
     </ChartContainer>

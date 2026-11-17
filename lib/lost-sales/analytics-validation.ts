@@ -124,6 +124,44 @@ export function computeShortageRate(unavailableQuantity: number, requestedQuanti
 }
 
 /**
+ * Chart intelligence enhancement (deep chart drill-down). The inverse of
+ * bucketKeyForDate: given a bucket key this module itself produced, the
+ * inclusive "YYYY-MM-DD" dateFrom/dateTo pair that exactly covers it, in
+ * the same format lib/reporting/types.ts's ReportFilters.dateFrom/dateTo
+ * already uses everywhere else. Exists so a trend-chart tooltip or a
+ * clicked chart point can link to this same page (or /lost-sales) with
+ * that bucket's own date range applied as a real filter -- "drill-down
+ * must preserve existing filters, reuse existing pages" -- rather than
+ * inventing a second, parallel date-range representation. Kept here,
+ * next to bucketKeyForDate/bucketLabelForKey, so all three stay in sync
+ * with each other's key format by construction.
+ */
+export function bucketDateRange(key: string, period: LostSalesAnalyticsPeriod): { dateFrom: string; dateTo: string } {
+  if (period === "month") {
+    const [yearStr, monthStr] = key.split("-");
+    const year = Number(yearStr);
+    const month = Number(monthStr); // 1-12
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate(); // day 0 of next month = last day of this one
+    return {
+      dateFrom: `${yearStr}-${monthStr}-01`,
+      dateTo: `${yearStr}-${monthStr}-${String(lastDay).padStart(2, "0")}`,
+    };
+  }
+
+  if (period === "day") {
+    return { dateFrom: key, dateTo: key };
+  }
+
+  // week: key is the Monday-starting ISO week's own "YYYY-MM-DD" (see
+  // bucketKeyForDate) -- the range is that Monday through the following
+  // Sunday, inclusive.
+  const monday = new Date(`${key}T00:00:00.000Z`);
+  const sunday = new Date(monday);
+  sunday.setUTCDate(sunday.getUTCDate() + 6);
+  return { dateFrom: key, dateTo: sunday.toISOString().slice(0, 10) };
+}
+
+/**
  * Even-width histogram over an already-sorted-ascending numeric sample.
  * Returns null (rather than a near-empty/misleading chart) below
  * MIN_SAMPLE_SIZE_FOR_DISTRIBUTION or when every value is identical (no

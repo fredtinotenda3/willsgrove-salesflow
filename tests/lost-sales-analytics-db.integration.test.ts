@@ -58,6 +58,12 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Additional Implementation Requiremen
   let productAId: string;
 
   const createdOrderIds: string[] = [];
+  // Chart intelligence enhancement: a couple of tests below need a
+  // Product row with a KNOWN, controlled unitOfMeasure (to prove mixed-
+  // UOM detection deterministically) rather than relying on whatever
+  // unitOfMeasure happens to exist on seeded/imported data in a shared
+  // database -- these are created fresh per test run and cleaned up here.
+  const createdProductIds: string[] = [];
   const uniqueSuffix = `analytics-inttest-${Date.now()}`;
 
   beforeAll(async () => {
@@ -97,6 +103,12 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Additional Implementation Requiremen
       await prisma.orderStatusHistory.deleteMany({ where: { orderId: { in: createdOrderIds } } });
       await prisma.orderLine.deleteMany({ where: { orderId: { in: createdOrderIds } } });
       await prisma.customerOrder.deleteMany({ where: { id: { in: createdOrderIds } } });
+      // Safe only AFTER the order-chain rows above are gone (OrderLine/
+      // UnfulfilledDemand.productId are both onDelete: SetNull against
+      // Product, but the rows themselves no longer exist by this point
+      // either way) -- these test-only Product rows are never referenced
+      // by anything outside this file's own fixtures.
+      await prisma.product.deleteMany({ where: { id: { in: createdProductIds } } });
     } finally {
       await prisma.$disconnect();
     }
@@ -349,13 +361,246 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Additional Implementation Requiremen
     // than silently assumed.
     const result = await getLostSalesAnalytics(baseFilters({ customerId }) as never, "month", { page: 1, pageSize: 1 });
 
-    expect(result.shortageRateByProduct.some((entry) => entry.label === belowDescription)).toBe(false);
+    expect(result.shortageRateByProduct.some((entry) => entry.productDescriptionSnapshot === belowDescription)).toBe(false);
 
-    const atThresholdEntry = result.shortageRateByProduct.find((entry) => entry.label === atThresholdDescription);
+    const atThresholdEntry = result.shortageRateByProduct.find((entry) => entry.productDescriptionSnapshot === atThresholdDescription);
     expect(atThresholdEntry).toBeDefined();
     if (atThresholdEntry) {
       expect(atThresholdEntry.demandCount).toBe(3);
       expect(atThresholdEntry.shortageRatePercent).toBeCloseTo(50, 1);
+      // Chart intelligence enhancement: shortageRateByProduct now returns
+      // the SAME rich LostSalesProductBreakdown shape every other
+      // product chart on this page uses (affectedOrderCount/
+      // affectedCustomerCount/estimatedValue/confirmedLostValue), not a
+      // narrower rate-only row -- confirms the refactor that lets this
+      // ranking reuse the identical rich tooltip as every other chart.
+      expect(atThresholdEntry.affectedOrderCount).toBe(1);
+      expect(atThresholdEntry.affectedCustomerCount).toBe(1);
+      expect(atThresholdEntry.requestedQuantity).toBeDefined();
+      expect(atThresholdEntry.confirmedLostValue).toBeDefined();
     }
+  });
+
+  it("Chart intelligence enhancement: a trend bucket's per-product breakdown attributes requested/found/unavailable to EACH contributing product separately, never collapsed into one combined row", async () => {
+    if (skipAll) return;
+    const { prisma } = await import("@/lib/prisma");
+    const { generateOrderReference } = await import("@/lib/orders");
+    const { startPickingSession } = await import("@/lib/picking/start-picking");
+    const { recordPickedLine } = await import("@/lib/picking/record-picked-line");
+    const { completePickingSession } = await import("@/lib/picking/complete-picking");
+    const { authorizePickingSession } = await import("@/lib/picking/authorize-picking");
+    const { getLostSalesAnalytics } = await import("@/lib/lost-sales/analytics-queries");
+
+    // Two distinct, unlinked "virtual products" (unique description text,
+    // no productId -- same technique the threshold test above uses) on
+    // ONE order, so both land in the SAME trend bucket (this calendar
+    // month) with clearly different, deliberately large quantities --
+    // large so this fixture's own two rows are very unlikely to be
+    // crowded out of the bucket's MAX_PRODUCTS_PER_BUCKET_TOOLTIP=8 cap
+    // by other fixtures sharing this test database and the current
+    // month, the same documented, accepted risk the threshold test above
+    // already carries for its own TOP_N cap.
+    const productXDescription = `Breakdown test product X ${uniqueSuffix}`;
+    const productYDescription = `Breakdown test product Y ${uniqueSuffix}`;
+    const order = await prisma.customerOrder.create({
+      data: {
+        reference: generateOrderReference(),
+        customerId,
+        createdById: adminId,
+        source: "MANUAL",
+        status: "RECEIVED",
+        currency: "USD",
+        receivedAt: new Date(),
+        isDemo: true,
+        lines: {
+          create: [
+            { lineNumber: 1, originalProductDescription: productXDescription, requestedQuantity: "900.0000", requestedUnitCode: "EA", isDemo: true },
+            { lineNumber: 2, originalProductDescription: productYDescription, requestedQuantity: "500.0000", requestedUnitCode: "EA", isDemo: true },
+          ],
+        },
+      },
+      select: { id: true, lines: { select: { id: true, originalProductDescription: true } } },
+    });
+    createdOrderIds.push(order.id);
+    const lineX = order.lines.find((l: { id: string; originalProductDescription: string | null }) => l.originalProductDescription === productXDescription);
+    const lineY = order.lines.find((l: { id: string; originalProductDescription: string | null }) => l.originalProductDescription === productYDescription);
+    if (!lineX || !lineY) throw new Error("fixture lines not created as expected");
+
+    const session = await startPickingSession(order.id, adminId);
+    if (!session.ok) throw new Error(session.message);
+    await recordPickedLine(session.session.id, lineX.id, "540.0000", "360.0000", "Short on stock", adminId);
+    await recordPickedLine(session.session.id, lineY.id, "410.0000", "90.0000", "Short on stock", adminId);
+    const completed = await completePickingSession(session.session.id, adminId);
+    if (!completed.ok) throw new Error(completed.message);
+    const authorized = await authorizePickingSession(session.session.id, adminId);
+    if (!authorized.ok) throw new Error(authorized.message);
+
+    const result = await getLostSalesAnalytics(baseFilters({ customerId }) as never, "month", { page: 1, pageSize: 1 });
+
+    const now = new Date();
+    const currentBucketKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+    const bucket = result.trend.find((t) => t.bucket === currentBucketKey);
+    expect(bucket).toBeDefined();
+    if (!bucket) return;
+
+    const productX = bucket.products.find((p) => p.productDescriptionSnapshot === productXDescription);
+    const productY = bucket.products.find((p) => p.productDescriptionSnapshot === productYDescription);
+    expect(productX).toBeDefined();
+    expect(productY).toBeDefined();
+    if (productX) {
+      expect(Number(productX.requestedQuantity)).toBeCloseTo(900, 4);
+      expect(Number(productX.foundQuantity)).toBeCloseTo(540, 4);
+      expect(Number(productX.unavailableQuantity)).toBeCloseTo(360, 4);
+      expect(productX.affectedOrderCount).toBe(1);
+      expect(productX.affectedCustomerCount).toBe(1);
+    }
+    if (productY) {
+      expect(Number(productY.requestedQuantity)).toBeCloseTo(500, 4);
+      expect(Number(productY.foundQuantity)).toBeCloseTo(410, 4);
+      expect(Number(productY.unavailableQuantity)).toBeCloseTo(90, 4);
+    }
+    // The two products' own contributions stay distinguishable -- never
+    // summed into one 360+90=450 row that would discard which product
+    // actually drove the bucket's shortage.
+    if (productX && productY) {
+      expect(Number(productX.unavailableQuantity)).not.toBeCloseTo(Number(productY.unavailableQuantity), 4);
+    }
+
+    // The same two rows also surface, correctly attributed, in the
+    // whole-scope product breakdown used by the top-unavailable-products
+    // and requested/found/unavailable bar charts.
+    const topX = result.topUnavailableProducts.find((p) => p.productDescriptionSnapshot === productXDescription);
+    const topY = result.topUnavailableProducts.find((p) => p.productDescriptionSnapshot === productYDescription);
+    if (topX) expect(Number(topX.unavailableQuantity)).toBeCloseTo(360, 4);
+    if (topY) expect(Number(topY.unavailableQuantity)).toBeCloseTo(90, 4);
+  });
+
+  it("Chart intelligence enhancement: the automatic estimated-lost-value and a later customer-confirmed lost-sale value are two SEPARATE figures, never summed into one blended number", async () => {
+    if (skipAll) return;
+    const { prisma } = await import("@/lib/prisma");
+    const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
+    const { confirmLostSale } = await import("@/lib/lost-sales/confirm-lost-sale");
+    const { getLostSalesAnalytics } = await import("@/lib/lost-sales/analytics-queries");
+
+    const filters = baseFilters({ productId: productAId });
+    const beforeCreation = await getLostSalesAnalytics(filters as never, "month", { page: 1, pageSize: 1 });
+
+    const { orderId } = await createOrderWithKnownShortage("10.0000", "6.0000", `Estimated-vs-confirmed test ${uniqueSuffix}`);
+    const demand = await prisma.unfulfilledDemand.findFirstOrThrow({ where: { orderId } });
+    const afterCreation = await getLostSalesAnalytics(filters as never, "month", { page: 1, pageSize: 1 });
+
+    // Moves the shortfall into cancelledQuantity first -- confirmLostSale
+    // consumes from there (see that function's own module comment), same
+    // two-step sequence tests/lost-sales-db.integration.test.ts's own
+    // "scenario 15" already exercises.
+    const decision = await recordCustomerDecision(
+      { unfulfilledDemandId: demand.id, decisionType: "PARTIAL_CANCELLATION", source: "CUSTOMER_EMAIL", quantity: "6.0000" },
+      adminId
+    );
+    expect(decision.ok).toBe(true);
+    const confirmed = await confirmLostSale(
+      { unfulfilledDemandId: demand.id, quantity: "6.0000", reason: "PRODUCT_UNAVAILABLE", decisionSource: "CUSTOMER_EMAIL" },
+      adminId
+    );
+    expect(confirmed.ok).toBe(true);
+
+    const afterConfirm = await getLostSalesAnalytics(filters as never, "month", { page: 1, pageSize: 1 });
+
+    // The automatic estimate is set once, at demand-CREATION time, from
+    // UnfulfilledDemand.estimatedValue -- confirming the lost sale must
+    // never change it (it isn't recomputed, overwritten, or touched by
+    // confirmLostSale at all), proving the two figures genuinely come
+    // from two independent sources rather than one being derived from
+    // the other.
+    expect(Number(afterConfirm.kpis.totalEstimatedLostValue)).toBeCloseTo(Number(afterCreation.kpis.totalEstimatedLostValue), 4);
+
+    // The confirmed-value delta matches EXACTLY what confirmLostSale
+    // itself returned for this record (LostSaleRecord.estimatedValue) --
+    // whether that happens to be a resolvable price or null (both are
+    // valid outcomes depending on this fixture product's price data) --
+    // never a re-derived figure and never added into the estimate above.
+    if (confirmed.ok) {
+      const confirmedDelta = Number(afterConfirm.kpis.totalConfirmedLostValue) - Number(beforeCreation.kpis.totalConfirmedLostValue);
+      const expectedConfirmedValue = confirmed.record.estimatedValue === null ? 0 : Number(confirmed.record.estimatedValue);
+      expect(confirmedDelta).toBeCloseTo(expectedConfirmedValue, 4);
+    }
+  });
+
+  it("Chart intelligence enhancement: two products with different units of measure in the same scope are flagged as mixed and never silently combined into one misleading total", async () => {
+    if (skipAll) return;
+    const { prisma } = await import("@/lib/prisma");
+    const { generateOrderReference } = await import("@/lib/orders");
+    const { startPickingSession } = await import("@/lib/picking/start-picking");
+    const { recordPickedLine } = await import("@/lib/picking/record-picked-line");
+    const { completePickingSession } = await import("@/lib/picking/complete-picking");
+    const { authorizePickingSession } = await import("@/lib/picking/authorize-picking");
+    const { getLostSalesAnalytics } = await import("@/lib/lost-sales/analytics-queries");
+
+    // Two fresh Product rows with a KNOWN, controlled unitOfMeasure each
+    // -- deterministic regardless of whatever UOM data happens to exist
+    // on seeded/SAP-imported products in this shared database.
+    const kgProduct = await prisma.product.create({
+      data: { sapItemCode: `TEST-UOM-KG-${uniqueSuffix}`, itemName: `UOM test product (kg) ${uniqueSuffix}`, unitOfMeasure: "KG", status: "ACTIVE", isDemo: true },
+      select: { id: true },
+    });
+    const eaProduct = await prisma.product.create({
+      data: { sapItemCode: `TEST-UOM-EA-${uniqueSuffix}`, itemName: `UOM test product (ea) ${uniqueSuffix}`, unitOfMeasure: "EA", status: "ACTIVE", isDemo: true },
+      select: { id: true },
+    });
+    createdProductIds.push(kgProduct.id, eaProduct.id);
+
+    const order = await prisma.customerOrder.create({
+      data: {
+        reference: generateOrderReference(),
+        customerId,
+        createdById: adminId,
+        source: "MANUAL",
+        status: "RECEIVED",
+        currency: "USD",
+        receivedAt: new Date(),
+        isDemo: true,
+        lines: {
+          create: [
+            { lineNumber: 1, originalProductDescription: "UOM mix test, kg line", productId: kgProduct.id, requestedQuantity: "15.0000", requestedUnitCode: "KG", isDemo: true },
+            { lineNumber: 2, originalProductDescription: "UOM mix test, ea line", productId: eaProduct.id, requestedQuantity: "9.0000", requestedUnitCode: "EA", isDemo: true },
+          ],
+        },
+      },
+      select: { id: true, lines: { select: { id: true, productId: true } } },
+    });
+    createdOrderIds.push(order.id);
+    const kgLine = order.lines.find((l: { id: string; productId: string | null }) => l.productId === kgProduct.id);
+    const eaLine = order.lines.find((l: { id: string; productId: string | null }) => l.productId === eaProduct.id);
+    if (!kgLine || !eaLine) throw new Error("fixture lines not created as expected");
+
+    const session = await startPickingSession(order.id, adminId);
+    if (!session.ok) throw new Error(session.message);
+    await recordPickedLine(session.session.id, kgLine.id, "10.0000", "5.0000", "Short on stock", adminId);
+    await recordPickedLine(session.session.id, eaLine.id, "6.0000", "3.0000", "Short on stock", adminId);
+    const completed = await completePickingSession(session.session.id, adminId);
+    if (!completed.ok) throw new Error(completed.message);
+    const authorized = await authorizePickingSession(session.session.id, adminId);
+    if (!authorized.ok) throw new Error(authorized.message);
+
+    // Filtered to ONE of the two products: exactly one unit, no ambiguity.
+    const kgOnly = await getLostSalesAnalytics(baseFilters({ productId: kgProduct.id }) as never, "month", { page: 1, pageSize: 1 });
+    expect(kgOnly.kpis.mixedUnitsOfMeasure).toBe(false);
+    expect(kgOnly.kpis.quantityUnitCode).toBe("KG");
+
+    // The combined (customer-scoped) view spans both units -- flagged as
+    // mixed rather than silently reporting one unit, or adding 5 kg and
+    // 3 individual pieces into one meaningless "8 units" total (spec
+    // section 9's own "different UOMs are not combined into misleading
+    // totals"). This holds regardless of whatever else this shared
+    // customerId has in scope, since these two rows alone already
+    // guarantee two distinct non-null units are present.
+    const combined = await getLostSalesAnalytics(baseFilters({ customerId }) as never, "month", { page: 1, pageSize: 1 });
+    expect(combined.kpis.mixedUnitsOfMeasure).toBe(true);
+    expect(combined.kpis.quantityUnitCode).toBeNull();
+
+    const kgBreakdown = combined.topUnavailableProducts.find((p) => p.productId === kgProduct.id);
+    const eaBreakdown = combined.topUnavailableProducts.find((p) => p.productId === eaProduct.id);
+    if (kgBreakdown) expect(kgBreakdown.unitOfMeasure).toBe("KG");
+    if (eaBreakdown) expect(eaBreakdown.unitOfMeasure).toBe("EA");
   });
 });

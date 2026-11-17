@@ -8,7 +8,7 @@ import { unfulfilledDemandStatusValues } from "@/lib/lost-sales/validation";
 import { UNFULFILLED_DEMAND_STATUS_LABELS, UNFULFILLED_DEMAND_STATUS_STYLES, LOST_SALE_REASON_LABELS, DECISION_TYPE_LABELS } from "@/lib/lost-sales/display";
 import { getReportFilterOptions } from "@/lib/reporting/filter-options";
 import { parseReportFilters, parsePagination, REPORT_DEFAULT_PAGE_SIZE } from "@/lib/reporting/filters";
-import { toFlatSearchParams, toURLSearchParams, type ReportSearchParams } from "../../reports/_components/search-params";
+import { toFlatSearchParams, toURLSearchParams, filtersOnly, type ReportSearchParams } from "../../reports/_components/search-params";
 import Sidebar from "../../components/sidebar";
 import { PageHeader, SectionCard, MetricCard, RateStat, BarRow, Pagination, EmptyState } from "../../reports/_components/ui";
 import { ReportFilterBar } from "../../reports/_components/filter-bar";
@@ -71,6 +71,26 @@ function formatQuantity(value: string): string {
   return Number.isFinite(n) ? n.toLocaleString("en-GB", { maximumFractionDigits: 2 }) : value;
 }
 
+/**
+ * Chart intelligence enhancement (spec section 5's own audit list
+ * includes "loss reason breakdowns" and "customer decision breakdowns";
+ * spec section 8's own drill-down example is literally "clicking a loss
+ * reason filters the relevant records"). Mirrors
+ * components/charts/rich-tooltip.tsx's buildHref exactly -- same small,
+ * pure URL-building helper, duplicated here rather than imported across
+ * the client/server boundary for no real benefit, since this is plain
+ * query-string construction, not business/aggregation logic (the one
+ * kind of duplication this codebase's "one implementation" rule is
+ * actually about -- see analytics-queries.ts's own comment).
+ */
+function buildDrillDownHref(basePath: string, baseQuery: Record<string, string>, extra: Record<string, string>): string {
+  const params = new URLSearchParams(baseQuery);
+  for (const [key, value] of Object.entries(extra)) {
+    if (value) params.set(key, value);
+  }
+  return `${basePath}?${params.toString()}`;
+}
+
 export default async function LostSalesAnalyticsPage({ searchParams }: RouteParams) {
   const user = await getCurrentUser();
   if (!user) {
@@ -101,6 +121,14 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
   ]);
 
   const basePath = "/lost-sales/analytics";
+  // Chart intelligence enhancement: every rich-tooltip drill-down link
+  // carries the page's CURRENT filters (minus `page`, which means
+  // nothing on the destination this links into -- see
+  // search-params.ts's own comment on filtersOnly), so clicking into a
+  // chart's product/customer/date never silently drops a filter the user
+  // already applied (spec section 9: "existing filters apply
+  // consistently... to tooltips and drill-down").
+  const baseQuery = filtersOnly(resolvedSearchParams);
 
   return (
     <div className="min-h-screen bg-[#F7F8F6]">
@@ -176,9 +204,13 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
 
           <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
             <MetricCard title="Requested quantity" value={formatQuantity(analytics.kpis.totalRequestedQuantity)} dataQuality="actual" />
+            <MetricCard title="Found quantity" value={formatQuantity(analytics.kpis.totalFoundQuantity)} dataQuality="actual" />
             <MetricCard title="Unavailable quantity" value={formatQuantity(analytics.kpis.totalUnavailableQuantity)} dataQuality="actual" />
             <MetricCard title="Outstanding (awaiting supply)" value={formatQuantity(analytics.kpis.totalOutstandingQuantity)} dataQuality="actual" />
             <MetricCard title="Confirmed lost quantity" value={formatQuantity(analytics.kpis.totalConfirmedLostQuantity)} dataQuality="actual" />
+          </section>
+
+          <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard
               title="Estimated lost value"
               value={formatQuantity(analytics.kpis.totalEstimatedLostValue)}
@@ -189,46 +221,58 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
               }
               dataQuality={analytics.kpis.demandsWithoutEstimate > 0 ? "provisional" : "calculated"}
             />
+            <MetricCard
+              title="Confirmed lost value"
+              value={formatQuantity(analytics.kpis.totalConfirmedLostValue)}
+              description="From actually-confirmed LostSaleRecord entries -- never blended with the estimated figure above"
+              dataQuality="actual"
+            />
+            <MetricCard title="Affected orders" value={analytics.kpis.affectedOrderCount.toLocaleString()} dataQuality="actual" />
+            <MetricCard title="Affected customers" value={analytics.kpis.affectedCustomerCount.toLocaleString()} dataQuality="actual" />
           </section>
+
+          {analytics.kpis.mixedUnitsOfMeasure && (
+            <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <Info size={18} className="mt-0.5 shrink-0" />
+              <p>
+                The demand records in this view span more than one unit of measure, so the quantity totals above combine different units.
+                See each chart&apos;s own tooltip for a per-product breakdown with the correct unit for each product.
+              </p>
+            </div>
+          )}
 
           <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <RateStat label="Availability rate" ratePercent={analytics.kpis.availabilityRatePercent} sampleSize={analytics.sampleSize} sampleLabel="demand records" />
             <RateStat label="Shortage rate" ratePercent={analytics.kpis.shortageRatePercent} sampleSize={analytics.sampleSize} sampleLabel="demand records" />
           </section>
 
-          <SectionCard title="Requested vs. unavailable quantity over time" description="Same unit (quantity), one shared axis">
-            <RequestedVsUnavailableTrendChart data={analytics.trend} />
+          <SectionCard title="Requested vs. unavailable quantity over time" description="Same unit (quantity), one shared axis -- hover a point for the full product/customer breakdown behind it">
+            <RequestedVsUnavailableTrendChart data={analytics.trend} basePath={basePath} baseQuery={baseQuery} />
           </SectionCard>
 
-          <SectionCard title="Estimated lost value over time" description="A different scale (currency) from the quantity trend above -- its own chart, its own axis">
-            <EstimatedLostValueTrendChart data={analytics.trend} />
+          <SectionCard title="Estimated lost value over time" description="A different scale (currency) from the quantity trend above -- its own chart, its own axis -- hover a point for the product-contribution table and the estimated-vs-confirmed split">
+            <EstimatedLostValueTrendChart data={analytics.trend} basePath={basePath} baseQuery={baseQuery} />
           </SectionCard>
 
           <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-            <SectionCard title="Top unavailable products" description={`Top ${analytics.topUnavailableProducts.length} by unavailable quantity`}>
-              <TopUnavailableBarChart
-                rows={analytics.topUnavailableProducts.map((p) => ({ label: p.productDescriptionSnapshot, unavailableQuantity: Number(p.unavailableQuantity) }))}
-                entityLabel="products"
-              />
+            <SectionCard title="Top unavailable products" description={`Top ${analytics.topUnavailableProducts.length} by unavailable quantity -- hover a bar for its full breakdown`}>
+              <TopUnavailableBarChart rows={analytics.topUnavailableProducts} entityLabel="products" kind="product" basePath={basePath} baseQuery={baseQuery} />
             </SectionCard>
-            <SectionCard title="Top unavailable customers" description={`Top ${analytics.topUnavailableCustomers.length} by unavailable quantity`}>
-              <TopUnavailableBarChart
-                rows={analytics.topUnavailableCustomers.map((c) => ({ label: c.customerName, unavailableQuantity: Number(c.unavailableQuantity) }))}
-                entityLabel="customers"
-              />
+            <SectionCard title="Top unavailable customers" description={`Top ${analytics.topUnavailableCustomers.length} by unavailable quantity -- hover a bar for its full breakdown`}>
+              <TopUnavailableBarChart rows={analytics.topUnavailableCustomers} entityLabel="customers" kind="customer" basePath={basePath} baseQuery={baseQuery} />
             </SectionCard>
           </section>
 
-          <SectionCard title="Requested vs. found vs. unavailable, by product" description="Same top-10-by-unavailable product set as above, all three measures">
-            <RequestedFoundUnavailableChart data={analytics.requestedFoundUnavailableByProduct} />
+          <SectionCard title="Requested vs. found vs. unavailable, by product" description="Same top-10-by-unavailable product set as above, all three measures -- hover a bar for its full breakdown">
+            <RequestedFoundUnavailableChart data={analytics.requestedFoundUnavailableByProduct} basePath={basePath} baseQuery={baseQuery} />
           </SectionCard>
 
           <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
             <SectionCard title="Shortage rate by product" description="Ranked only among products with 3+ demand records -- a single-record 100% is never shown as a rate">
-              <ShortageRateBarChart rows={analytics.shortageRateByProduct} entityLabel="product" />
+              <ShortageRateBarChart rows={analytics.shortageRateByProduct} entityLabel="product" kind="product" basePath={basePath} baseQuery={baseQuery} />
             </SectionCard>
             <SectionCard title="Shortage rate by customer" description="Ranked only among customers with 3+ demand records -- a single-record 100% is never shown as a rate">
-              <ShortageRateBarChart rows={analytics.shortageRateByCustomer} entityLabel="customer" />
+              <ShortageRateBarChart rows={analytics.shortageRateByCustomer} entityLabel="customer" kind="customer" basePath={basePath} baseQuery={baseQuery} />
             </SectionCard>
           </section>
 
@@ -241,36 +285,50 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
           </SectionCard>
 
           <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-            <SectionCard title="By loss reason" description="LostSaleRecord.reason, across every confirmed-lost record in scope">
+            <SectionCard title="By loss reason" description="LostSaleRecord.reason, across every confirmed-lost record in scope -- click a reason to see its records">
               {analytics.lossReasonBreakdown.length === 0 ? (
                 <EmptyState message="No confirmed lost-sale records in the selected range." />
               ) : (
-                <div className="space-y-3">
+                <div className="space-y-4">
                   {analytics.lossReasonBreakdown.map((row) => (
-                    <BarRow
+                    <Link
                       key={row.reason}
-                      label={LOST_SALE_REASON_LABELS[row.reason] ?? row.reason}
-                      count={row.recordCount}
-                      maxCount={Math.max(...analytics.lossReasonBreakdown.map((r) => r.recordCount))}
-                      color="bg-[#2a78d6]"
-                    />
+                      href={buildDrillDownHref(basePath, baseQuery, { lostSalesReason: row.reason })}
+                      className="-m-1.5 block rounded-lg p-1.5 transition hover:bg-gray-50"
+                    >
+                      <BarRow
+                        label={LOST_SALE_REASON_LABELS[row.reason] ?? row.reason}
+                        count={row.recordCount}
+                        maxCount={Math.max(...analytics.lossReasonBreakdown.map((r) => r.recordCount))}
+                        color="bg-[#2a78d6]"
+                      />
+                      <p className="mt-1 text-[11px] text-[#9AA59E]">
+                        {formatQuantity(row.totalQuantity)} unit(s) -- confirmed value {formatQuantity(row.totalConfirmedValue)}
+                      </p>
+                    </Link>
                   ))}
                 </div>
               )}
             </SectionCard>
-            <SectionCard title="By customer decision" description="CustomerDecisionEvent.decisionType, across every recorded decision in scope">
+            <SectionCard title="By customer decision" description="CustomerDecisionEvent.decisionType, across every recorded decision in scope -- click a decision type to see its records">
               {analytics.decisionTypeBreakdown.length === 0 ? (
                 <EmptyState message="No customer decisions recorded in the selected range." />
               ) : (
-                <div className="space-y-3">
+                <div className="space-y-4">
                   {analytics.decisionTypeBreakdown.map((row) => (
-                    <BarRow
+                    <Link
                       key={row.decisionType}
-                      label={DECISION_TYPE_LABELS[row.decisionType] ?? row.decisionType}
-                      count={row.eventCount}
-                      maxCount={Math.max(...analytics.decisionTypeBreakdown.map((r) => r.eventCount))}
-                      color="bg-[#1baf7a]"
-                    />
+                      href={buildDrillDownHref(basePath, baseQuery, { customerDecisionType: row.decisionType })}
+                      className="-m-1.5 block rounded-lg p-1.5 transition hover:bg-gray-50"
+                    >
+                      <BarRow
+                        label={DECISION_TYPE_LABELS[row.decisionType] ?? row.decisionType}
+                        count={row.eventCount}
+                        maxCount={Math.max(...analytics.decisionTypeBreakdown.map((r) => r.eventCount))}
+                        color="bg-[#1baf7a]"
+                      />
+                      <p className="mt-1 text-[11px] text-[#9AA59E]">{formatQuantity(row.totalQuantity)} unit(s) across these events</p>
+                    </Link>
                   ))}
                 </div>
               )}

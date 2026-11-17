@@ -8,10 +8,11 @@ import {
   YAxis,
 } from "recharts";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartLegend, ChartLegendContent, type ChartConfig } from "@/components/ui/chart";
+import { ProductBarTooltipContent, CustomerBarTooltipContent } from "@/components/charts/rich-tooltip";
 import { EmptyState } from "../../../reports/_components/ui";
 import type {
   LostSalesProductBreakdown,
-  LostSalesShortageRateEntry,
+  LostSalesCustomerBreakdown,
   LostSalesCompositionBreakdown,
   LostSalesDistribution,
 } from "@/lib/lost-sales/analytics-queries";
@@ -67,31 +68,120 @@ const HISTOGRAM_CONFIG: ChartConfig = {
 
 const AXIS_TICK_STYLE = { fontSize: 11, fill: "var(--chart-muted-ink)" };
 
+// Chart intelligence enhancement: matches components/charts/lost-sales-trend.tsx's
+// own DEFAULT_BASE_PATH/DEFAULT_BASE_QUERY exactly -- every chart's drill-down
+// defaults to this same page with no extra filter, so a caller that doesn't
+// pass these (none do yet outside page.tsx, which passes its own current
+// filters) still gets a working, if unfiltered, drill-down link.
+const DEFAULT_BASE_PATH = "/lost-sales/analytics";
+const DEFAULT_BASE_QUERY: Record<string, string> = {};
+
 function truncateLabel(label: string, max = 22): string {
   return label.length > max ? `${label.slice(0, max - 1)}…` : label;
 }
 
-/** Spec: top-N unavailable products/customers -- a single series (unavailable quantity), so no legend box; horizontal bars read long product/customer names better than a vertical layout would at N=10. */
-export function TopUnavailableBarChart({ rows, entityLabel }: { rows: { label: string; unavailableQuantity: number }[]; entityLabel: string }) {
+type EntityBreakdownRow = LostSalesProductBreakdown | LostSalesCustomerBreakdown;
+
+function isProductBreakdown(row: EntityBreakdownRow): row is LostSalesProductBreakdown {
+  return "productDescriptionSnapshot" in row;
+}
+
+function entityLabelOf(row: EntityBreakdownRow): string {
+  return isProductBreakdown(row) ? row.productDescriptionSnapshot : row.customerName;
+}
+
+/**
+ * Shared rich-tooltip picker for the per-product/per-customer bar charts
+ * below -- the SAME aggregate shape (LostSalesProductBreakdown /
+ * LostSalesCustomerBreakdown) backs both products and customers, so one
+ * switch here, not two charts each re-deciding it.
+ */
+function entityTooltip(kind: "product" | "customer", basePath: string, baseQuery: Record<string, string>) {
+  return kind === "product" ? (
+    <ProductBarTooltipContent basePath={basePath} baseQuery={baseQuery} />
+  ) : (
+    <CustomerBarTooltipContent basePath={basePath} baseQuery={baseQuery} />
+  );
+}
+
+/**
+ * Spec: top-N unavailable products/customers -- a single series
+ * (unavailable quantity), so no legend box; horizontal bars read long
+ * product/customer names better than a vertical layout would at N=10.
+ *
+ * Chart intelligence enhancement: `rows` is now the FULL per-entity
+ * breakdown (not a flattened {label, unavailableQuantity} pair), so each
+ * bar's own tooltip shows the complete picture spec sections 2-4 ask for
+ * -- requested/found/unavailable, estimated vs. confirmed value,
+ * affected orders/customers -- plus a drill-down link into this same
+ * page's own filters/drilldown table. `unavailableQuantityNum` is added
+ * (not overwritten in place) purely for Recharts' own numeric `dataKey`;
+ * the original `unavailableQuantity` STRING field the tooltip formats
+ * stays untouched on the same row object.
+ */
+export function TopUnavailableBarChart({
+  rows,
+  entityLabel,
+  kind,
+  basePath = DEFAULT_BASE_PATH,
+  baseQuery = DEFAULT_BASE_QUERY,
+}: {
+  rows: EntityBreakdownRow[];
+  entityLabel: string;
+  kind: "product" | "customer";
+  basePath?: string;
+  baseQuery?: Record<string, string>;
+}) {
   if (rows.length === 0) return <EmptyState message={`No ${entityLabel} shortages in the selected range.`} />;
-  const data = rows.map((row) => ({ ...row, displayLabel: truncateLabel(row.label) }));
+  const data = rows.map((row) => ({
+    ...row,
+    displayLabel: truncateLabel(entityLabelOf(row)),
+    unavailableQuantityNum: Number(row.unavailableQuantity),
+  }));
   return (
     <ChartContainer config={SINGLE_UNAVAILABLE_CONFIG} className="aspect-auto h-[320px] w-full">
       <BarChart data={data} layout="vertical" margin={{ top: 4, right: 16, left: 4, bottom: 0 }}>
         <CartesianGrid horizontal={false} />
         <XAxis type="number" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} />
         <YAxis dataKey="displayLabel" type="category" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} width={140} />
-        <ChartTooltip content={<ChartTooltipContent labelKey="label" />} />
-        <Bar dataKey="unavailableQuantity" fill="var(--color-unavailableQuantity)" radius={4} maxBarSize={22} />
+        <ChartTooltip content={entityTooltip(kind, basePath, baseQuery)} />
+        <Bar dataKey="unavailableQuantityNum" fill="var(--color-unavailableQuantity)" radius={4} maxBarSize={22} />
       </BarChart>
     </ChartContainer>
   );
 }
 
-/** Spec: "requested vs found vs unavailable, grouped bars" -- three series (fixed categorical colors, reused from the trend chart above), so a legend is required. */
-export function RequestedFoundUnavailableChart({ data }: { data: LostSalesProductBreakdown[] }) {
+/**
+ * Spec: "requested vs found vs unavailable, grouped bars" -- three series
+ * (fixed categorical colors, reused from the trend chart above), so a
+ * legend is required.
+ *
+ * Chart intelligence enhancement: each bar's own tooltip now shows this
+ * product's full breakdown (value split, affected orders/customers,
+ * drill-down link), not just the three plotted numbers. Unlike
+ * TopUnavailableBarChart above, the three plotted fields here are
+ * overwritten IN PLACE with their numeric form (not added under new
+ * names) -- components/ui/chart.tsx's ChartLegendContent looks up each
+ * series' label by `config[dataKey]`, so the dataKey must stay exactly
+ * `requestedQuantity`/`foundQuantity`/`unavailableQuantity` to match
+ * QUANTITY_CHART_CONFIG's own keys, or the legend renders with no text.
+ * Same pattern components/charts/lost-sales-trend.tsx's trend chart
+ * already uses for the identical reason. ProductBarTooltipContent's own
+ * formatQty/formatPlainAmount coerce via Number.parseFloat either way,
+ * so the tooltip still renders correctly off this now-numeric field.
+ */
+export function RequestedFoundUnavailableChart({
+  data,
+  basePath = DEFAULT_BASE_PATH,
+  baseQuery = DEFAULT_BASE_QUERY,
+}: {
+  data: LostSalesProductBreakdown[];
+  basePath?: string;
+  baseQuery?: Record<string, string>;
+}) {
   if (data.length === 0) return <EmptyState message="No product shortages in the selected range." />;
   const rows = data.map((row) => ({
+    ...row,
     displayLabel: truncateLabel(row.productDescriptionSnapshot),
     requestedQuantity: Number(row.requestedQuantity),
     foundQuantity: Number(row.foundQuantity),
@@ -103,7 +193,7 @@ export function RequestedFoundUnavailableChart({ data }: { data: LostSalesProduc
         <CartesianGrid horizontal={false} />
         <XAxis type="number" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} />
         <YAxis dataKey="displayLabel" type="category" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} width={140} />
-        <ChartTooltip content={<ChartTooltipContent />} />
+        <ChartTooltip content={<ProductBarTooltipContent basePath={basePath} baseQuery={baseQuery} />} />
         <ChartLegend content={<ChartLegendContent />} />
         <Bar dataKey="requestedQuantity" fill="var(--color-requestedQuantity)" radius={3} maxBarSize={14} />
         <Bar dataKey="foundQuantity" fill="var(--color-foundQuantity)" radius={3} maxBarSize={14} />
@@ -113,20 +203,53 @@ export function RequestedFoundUnavailableChart({ data }: { data: LostSalesProduc
   );
 }
 
-/** Spec: shortage rate ranking by product/customer -- single series (a percentage), gated upstream by MIN_DEMAND_COUNT_FOR_RATE_RANKING so a 100%-on-one-record entry never appears here (spec's "avoid misleading analytics"). */
-export function ShortageRateBarChart({ rows, entityLabel }: { rows: LostSalesShortageRateEntry[]; entityLabel: string }) {
+/**
+ * Spec: shortage rate ranking by product/customer -- single series (a
+ * percentage), gated upstream by MIN_DEMAND_COUNT_FOR_RATE_RANKING so a
+ * 100%-on-one-record entry never appears here (spec's "avoid misleading
+ * analytics").
+ *
+ * Chart intelligence enhancement: `rows` is now the full per-entity
+ * breakdown (analytics-queries.ts's shortageRateByProduct/
+ * shortageRateByCustomer return the same rich shape every other
+ * product/customer chart on this page uses), so this ranking gets the
+ * identical rich tooltip -- not a bare label+rate pair.
+ * `shortageRatePercentNum` coalesces the breakdown's own nullable rate to
+ * 0 purely for Recharts' numeric dataKey; a null can't reach this chart
+ * in practice (analytics-queries.ts's rankByShortageRate already filters
+ * out null-rate aggregates before this array is built), but the
+ * coalesce keeps the Bar's type contract honest without re-asserting
+ * that invariant here.
+ */
+export function ShortageRateBarChart({
+  rows,
+  entityLabel,
+  kind,
+  basePath = DEFAULT_BASE_PATH,
+  baseQuery = DEFAULT_BASE_QUERY,
+}: {
+  rows: EntityBreakdownRow[];
+  entityLabel: string;
+  kind: "product" | "customer";
+  basePath?: string;
+  baseQuery?: Record<string, string>;
+}) {
   if (rows.length === 0) {
     return <EmptyState message={`Not enough repeat demand per ${entityLabel} yet to rank a reliable shortage rate.`} />;
   }
-  const data = rows.map((row) => ({ ...row, displayLabel: truncateLabel(row.label) }));
+  const data = rows.map((row) => ({
+    ...row,
+    displayLabel: truncateLabel(entityLabelOf(row)),
+    shortageRatePercentNum: row.shortageRatePercent ?? 0,
+  }));
   return (
     <ChartContainer config={SHORTAGE_RATE_CONFIG} className="aspect-auto h-[320px] w-full">
       <BarChart data={data} layout="vertical" margin={{ top: 4, right: 16, left: 4, bottom: 0 }}>
         <CartesianGrid horizontal={false} />
         <XAxis type="number" domain={[0, 100]} tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} unit="%" />
         <YAxis dataKey="displayLabel" type="category" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} width={140} />
-        <ChartTooltip content={<ChartTooltipContent labelKey="label" />} />
-        <Bar dataKey="shortageRatePercent" fill="var(--color-shortageRatePercent)" radius={4} maxBarSize={22} />
+        <ChartTooltip content={entityTooltip(kind, basePath, baseQuery)} />
+        <Bar dataKey="shortageRatePercentNum" fill="var(--color-shortageRatePercent)" radius={4} maxBarSize={22} />
       </BarChart>
     </ChartContainer>
   );
