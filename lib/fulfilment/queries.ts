@@ -307,11 +307,25 @@ export type DispatchQueueOrderSummary = {
   openDispatchCount: number;
   isDemo: boolean;
   createdAt: string;
+  /** Final completion phase, section 7 -- non-CANCELLED DispatchRecord.status values, for getEffectiveOrderStatus. */
+  dispatchStatuses: string[];
 };
 
 export type DispatchQueueResult = {
   orders: DispatchQueueOrderSummary[];
   pagination: { page: number; pageSize: number; totalItems: number; totalPages: number };
+};
+
+/**
+ * The exact set of DispatchRecord conditions that mean "this order is
+ * fully delivered and needs no further dispatch/delivery attention" --
+ * shared between listDispatchQueue's exclusion below and
+ * listDeliveredOrders' inclusion, so the two lists can never disagree
+ * about where the line sits.
+ */
+const FULLY_DELIVERED_CONDITION: Prisma.CustomerOrderWhereInput = {
+  status: "READY_TO_INVOICE",
+  dispatchRecords: { some: { status: "DELIVERED" }, none: { status: { in: ["PLANNED", "DEPARTED"] } } },
 };
 
 /**
@@ -321,10 +335,23 @@ export type DispatchQueueResult = {
  * anything has been dispatched yet) or has a DispatchRecord still in
  * flight (PLANNED awaiting departure, or DEPARTED awaiting a delivery
  * outcome) -- i.e. every order that could still need dispatch/delivery
- * attention. Once every dispatch for an order is DELIVERED or CANCELLED
- * and the order itself has moved off READY_TO_INVOICE (handed to SAP),
- * it drops off this queue, the same "done, so it leaves the queue"
- * convention lib/picking/queries.ts's listPickingQueue already follows.
+ * attention.
+ *
+ * Final completion phase, section 7 bug fix: this used to additionally
+ * require `status !== "READY_TO_INVOICE"` to drop an order off the
+ * queue once done, on the assumption that status eventually moves off
+ * READY_TO_INVOICE once "handed to SAP" -- but CustomerOrder.status
+ * never actually changes again after authorize-picking.ts sets it to
+ * READY_TO_INVOICE (prisma/schema.prisma's own OrderStatus comment
+ * documents why: it's the SAP-handover gate, not a tracked terminal
+ * state), so that assumption was false and every ever-authorized order
+ * stayed on this queue forever, even long after every one of its
+ * dispatches was DELIVERED. The real "done" signal is DispatchRecord
+ * state, not OrderStatus -- FULLY_DELIVERED_CONDITION above is
+ * subtracted out here so a fully-delivered order finally leaves the
+ * active queue (and appears in listDeliveredOrders/"/deliveries/history"
+ * instead), the same "done, so it leaves the queue" convention
+ * lib/picking/queries.ts's listPickingQueue already follows.
  *
  * openDispatchCount is read via a filtered relation `select` (not a
  * filtered `_count`), deliberately -- the plain filtered-select form has
@@ -335,7 +362,10 @@ export type DispatchQueueResult = {
  */
 export async function listDispatchQueue(options: { page: number; pageSize: number; includeDemo?: boolean }): Promise<DispatchQueueResult> {
   const where: Prisma.CustomerOrderWhereInput = {
-    OR: [{ status: "READY_TO_INVOICE" }, { dispatchRecords: { some: { status: { in: ["PLANNED", "DEPARTED"] } } } }],
+    AND: [
+      { OR: [{ status: "READY_TO_INVOICE" }, { dispatchRecords: { some: { status: { in: ["PLANNED", "DEPARTED"] } } } }] },
+      { NOT: FULLY_DELIVERED_CONDITION },
+    ],
   };
   if (!options.includeDemo) {
     where.isDemo = false;
@@ -357,23 +387,113 @@ export async function listDispatchQueue(options: { page: number; pageSize: numbe
         isDemo: true,
         createdAt: true,
         customer: { select: { id: true, name: true } },
-        dispatchRecords: { where: { status: { in: ["PLANNED", "DEPARTED"] } }, select: { id: true } },
+        // Final completion phase, section 7: fetched WITHOUT a status
+        // filter (unlike before this fix) so both openDispatchCount and
+        // dispatchStatuses (for getEffectiveOrderStatus) can be derived
+        // from the one relation load below -- Prisma does not support
+        // selecting the same relation twice under two different filters
+        // in a single query.
+        dispatchRecords: { select: { status: true } },
       },
     }),
   ]);
 
   return {
-    orders: rows.map((order) => ({
-      id: order.id,
-      reference: order.reference,
-      customerPoReference: order.customerPoReference,
-      status: order.status,
-      customer: order.customer,
-      requestedDeliveryDate: order.requestedDeliveryDate ? order.requestedDeliveryDate.toISOString() : null,
-      openDispatchCount: order.dispatchRecords.length,
-      isDemo: order.isDemo,
-      createdAt: order.createdAt.toISOString(),
-    })),
+    orders: rows.map((order) => {
+      const nonCancelled = order.dispatchRecords.filter((d) => d.status !== "CANCELLED");
+      return {
+        id: order.id,
+        reference: order.reference,
+        customerPoReference: order.customerPoReference,
+        status: order.status,
+        customer: order.customer,
+        requestedDeliveryDate: order.requestedDeliveryDate ? order.requestedDeliveryDate.toISOString() : null,
+        openDispatchCount: order.dispatchRecords.filter((d) => d.status === "PLANNED" || d.status === "DEPARTED").length,
+        isDemo: order.isDemo,
+        createdAt: order.createdAt.toISOString(),
+        dispatchStatuses: nonCancelled.map((d) => d.status),
+      };
+    }),
+    pagination: {
+      page: options.page,
+      pageSize: options.pageSize,
+      totalItems,
+      totalPages: Math.max(1, Math.ceil(totalItems / options.pageSize)),
+    },
+  };
+}
+
+export type DeliveredOrderSummary = {
+  id: string;
+  reference: string;
+  customerPoReference: string | null;
+  customer: { id: string; name: string } | null;
+  requestedDeliveryDate: string | null;
+  /** The most recent DeliveryRecord.recordedAt across this order's dispatches -- when it actually finished, not when the order was created. */
+  lastDeliveredAt: string | null;
+  isDemo: boolean;
+};
+
+export type DeliveredOrdersResult = {
+  orders: DeliveredOrderSummary[];
+  pagination: { page: number; pageSize: number; totalItems: number; totalPages: number };
+};
+
+/**
+ * Final completion phase, section 7: the "Delivered History" surface the
+ * directive names -- did not exist before this fix, because
+ * listDispatchQueue's own (buggy) filter never excluded a fully-
+ * delivered order in the first place, so there was never anywhere for
+ * one to "graduate" to. FULLY_DELIVERED_CONDITION is the exact complement
+ * of listDispatchQueue's own exclusion, so between the two lists every
+ * order that has ever reached READY_TO_INVOICE appears in EXACTLY one of
+ * them, never both and never neither.
+ */
+export async function listDeliveredOrders(options: { page: number; pageSize: number; includeDemo?: boolean }): Promise<DeliveredOrdersResult> {
+  const where: Prisma.CustomerOrderWhereInput = { ...FULLY_DELIVERED_CONDITION };
+  if (!options.includeDemo) {
+    where.isDemo = false;
+  }
+
+  const [totalItems, rows] = await Promise.all([
+    prisma.customerOrder.count({ where }),
+    prisma.customerOrder.findMany({
+      where,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      skip: (options.page - 1) * options.pageSize,
+      take: options.pageSize,
+      select: {
+        id: true,
+        reference: true,
+        customerPoReference: true,
+        requestedDeliveryDate: true,
+        isDemo: true,
+        customer: { select: { id: true, name: true } },
+        dispatchRecords: {
+          where: { status: "DELIVERED" },
+          select: { deliveryRecord: { select: { recordedAt: true } } },
+        },
+      },
+    }),
+  ]);
+
+  return {
+    orders: rows.map((order) => {
+      const deliveredTimestamps = order.dispatchRecords
+        .map((d) => d.deliveryRecord?.recordedAt)
+        .filter((date): date is Date => date !== null && date !== undefined);
+      const lastDeliveredAt = deliveredTimestamps.length > 0 ? new Date(Math.max(...deliveredTimestamps.map((d) => d.getTime()))) : null;
+
+      return {
+        id: order.id,
+        reference: order.reference,
+        customerPoReference: order.customerPoReference,
+        customer: order.customer,
+        requestedDeliveryDate: order.requestedDeliveryDate ? order.requestedDeliveryDate.toISOString() : null,
+        lastDeliveredAt: lastDeliveredAt ? lastDeliveredAt.toISOString() : null,
+        isDemo: order.isDemo,
+      };
+    }),
     pagination: {
       page: options.page,
       pageSize: options.pageSize,

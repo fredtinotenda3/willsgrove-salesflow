@@ -76,6 +76,8 @@ export default async function CustomerProfilePage({ params, searchParams }: Rout
     communicationStatus: null,
     currency: null,
     lostSalesReason: null,
+    unfulfilledDemandStatus: null,
+    customerDecisionType: null,
     includeDemo: false,
     productCategory: null,
     productSearch: null,

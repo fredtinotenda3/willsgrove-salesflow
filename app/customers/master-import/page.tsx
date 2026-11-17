@@ -1,12 +1,13 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
   FileSpreadsheet,
+  ShieldAlert,
   Upload,
 } from "lucide-react";
 import Sidebar from "../../components/sidebar";
@@ -68,8 +69,39 @@ function display(value: string | null, fallback: string): string {
   return value === null || value === "" ? fallback : value;
 }
 
+type AccessState = "checking" | "allowed" | "denied";
+
 export default function CustomerMasterImportPage() {
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Final completion phase, section 9: this is a SALES_MANAGER/
+  // ADMINISTRATOR-only workflow now (see the API routes' own comments on
+  // why, unlike the project's other CSV-import routes). The real
+  // enforcement is server-side on those routes regardless of what this
+  // resolves to -- this is purely so a SALESPERSON who navigates here
+  // directly sees a clear explanation up front instead of only
+  // discovering it after selecting a file and clicking "Check file".
+  // Starts "checking" (renders nothing but the shell) rather than
+  // defaulting to "allowed" or "denied", so there's no flash of either
+  // state before the session resolves.
+  const [access, setAccess] = useState<AccessState>("checking");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/auth/session", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        const role = data?.user?.role;
+        setAccess(role === "SALES_MANAGER" || role === "ADMINISTRATOR" ? "allowed" : "denied");
+      })
+      .catch(() => {
+        if (!cancelled) setAccess("denied");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const [file, setFile] = useState<File | null>(null);
   const [stage, setStage] = useState<Stage>("idle");
@@ -210,169 +242,197 @@ export default function CustomerMasterImportPage() {
             </p>
           </div>
 
-          {notice && (
-            <div className="mb-5 flex items-start gap-3 rounded-xl border border-[#F1D9D9] bg-[#FFF6F6] px-4 py-3 text-sm text-[#9B3B3B]">
-              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-              <p>{notice}</p>
-            </div>
+          {access === "denied" && (
+            <section className="rounded-2xl border border-[#E8ECE7] bg-white p-6">
+              <div className="flex items-center gap-2 text-[#9B3B3B]">
+                <ShieldAlert size={20} />
+                <h3 className="text-lg font-semibold">You don&apos;t have permission to import customers</h3>
+              </div>
+              <p className="mt-2 text-sm text-[#7D8981]">
+                Importing customer master data is restricted to sales managers and administrators. If you believe
+                you should have access, ask an administrator to update your role.
+              </p>
+            </section>
           )}
 
-          {stage === "done" && result ? (
-            <section className="rounded-2xl border border-[#E8ECE7] bg-white p-6">
-              <div className="flex items-center gap-2 text-[#347447]">
-                <CheckCircle2 size={20} />
-                <h3 className="text-lg font-semibold">{result.message}</h3>
-              </div>
-              <p className="mt-1 text-sm text-[#7D8981]">File: {result.fileName}</p>
-              <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <SummaryCard label="Created" value={result.summary.created} />
-                <SummaryCard label="Updated" value={result.summary.updated} />
-                <SummaryCard label="Unchanged" value={result.summary.unchanged} />
-              </div>
-              <div className="mt-6 flex flex-wrap gap-3">
-                <Link href="/catalogue/health" className="rounded-lg bg-[#315C43] px-4 py-2 text-sm font-medium text-white hover:bg-[#274D37]">
-                  View catalogue health report
-                </Link>
-                <Link href="/customers" className="rounded-lg border border-[#E5EAE4] bg-white px-4 py-2 text-sm font-medium hover:bg-[#F7F8F6]">
-                  View customers
-                </Link>
-                <button onClick={resetAll} className="rounded-lg border border-[#E5EAE4] bg-white px-4 py-2 text-sm font-medium hover:bg-[#F7F8F6]">
-                  Import another file
-                </button>
-              </div>
-            </section>
-          ) : (
+          {access === "allowed" && (
             <>
-              <section className="rounded-2xl border border-[#E8ECE7] bg-white p-6">
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-                  <label className="flex flex-1 cursor-pointer items-center gap-3 rounded-xl border border-dashed border-[#CFD8D1] px-4 py-4 hover:bg-[#F7F8F6]">
-                    <FileSpreadsheet size={20} className="text-[#5E7366]" />
-                    <span className="min-w-0 flex-1 truncate text-sm">
-                      {file ? file.name : "Choose a customer-master CSV file"}
-                    </span>
-                    <input
-                      ref={inputRef}
-                      type="file"
-                      accept=".csv,text/csv"
-                      onChange={handleFileChange}
-                      disabled={busy}
-                      className="hidden"
-                    />
-                  </label>
-                  <button
-                    onClick={runPreview}
-                    disabled={!file || busy}
-                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#315C43] px-5 py-3 text-sm font-medium text-white hover:bg-[#274D37] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <Upload size={15} />
-                    {stage === "previewing" ? "Checking file..." : "Check file"}
-                  </button>
+              {notice && (
+                <div className="mb-5 flex items-start gap-3 rounded-xl border border-[#F1D9D9] bg-[#FFF6F6] px-4 py-3 text-sm text-[#9B3B3B]">
+                  <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                  <p>{notice}</p>
                 </div>
-              </section>
-
-              {errorReport && (
-                <section className="mt-6 rounded-2xl border border-[#F1D9D9] bg-[#FFF6F6] p-6">
-                  <h3 className="text-base font-semibold text-[#9B3B3B]">{errorReport.message}</h3>
-                  <p className="mt-1 text-sm text-[#9B3B3B]">
-                    Nothing can be imported until these are fixed in the file.
-                    {errorReport.errorCount > 0 && ` ${formatNumber(errorReport.errorCount)} problem(s) found.`}
-                  </p>
-                  <ul className="mt-4 space-y-1 text-sm">
-                    {errorReport.errors.map((error, index) => (
-                      <li key={index}>
-                        <span className="font-medium">Row {error.row}:</span> {error.message}
-                      </li>
-                    ))}
-                  </ul>
-                </section>
               )}
 
-              {preview && (
+              {stage === "done" && result ? (
+                <section className="rounded-2xl border border-[#E8ECE7] bg-white p-6">
+                  <div className="flex items-center gap-2 text-[#347447]">
+                    <CheckCircle2 size={20} />
+                    <h3 className="text-lg font-semibold">{result.message}</h3>
+                  </div>
+                  <p className="mt-1 text-sm text-[#7D8981]">File: {result.fileName}</p>
+                  <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-3">
+                    <SummaryCard label="Created" value={result.summary.created} />
+                    <SummaryCard label="Updated" value={result.summary.updated} />
+                    <SummaryCard label="Unchanged" value={result.summary.unchanged} />
+                  </div>
+                  <div className="mt-6 flex flex-wrap gap-3">
+                    <Link href="/catalogue/health" className="rounded-lg bg-[#315C43] px-4 py-2 text-sm font-medium text-white hover:bg-[#274D37]">
+                      View catalogue health report
+                    </Link>
+                    <Link href="/customers" className="rounded-lg border border-[#E5EAE4] bg-white px-4 py-2 text-sm font-medium hover:bg-[#F7F8F6]">
+                      View customers
+                    </Link>
+                    <button onClick={resetAll} className="rounded-lg border border-[#E5EAE4] bg-white px-4 py-2 text-sm font-medium hover:bg-[#F7F8F6]">
+                      Import another file
+                    </button>
+                  </div>
+                </section>
+              ) : (
                 <>
-                  <section className="mt-6 rounded-2xl border border-[#E8ECE7] bg-white p-6">
-                    <h3 className="text-base font-semibold">Preview: {preview.fileName}</h3>
-                    <p className="mt-1 text-sm text-[#7D8981]">The file is valid. Nothing has been saved yet.</p>
-                    <div className="mt-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
-                      <SummaryCard label="New customers" value={preview.summary.newCustomers} />
-                      <SummaryCard label="Changed customers" value={preview.summary.changedCustomers} />
-                      <SummaryCard label="Unchanged" value={preview.summary.unchangedCustomers} />
-                      <SummaryCard label="Unmatched price lists" value={preview.summary.unmatchedPriceListCodes} />
+                  <section className="rounded-2xl border border-[#E8ECE7] bg-white p-6">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                      <label className="flex flex-1 cursor-pointer items-center gap-3 rounded-xl border border-dashed border-[#CFD8D1] px-4 py-4 hover:bg-[#F7F8F6]">
+                        <FileSpreadsheet size={20} className="text-[#5E7366]" />
+                        <span className="min-w-0 flex-1 truncate text-sm">
+                          {file ? file.name : "Choose a customer-master CSV file"}
+                        </span>
+                        <input
+                          ref={inputRef}
+                          type="file"
+                          accept=".csv,text/csv"
+                          onChange={handleFileChange}
+                          disabled={busy}
+                          className="hidden"
+                        />
+                      </label>
+                      <button
+                        onClick={runPreview}
+                        disabled={!file || busy}
+                        className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#315C43] px-5 py-3 text-sm font-medium text-white hover:bg-[#274D37] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Upload size={15} />
+                        {stage === "previewing" ? "Checking file..." : "Check file"}
+                      </button>
                     </div>
                   </section>
 
-                  {preview.unmatchedPriceListCodes.length > 0 && (
-                    <section className="mt-6 rounded-2xl border border-[#F0E3C2] bg-[#FFFAEE] p-6">
-                      <h3 className="text-base font-semibold text-[#8A6212]">Price list codes not found</h3>
-                      <p className="mt-1 text-sm text-[#8A6212]">
-                        These customers will still be saved, with no price list assigned yet:{" "}
-                        {preview.unmatchedPriceListCodes.join(", ")}.
+                  {errorReport && (
+                    <section className="mt-6 rounded-2xl border border-[#F1D9D9] bg-[#FFF6F6] p-6">
+                      <h3 className="text-base font-semibold text-[#9B3B3B]">{errorReport.message}</h3>
+                      <p className="mt-1 text-sm text-[#9B3B3B]">
+                        Nothing can be imported until these are fixed in the file.
+                        {errorReport.errorCount > 0 && ` ${formatNumber(errorReport.errorCount)} problem(s) found.`}
                       </p>
-                    </section>
-                  )}
-
-                  {preview.newSample.length > 0 && (
-                    <section className="mt-6 rounded-2xl border border-[#E8ECE7] bg-white p-6">
-                      <h3 className="text-base font-semibold">New customers (sample)</h3>
-                      <div className="mt-4 overflow-x-auto">
-                        <table className="w-full min-w-[700px] text-left text-sm">
-                          <thead className="text-xs text-[#89948D]">
-                            <tr>
-                              <th className="py-2 pr-4 font-medium">SAP code</th>
-                              <th className="py-2 pr-4 font-medium">Name</th>
-                              <th className="py-2 pr-4 font-medium">TIN</th>
-                              <th className="py-2 pr-4 font-medium">VAT reg</th>
-                              <th className="py-2 font-medium">Store code</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {preview.newSample.map((c) => (
-                              <tr key={c.customerCode} className="border-t border-[#EEF1ED]">
-                                <td className="py-2 pr-4 font-mono text-xs">{c.customerCode}</td>
-                                <td className="py-2 pr-4">{c.customerName}</td>
-                                <td className="py-2 pr-4 font-mono text-xs">{display(c.tin, "-")}</td>
-                                <td className="py-2 pr-4 font-mono text-xs">{display(c.vatNumber, "-")}</td>
-                                <td className="py-2 font-mono text-xs">{display(c.storeCode, "-")}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      {preview.summary.newCustomers > preview.newSample.length && (
-                        <p className="mt-3 text-xs text-[#89948D]">
-                          Showing {preview.newSample.length} of {formatNumber(preview.summary.newCustomers)} new customers.
+                      {errorReport.duplicateCodes.length > 0 && (
+                        // Final completion phase, section 9: "duplicate detection" called out
+                        // explicitly -- each duplicate CUSTOMER_CODE also already appears in
+                        // the row-by-row list below (the parser flags every repeated row, not
+                        // just the second occurrence), so this is a quick-scan summary on top
+                        // of that detail, not a replacement for it.
+                        <p className="mt-2 text-sm text-[#9B3B3B]">
+                          Duplicate CUSTOMER_CODE value{errorReport.duplicateCodes.length === 1 ? "" : "s"} within this
+                          file: <span className="font-mono text-xs">{errorReport.duplicateCodes.join(", ")}</span>
                         </p>
                       )}
+                      <ul className="mt-4 space-y-1 text-sm">
+                        {errorReport.errors.map((error, index) => (
+                          <li key={index}>
+                            <span className="font-medium">Row {error.row}:</span> {error.message}
+                          </li>
+                        ))}
+                      </ul>
                     </section>
                   )}
 
-                  <section className="mt-6 rounded-2xl border border-[#E8ECE7] bg-white p-6">
-                    {nothingToImport ? (
-                      <p className="text-sm text-[#5E7366]">Nothing to import. All customers are already up to date.</p>
-                    ) : (
-                      <>
-                        <label className="flex cursor-pointer items-start gap-3 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={confirmed}
-                            onChange={(event) => setConfirmed(event.target.checked)}
-                            disabled={busy}
-                            className="mt-0.5"
-                          />
-                          <span>
-                            I have reviewed the preview and want to create {formatNumber(preview.summary.newCustomers)} new
-                            and update {formatNumber(preview.summary.changedCustomers)} existing customer(s).
-                          </span>
-                        </label>
-                        <button
-                          onClick={runImport}
-                          disabled={!confirmed || busy}
-                          className="mt-4 rounded-lg bg-[#315C43] px-5 py-3 text-sm font-medium text-white hover:bg-[#274D37] disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {stage === "importing" ? "Importing..." : "Confirm and import"}
-                        </button>
-                      </>
-                    )}
-                  </section>
+                  {preview && (
+                    <>
+                      <section className="mt-6 rounded-2xl border border-[#E8ECE7] bg-white p-6">
+                        <h3 className="text-base font-semibold">Preview: {preview.fileName}</h3>
+                        <p className="mt-1 text-sm text-[#7D8981]">The file is valid. Nothing has been saved yet.</p>
+                        <div className="mt-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
+                          <SummaryCard label="New customers" value={preview.summary.newCustomers} />
+                          <SummaryCard label="Changed customers" value={preview.summary.changedCustomers} />
+                          <SummaryCard label="Unchanged" value={preview.summary.unchangedCustomers} />
+                          <SummaryCard label="Unmatched price lists" value={preview.summary.unmatchedPriceListCodes} />
+                        </div>
+                      </section>
+
+                      {preview.unmatchedPriceListCodes.length > 0 && (
+                        <section className="mt-6 rounded-2xl border border-[#F0E3C2] bg-[#FFFAEE] p-6">
+                          <h3 className="text-base font-semibold text-[#8A6212]">Price list codes not found</h3>
+                          <p className="mt-1 text-sm text-[#8A6212]">
+                            These customers will still be saved, with no price list assigned yet:{" "}
+                            {preview.unmatchedPriceListCodes.join(", ")}.
+                          </p>
+                        </section>
+                      )}
+
+                      {preview.newSample.length > 0 && (
+                        <section className="mt-6 rounded-2xl border border-[#E8ECE7] bg-white p-6">
+                          <h3 className="text-base font-semibold">New customers (sample)</h3>
+                          <div className="mt-4 overflow-x-auto">
+                            <table className="w-full min-w-[700px] text-left text-sm">
+                              <thead className="text-xs text-[#89948D]">
+                                <tr>
+                                  <th className="py-2 pr-4 font-medium">SAP code</th>
+                                  <th className="py-2 pr-4 font-medium">Name</th>
+                                  <th className="py-2 pr-4 font-medium">TIN</th>
+                                  <th className="py-2 pr-4 font-medium">VAT reg</th>
+                                  <th className="py-2 font-medium">Store code</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {preview.newSample.map((c) => (
+                                  <tr key={c.customerCode} className="border-t border-[#EEF1ED]">
+                                    <td className="py-2 pr-4 font-mono text-xs">{c.customerCode}</td>
+                                    <td className="py-2 pr-4">{c.customerName}</td>
+                                    <td className="py-2 pr-4 font-mono text-xs">{display(c.tin, "-")}</td>
+                                    <td className="py-2 pr-4 font-mono text-xs">{display(c.vatNumber, "-")}</td>
+                                    <td className="py-2 font-mono text-xs">{display(c.storeCode, "-")}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          {preview.summary.newCustomers > preview.newSample.length && (
+                            <p className="mt-3 text-xs text-[#89948D]">
+                              Showing {preview.newSample.length} of {formatNumber(preview.summary.newCustomers)} new customers.
+                            </p>
+                          )}
+                        </section>
+                      )}
+
+                      <section className="mt-6 rounded-2xl border border-[#E8ECE7] bg-white p-6">
+                        {nothingToImport ? (
+                          <p className="text-sm text-[#5E7366]">Nothing to import. All customers are already up to date.</p>
+                        ) : (
+                          <>
+                            <label className="flex cursor-pointer items-start gap-3 text-sm">
+                              <input
+                                type="checkbox"
+                                checked={confirmed}
+                                onChange={(event) => setConfirmed(event.target.checked)}
+                                disabled={busy}
+                                className="mt-0.5"
+                              />
+                              <span>
+                                I have reviewed the preview and want to create {formatNumber(preview.summary.newCustomers)} new
+                                and update {formatNumber(preview.summary.changedCustomers)} existing customer(s).
+                              </span>
+                            </label>
+                            <button
+                              onClick={runImport}
+                              disabled={!confirmed || busy}
+                              className="mt-4 rounded-lg bg-[#315C43] px-5 py-3 text-sm font-medium text-white hover:bg-[#274D37] disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {stage === "importing" ? "Importing..." : "Confirm and import"}
+                            </button>
+                          </>
+                        )}
+                      </section>
+                    </>
+                  )}
                 </>
               )}
             </>

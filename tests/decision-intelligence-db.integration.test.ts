@@ -78,6 +78,8 @@ function emptyDecisionFilters(overrides: Record<string, unknown> = {}) {
     communicationStatus: null,
     currency: null,
     lostSalesReason: null,
+    unfulfilledDemandStatus: null,
+    customerDecisionType: null,
     includeDemo: false,
     productCategory: null,
     productSearch: null,

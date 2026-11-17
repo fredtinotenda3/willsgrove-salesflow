@@ -122,6 +122,19 @@ export type ReportFilters = {
   decisionCategory: string | null;
   priority: string | null;
   recommendationStatus: string | null;
+  /**
+   * Additional Implementation Requirements (spec section 3: "Lost Sales
+   * Analytics Overhaul"). Two more, like lostSalesReason above, each
+   * mapping onto exactly one schema enum (UnfulfilledDemandStatus/
+   * CustomerDecisionType) and centrally validated in
+   * lib/reporting/filters.ts's parseReportFilters. Applied by
+   * lib/lost-sales/analytics-queries.ts's getLostSalesAnalytics; every
+   * other existing report function ignores them (same "every page
+   * states null when a filter doesn't apply to it" convention this
+   * whole type already follows).
+   */
+  unfulfilledDemandStatus: string | null;
+  customerDecisionType: string | null;
 };
 
 export type PaginationParams = {

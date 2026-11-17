@@ -1,9 +1,11 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getCurrentUser } from "@/lib/auth/current-user";
-import { getOperationalDashboard, type ActionQueueItem, type ActionQueueSeverity, type OperationalDashboard } from "@/lib/reporting/operational-dashboard";
+import { type ActionQueueItem, type ActionQueueSeverity, type OperationalDashboard } from "@/lib/reporting/operational-dashboard";
+import { getDecisionDashboard, type DashboardKpi } from "@/lib/reporting/decision-dashboard";
+import { RequestedVsUnavailableTrendChart, EstimatedLostValueTrendChart } from "@/components/charts/lost-sales-trend";
 import { listOrders } from "@/lib/order-queries";
-import { ORDER_STATUS_LABELS, ORDER_STATUS_STYLES, formatOrderDate, formatOrderAmount, initialsFor, avatarColorFor } from "@/lib/order-display";
+import { getEffectiveOrderStatus, formatOrderDate, formatOrderAmount, initialsFor, avatarColorFor } from "@/lib/order-display";
 import type { ReportFilters } from "@/lib/reporting/types";
 import Sidebar from "./components/sidebar";
 
@@ -13,7 +15,6 @@ import {
   Plus,
   ShoppingCart,
   Clock3,
-  PackageCheck,
   Truck,
   MoreHorizontal,
   ChevronDown,
@@ -21,6 +22,12 @@ import {
   AlertTriangle,
   AlertCircle,
   CheckCircle2,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  Gauge,
+  Receipt,
+  Wallet,
 } from "lucide-react";
 
 // Cache Components (next.config.ts: cacheComponents: true) can't prerender
@@ -33,54 +40,90 @@ import {
 export const instant = false;
 
 /**
- * Milestone 11 (Operational BI): every number and list on this page is
- * now real, non-demo data from the shared M11 reporting layer
- * (lib/reporting/operational-dashboard.ts) and the existing order list
- * query -- no more hardcoded pipeline counts, fake "10 minutes ago"
- * activity feed, or fabricated order rows. This dashboard is the "one
- * reliable operational intelligence layer" spec section 2 calls for, not
- * a page with its own disconnected mock data.
+ * Final completion phase, section 3 ("genuine decision-support
+ * dashboard"): every number and list on this page is real, non-demo data
+ * from the shared M11 reporting layer, composed by
+ * lib/reporting/decision-dashboard.ts -- no hardcoded pipeline counts,
+ * fake activity feed, fabricated order rows, or invented targets.
  *
- * "Awaiting Fulfilment" now uses the corrected definition (APPROVED/
- * PICKING orders with no dispatch that has actually departed yet,
- * derived from M10's real DispatchRecord data) rather than the old
- * APPROVED-and-not-yet-handed-to-SAP proxy this page used before M11.
+ * KPI section is now the dashboard's own 5-9 curated KPIs (one per named
+ * business area: sales/orders, picking/fulfilment+availability,
+ * dispatch/delivery, financial exposure, claims, lost sales), each with
+ * a real period-over-period comparison where the underlying figure is a
+ * genuine period flow, or an honest "current position" label where it
+ * is a whole-business running total instead -- see
+ * decision-dashboard.ts's own module comment for why those two are never
+ * blended into one fabricated delta.
  */
-function buildStatistics(totalOrders: number, snapshot: OperationalDashboard["snapshot"]) {
-  return [
-    {
-      title: "Total Orders",
-      value: String(totalOrders),
-      description: "Non-demo orders recorded",
-      icon: ShoppingCart,
-      iconBg: "bg-blue-50",
-      iconColor: "text-blue-600",
-    },
-    {
-      title: "Pending Verification",
-      value: String(snapshot.ordersReceived),
-      description: "Awaiting sales review",
-      icon: Clock3,
-      iconBg: "bg-amber-50",
-      iconColor: "text-amber-600",
-    },
-    {
-      title: "Awaiting Fulfilment",
-      value: String(snapshot.ordersAwaitingFulfilment),
-      description: "Approved/picking, not yet dispatched",
-      icon: PackageCheck,
-      iconBg: "bg-purple-50",
-      iconColor: "text-purple-600",
-    },
-    {
-      title: "Completed Deliveries",
-      value: String(snapshot.ordersDelivered),
-      description: "Confirmed delivered to customer",
-      icon: Truck,
-      iconBg: "bg-green-50",
-      iconColor: "text-green-600",
-    },
-  ];
+const KPI_ICONS: Record<string, { icon: typeof ShoppingCart; bg: string; color: string }> = {
+  ordersReceived: { icon: ShoppingCart, bg: "bg-blue-50", color: "text-blue-600" },
+  orderApprovalRate: { icon: CheckCircle2, bg: "bg-indigo-50", color: "text-indigo-600" },
+  pickingAvailabilityRate: { icon: Gauge, bg: "bg-purple-50", color: "text-purple-600" },
+  ordersAwaitingFulfilment: { icon: Clock3, bg: "bg-amber-50", color: "text-amber-600" },
+  deliveryAcceptanceRate: { icon: Truck, bg: "bg-green-50", color: "text-green-600" },
+  openInvoiceClaims: { icon: Receipt, bg: "bg-rose-50", color: "text-rose-600" },
+  claimsFinancialExposure: { icon: Wallet, bg: "bg-orange-50", color: "text-orange-600" },
+  estimatedLostSalesValue: { icon: TrendingDown, bg: "bg-red-50", color: "text-red-600" },
+};
+
+function ComparisonLine({ comparison }: { comparison: DashboardKpi["comparison"] }) {
+  if (comparison.kind === "pointInTime") {
+    return (
+      <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-500">
+        {comparison.asOfLabel}
+      </span>
+    );
+  }
+
+  const delta = comparison.deltaPercent;
+  const DeltaIcon = delta === null ? Minus : delta > 0 ? TrendingUp : delta < 0 ? TrendingDown : Minus;
+  const deltaColor = delta === null || delta === 0 ? "text-gray-400" : delta > 0 ? "text-emerald-600" : "text-rose-600";
+
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span className={`inline-flex items-center gap-0.5 font-semibold ${deltaColor}`}>
+        <DeltaIcon size={12} />
+        {delta === null ? "n/a" : `${Math.abs(delta)}%`}
+      </span>
+      <span className="text-gray-400">{comparison.periodLabel}</span>
+    </span>
+  );
+}
+
+function KpiCard({ kpi }: { kpi: DashboardKpi }) {
+  const config = KPI_ICONS[kpi.id] ?? { icon: ShoppingCart, bg: "bg-gray-50", color: "text-gray-500" };
+  const Icon = config.icon;
+  const sampleSize = kpi.comparison.kind === "period" ? kpi.comparison.sampleSize : undefined;
+
+  return (
+    <Link
+      href={kpi.drillDown.href}
+      title={kpi.definition}
+      className="rounded-xl border border-[#E8EBE6] bg-white p-5 transition hover:shadow-sm"
+    >
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-gray-500">{kpi.label}</p>
+        <div className={`flex h-9 w-9 items-center justify-center rounded-lg ${config.bg} ${config.color}`}>
+          <Icon size={18} />
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-end justify-between">
+        <h3 className="text-3xl font-bold tracking-tight text-[#17251E]">{kpi.value}</h3>
+      </div>
+
+      {kpi.currencyBreakdown && kpi.currencyBreakdown.length > 1 && (
+        <p className="mt-1 text-[10px] text-gray-400">
+          {kpi.currencyBreakdown.map((b) => `${b.currencyCode} ${b.amount}`).join(" · ")}
+        </p>
+      )}
+
+      <div className="mt-3 flex items-center justify-between text-[11px]">
+        <ComparisonLine comparison={kpi.comparison} />
+        {sampleSize !== undefined && <span className="text-gray-400">n={sampleSize}</span>}
+      </div>
+    </Link>
+  );
 }
 
 const PIPELINE_STAGES: { key: keyof OperationalDashboard["snapshot"]; name: string; color: string }[] = [
@@ -164,6 +207,8 @@ export default async function Home() {
     includeDemo: false,
     currency: null,
     lostSalesReason: null,
+    unfulfilledDemandStatus: null,
+    customerDecisionType: null,
     productCategory: null,
     productSearch: null,
     sapItemCode: null,
@@ -173,11 +218,20 @@ export default async function Home() {
   };
 
   const [dashboard, recentOrders] = await Promise.all([
-    getOperationalDashboard(user.id, user.role, filters),
+    getDecisionDashboard(user.id, user.role, filters),
     listOrders({ search: "", status: null, includeDemo: false, page: 1, pageSize: 5 }),
   ]);
 
-  const statistics = buildStatistics(recentOrders.pagination.totalItems, dashboard.snapshot);
+  // Role-based access (spec section 3 / lib/reporting/access.ts's own
+  // documented two-tier precedent): every authenticated role sees the
+  // operational KPIs; the two KPIs that are literally a money exposure
+  // figure are visible only to SALES_MANAGER/ADMINISTRATOR. This is a
+  // UX/relevance filter on this specific dashboard, not this app's actual
+  // authorization boundary for that data -- each underlying report
+  // page/route enforces its own access independently (see that file's
+  // comment for why).
+  const isManagement = user.role === "SALES_MANAGER" || user.role === "ADMINISTRATOR";
+  const visibleKpis: DashboardKpi[] = dashboard.kpis.filter((kpi) => kpi.visibility === "all" || isManagement);
   const pipelineMax = Math.max(1, ...PIPELINE_STAGES.map((stage) => dashboard.snapshot[stage.key]));
 
   return (
@@ -265,49 +319,46 @@ export default async function Home() {
 
           </section>
 
-          {/* KPI cards */}
-          <section className="grid grid-cols-4 gap-5">
-
-            {statistics.map((stat) => {
-              const Icon = stat.icon;
-
-              return (
-                <div
-                  key={stat.title}
-                  className="rounded-xl border border-[#E8EBE6] bg-white p-5 transition hover:shadow-sm"
-                >
-
-                  <div className="flex items-center justify-between">
-
-                    <p className="text-xs font-medium text-gray-500">
-                      {stat.title}
-                    </p>
-
-                    <div className={`flex h-9 w-9 items-center justify-center rounded-lg ${stat.iconBg} ${stat.iconColor}`}>
-                      <Icon size={18} />
-                    </div>
-
-                  </div>
-
-                  <div className="mt-4 flex items-end justify-between">
-
-                    <h3 className="text-3xl font-bold tracking-tight text-[#17251E]">
-                      {stat.value}
-                    </h3>
-
-                  </div>
-
-                  <p className="mt-2 text-[11px] text-gray-400">
-                    {stat.description}
-                  </p>
-
-                </div>
-              );
-            })}
-
+          {/* KPI cards: real, period-compared or point-in-time figures only --
+              no fabricated targets, no metric shown merely because it exists. */}
+          <section>
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-xs text-gray-400">
+                {visibleKpis.length} key metrics · period {dashboard.dateFrom} to {dashboard.dateTo}
+              </p>
+            </div>
+            <div className="grid grid-cols-4 gap-5">
+              {visibleKpis.map((kpi) => (
+                <KpiCard key={kpi.id} kpi={kpi} />
+              ))}
+            </div>
           </section>
 
-          {/* Pipeline and action queue */}
+          {/* Trends: reuses the exact same lost-sales trend charts and data
+              as /lost-sales/analytics (components/charts/lost-sales-trend.tsx) --
+              never a second, re-derived implementation of the same chart. */}
+          <section className="grid grid-cols-2 gap-5">
+            <div className="rounded-xl border border-[#E8EBE6] bg-white p-6">
+              <SectionHeading
+                title="Requested vs. Unavailable (trend)"
+                description="Daily demand vs. shortage quantity, trailing 30 days"
+                action="Full analytics"
+                actionHref="/lost-sales/analytics"
+              />
+              <RequestedVsUnavailableTrendChart data={dashboard.trend} />
+            </div>
+            <div className="rounded-xl border border-[#E8EBE6] bg-white p-6">
+              <SectionHeading
+                title="Estimated Lost Value (trend)"
+                description="Supply-shortage lost-sales estimate by day, trailing 30 days"
+                action="Full analytics"
+                actionHref="/lost-sales/analytics"
+              />
+              <EstimatedLostValueTrendChart data={dashboard.trend} />
+            </div>
+          </section>
+
+          {/* Pipeline and exceptions */}
           <section className="grid grid-cols-[1.4fr_1fr] gap-5">
 
             {/* Order pipeline */}
@@ -370,19 +421,19 @@ export default async function Home() {
 
             </div>
 
-            {/* Action queue */}
+            {/* Exceptions & priorities */}
             <div className="rounded-xl border border-[#E8EBE6] bg-white p-6">
 
               <SectionHeading
-                title="Action Queue"
-                description="What needs attention right now"
+                title="Exceptions & Priorities"
+                description="What needs attention right now, with a link to the underlying records"
                 action="View reports"
                 actionHref="/reports"
               />
 
               <div className="mt-6 space-y-5">
 
-                {dashboard.actionQueues.map((item: ActionQueueItem) => {
+                {dashboard.exceptions.map((item: ActionQueueItem) => {
                   const { icon: Icon, color } = SEVERITY_STYLES[item.severity];
 
                   return (
@@ -502,8 +553,15 @@ export default async function Home() {
 
                   {recentOrders.orders.map((order: (typeof recentOrders.orders)[number]) => {
                     const customerName = order.customer?.name ?? "Unknown customer";
-                    const statusLabel = ORDER_STATUS_LABELS[order.status as keyof typeof ORDER_STATUS_LABELS] ?? order.status;
-                    const statusStyle = ORDER_STATUS_STYLES[order.status as keyof typeof ORDER_STATUS_STYLES] ?? "bg-gray-100 text-gray-500";
+                    // Final completion phase, section 7: same derived
+                    // Departed/Delivered label as /orders and the order
+                    // detail page, not the raw status -- this dashboard
+                    // is exactly the "stuck at Ready for Invoice" surface
+                    // the directive named.
+                    const { label: statusLabel, style: statusStyle } = getEffectiveOrderStatus({
+                      status: order.status,
+                      dispatchStatuses: order.dispatchStatuses,
+                    });
 
                     return (
                       <tr

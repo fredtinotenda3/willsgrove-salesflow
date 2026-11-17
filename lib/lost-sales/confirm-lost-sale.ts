@@ -60,6 +60,7 @@ export async function confirmLostSale(input: ConfirmLostSaleInput, actorId: stri
     where: { id: input.unfulfilledDemandId },
     select: {
       id: true,
+      status: true,
       orderLineId: true,
       customerId: true,
       productId: true,
@@ -73,6 +74,18 @@ export async function confirmLostSale(input: ConfirmLostSaleInput, actorId: stri
   });
   if (!demand) {
     return { ok: false, status: 404, message: "Unfulfilled demand record not found." };
+  }
+
+  // Additional Implementation Requirements (lost-sales automation): see
+  // the identical guard in lib/lost-sales/record-decision.ts for why a
+  // SUPERSEDED record is read-only.
+  if (demand.status === "SUPERSEDED") {
+    return {
+      ok: false,
+      status: 409,
+      message:
+        "This shortage record was superseded by a later picking correction and is read-only. Act on the current record instead.",
+    };
   }
 
   const consumption = computeLostSaleConsumption(

@@ -207,9 +207,9 @@ describe("Final Operational Enhancements Part 6: CLAIM_LINE_REASON_CATEGORIES", 
   });
 
   it("reuses the 3 existing equivalent categories by identifier (not reinvented under a new name)", () => {
-    expect(CLAIM_LINE_REASON_CATEGORIES).toContain("PRICING_DISPUTE"); // Price claim
-    expect(CLAIM_LINE_REASON_CATEGORIES).toContain("QUALITY_ISSUE"); // Poor-quality product
-    expect(CLAIM_LINE_REASON_CATEGORIES).toContain("SHORT_DELIVERY"); // Short delivery
+    expect(CLAIM_LINE_REASON_CATEGORIES).toContain("PRICING_DISPUTE"); // Price Claim
+    expect(CLAIM_LINE_REASON_CATEGORIES).toContain("QUALITY_ISSUE"); // Poor Quality
+    expect(CLAIM_LINE_REASON_CATEGORIES).toContain("SHORT_DELIVERY"); // Short Delivery
   });
 
   it("has exactly the 7 newly added reasons", () => {
@@ -232,6 +232,24 @@ describe("Final Operational Enhancements Part 6: CLAIM_LINE_REASON_CATEGORIES", 
     for (const category of CLAIM_LINE_REASON_CATEGORIES) {
       expect(CLAIM_LINE_REASON_CATEGORY_LABELS[category]).toBeTruthy();
     }
+  });
+
+  // Final completion phase, section 8.2: "Use these exact display
+  // labels" -- locked down verbatim (including item 9's own spelling)
+  // so a future edit can't silently drift from the required wording.
+  it("uses the exact 10 standardized display labels from the final completion directive", () => {
+    expect(CLAIM_LINE_REASON_CATEGORY_LABELS).toEqual({
+      PRICING_DISPUTE: "Price Claim",
+      QUALITY_ISSUE: "Poor Quality",
+      SHORT_DELIVERY: "Short Delivery",
+      PRODUCT_NOT_ORDERED: "Not Ordered",
+      PRODUCT_NOT_DELIVERED: "Not Delivered",
+      OVERSUPPLY: "OverSupply",
+      EXPIRED_PRODUCT: "Expired",
+      NO_BARCODE: "No BarCode",
+      BARCODE_SCANNING_ISSUE: "BarCode Scabbing Problem",
+      DUPLICATE_ENTRY: "Duplicate",
+    });
   });
 
   it("claimLineInputSchema accepts a valid reasonCategory on both a QUANTITY and an AMOUNT_ONLY line", () => {

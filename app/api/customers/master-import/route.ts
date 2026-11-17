@@ -21,7 +21,11 @@ export async function POST(request: NextRequest) {
     return Response.json({ success: false, message: csrf.message }, { status: 403 });
   }
 
-  const auth = await requireUserOrResponse();
+  // Final completion phase, section 9: see the preview route's own
+  // comment on why this one CSV-import flow is role-gated where the
+  // project's other import routes (price-list, tax-code) deliberately
+  // are not.
+  const auth = await requireUserOrResponse(["SALES_MANAGER", "ADMINISTRATOR"]);
   if (!auth.ok) return auth.response;
 
   try {

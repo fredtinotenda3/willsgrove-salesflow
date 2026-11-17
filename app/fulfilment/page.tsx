@@ -4,12 +4,10 @@ import { getCurrentUser } from "@/lib/auth/current-user";
 import { listPickingQueue } from "@/lib/picking/queries";
 import Sidebar from "../components/sidebar";
 import {
-  ORDER_STATUS_LABELS,
-  ORDER_STATUS_STYLES,
+  getEffectiveOrderStatus,
   formatOrderDate,
   initialsFor,
   avatarColorFor,
-  type OrderStatusValue,
 } from "@/lib/order-display";
 import { ClipboardList, ChevronRight, ChevronLeft } from "lucide-react";
 
@@ -121,9 +119,10 @@ export default async function FulfilmentQueuePage({ searchParams }: RouteParams)
                   <tbody>
                     {orders.map((order) => {
                       const customerName = order.customer?.name ?? "Unknown customer";
-                      const statusLabel = ORDER_STATUS_LABELS[order.status as OrderStatusValue] ?? order.status;
-                      const statusStyle =
-                        ORDER_STATUS_STYLES[order.status as OrderStatusValue] ?? "bg-gray-100 text-gray-500";
+                      const { label: statusLabel, style: statusStyle } = getEffectiveOrderStatus({
+                        status: order.status,
+                        dispatchStatuses: order.dispatchStatuses,
+                      });
                       const progress = pickingProgressLabel(order.status);
 
                       return (

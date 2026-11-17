@@ -125,7 +125,7 @@ export async function updateVehicle(id: string, input: UpdateVehicleInput, actor
       if (input.notes !== undefined) data.notes = input.notes;
       if (input.status !== undefined && input.status !== existing.status) {
         data.status = input.status;
-        data.statusChangedById = actorId;
+        data.statusChangedBy = { connect: { id: actorId } };
         data.statusChangedAt = new Date();
       }
 

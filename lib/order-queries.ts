@@ -72,6 +72,12 @@ const orderListSelect = {
   createdAt: true,
   customer: { select: { id: true, name: true } },
   _count: { select: { lines: true } },
+  // Final completion phase, section 7: the raw `status` column alone
+  // cannot tell the list page an order has actually departed/been
+  // delivered (lib/order-display.ts's getEffectiveOrderStatus needs
+  // these to derive that) -- CANCELLED dispatches are excluded because a
+  // cancelled dispatch never counts as progress for this order.
+  dispatchRecords: { where: { status: { not: "CANCELLED" } }, select: { status: true } },
 } satisfies Prisma.CustomerOrderSelect;
 
 export async function listOrders(query: OrderListQuery) {
@@ -119,6 +125,7 @@ export async function listOrders(query: OrderListQuery) {
       createdAt: order.createdAt.toISOString(),
       customer: order.customer,
       lineCount: order._count.lines,
+      dispatchStatuses: order.dispatchRecords.map((d) => d.status),
     })),
     pagination: {
       page: query.page,
@@ -216,6 +223,9 @@ export async function getOrderById(id: string) {
           changedBy: { select: { id: true, name: true } },
         },
       },
+      // Final completion phase, section 7 -- see orderListSelect's own
+      // comment above for why this is needed and why CANCELLED is excluded.
+      dispatchRecords: { where: { status: { not: "CANCELLED" } }, select: { status: true } },
     },
   });
 
@@ -226,6 +236,7 @@ export async function getOrderById(id: string) {
     reference: order.reference,
     customerPoReference: order.customerPoReference,
     status: order.status,
+    dispatchStatuses: order.dispatchRecords.map((d) => d.status),
     source: order.source,
     orderDate: order.orderDate?.toISOString() ?? null,
     requestedDeliveryDate: order.requestedDeliveryDate?.toISOString() ?? null,

@@ -6,7 +6,7 @@ import Sidebar from "../components/sidebar";
 import {
   ORDER_STATUSES,
   ORDER_STATUS_LABELS as STATUS_LABELS,
-  ORDER_STATUS_STYLES as STATUS_STYLES,
+  getEffectiveOrderStatus,
   orderSourceLabel,
   type OrderStatusValue,
   formatOrderDate as formatDate,
@@ -51,6 +51,8 @@ type ApiOrderSummary = {
   createdAt: string;
   customer: { id: string; name: string } | null;
   lineCount: number;
+  /** Final completion phase, section 7 -- non-CANCELLED DispatchRecord.status values, for getEffectiveOrderStatus. */
+  dispatchStatuses: string[];
 };
 
 type OrderListResponse = {
@@ -426,11 +428,14 @@ export default function OrdersPage() {
                           </td>
 
                           <td className="whitespace-nowrap px-6 py-4">
-                            <span
-                              className={`rounded-full px-2.5 py-1.5 text-[10px] font-semibold ${STATUS_STYLES[order.status]}`}
-                            >
-                              {STATUS_LABELS[order.status]}
-                            </span>
+                            {(() => {
+                              const effective = getEffectiveOrderStatus({ status: order.status, dispatchStatuses: order.dispatchStatuses });
+                              return (
+                                <span className={`rounded-full px-2.5 py-1.5 text-[10px] font-semibold ${effective.style}`}>
+                                  {effective.label}
+                                </span>
+                              );
+                            })()}
                           </td>
 
                           <td className="px-6 py-4">

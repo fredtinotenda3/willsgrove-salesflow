@@ -7,6 +7,7 @@ import Sidebar from "../components/sidebar";
 import { MetricCard } from "./_components/ui";
 import {
   TrendingUp,
+  TrendingDown,
   Truck,
   DollarSign,
   MessageSquare,
@@ -50,6 +51,18 @@ const REPORT_TILES = [
     description: "Channel health, intake backlog and delivery exceptions across email and WhatsApp.",
     icon: MessageSquare,
   },
+  // Additional Implementation Requirements (spec section 3: "Lost Sales
+  // Analytics Overhaul"). Listed in the main, un-gated tile set rather
+  // than the canSeeManagementReports-only section further down this
+  // page, because this report's access level matches /lost-sales itself
+  // (any authenticated user) -- it lives at /lost-sales/analytics, not
+  // under /reports/*, for the same reason (see that page's own comment).
+  {
+    href: "/lost-sales/analytics",
+    title: "Lost Sales Analytics",
+    description: "Trends, product/customer shortage rankings, composition and a filterable order-level drilldown.",
+    icon: TrendingDown,
+  },
 ];
 
 const SEVERITY_STYLES: Record<string, { icon: typeof AlertTriangle; color: string }> = {
@@ -83,6 +96,8 @@ export default async function ReportsHubPage() {
     communicationStatus: null,
     currency: null,
     lostSalesReason: null,
+    unfulfilledDemandStatus: null,
+    customerDecisionType: null,
     includeDemo: false,
     productCategory: null,
     productSearch: null,

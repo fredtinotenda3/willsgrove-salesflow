@@ -64,6 +64,13 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
             <p className="text-xs text-gray-400">Workspace / Operations / Lost Sales</p>
             <h2 className="mt-1 text-lg font-bold text-[#17251E]">Lost-Sales Management</h2>
           </div>
+          <Link
+            href="/lost-sales/analytics"
+            className="flex items-center gap-2 rounded-xl border border-[#D7E0D5] px-4 py-2 text-xs font-semibold text-[#17251E] transition hover:bg-gray-50"
+          >
+            <TrendingDown size={14} />
+            View analytics
+          </Link>
         </header>
 
         <div className="space-y-6 p-8">
@@ -71,7 +78,12 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
             <h1 className="text-2xl font-bold tracking-tight text-[#17251E]">Unfulfilled Demand</h1>
             <p className="mt-1 text-sm text-gray-500">
               What the warehouse couldn&apos;t supply, what the customer decided to do about it, and what has
-              actually become a confirmed lost sale -- kept as three distinct things throughout.
+              actually become a confirmed lost sale -- kept as three distinct things throughout. For trends,
+              breakdowns and a filterable drilldown, see{" "}
+              <Link href="/lost-sales/analytics" className="font-semibold text-[#173D2E] hover:underline">
+                Lost Sales Analytics
+              </Link>
+              .
             </p>
           </section>
 

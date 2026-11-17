@@ -10,9 +10,23 @@
  * PICKING and READY_TO_INVOICE are now real OrderStatus values (added in
  * prisma/migrations/20261110060000_add_picking_sessions) -- this is the
  * "add a status here only after it exists in the schema" moment this
- * file's comment used to point at. "Dispatched"/"Delivered" still don't
- * exist in the schema (a separate, still-deferred future milestone --
- * see docs/milestones/ROADMAP.md) and still aren't added here.
+ * file's comment used to point at.
+ *
+ * Milestone 10 built what the comment above used to call a deferred
+ * future milestone: DispatchRecord/DeliveryRecord now exist, with
+ * DispatchStatus's own DELIVERED value. "Dispatched"/"Delivered" still
+ * are NOT OrderStatus enum values, and getEffectiveOrderStatus below
+ * deliberately keeps it that way -- CustomerOrder.status is never
+ * changed once it reaches READY_TO_INVOICE (prisma/schema.prisma's own
+ * OrderStatus comment documents why: it is the gate for SAP handover,
+ * not a terminal state SalesFlow tracks further, and this app never
+ * overwrites SAP's own authoritative invoice/delivery status). What was
+ * genuinely missing (Final completion phase, section 7: "an order must
+ * not remain stuck at Ready for Invoice after it has progressed") is a
+ * derived, DISPLAY-ONLY label layered on top of the real status for the
+ * UI, computed purely from this order's own DispatchRecord rows --
+ * never a second stored status column that could drift out of sync with
+ * the real one.
  *
  * Client-safe: no server-only imports and no @prisma/client import (only
  * string-literal unions that mirror the schema's enums), so this can be
@@ -56,6 +70,53 @@ export const ORDER_STATUS_STYLES: Record<OrderStatusValue, string> = {
   CANCELLED: "bg-gray-100 text-gray-500",
   DRAFT: "bg-gray-100 text-gray-500",
 };
+
+export type EffectiveOrderStatusInput = {
+  status: OrderStatusValue | string;
+  /**
+   * Every non-CANCELLED DispatchRecord.status ("PLANNED" | "DEPARTED" |
+   * "DELIVERED") for this order, in any order. Only consulted when
+   * `status` is READY_TO_INVOICE -- ignored for every other OrderStatus,
+   * since this derivation exists solely to stop READY_TO_INVOICE orders
+   * from looking permanently stuck once dispatch/delivery has actually
+   * moved on.
+   */
+  dispatchStatuses: string[];
+};
+
+export type EffectiveOrderStatus = { label: string; style: string };
+
+/**
+ * See this file's own module comment for the full rationale. Three
+ * READY_TO_INVOICE outcomes, derived purely from already-recorded
+ * DispatchRecord rows:
+ *   - no dispatch yet, or every dispatch still PLANNED (not departed) ->
+ *     unchanged "Ready to Invoice" (nothing has actually progressed yet).
+ *   - every non-cancelled dispatch is DELIVERED -> "Delivered".
+ *   - anything else (at least one DEPARTED or a mix of DEPARTED/DELIVERED
+ *     across multiple dispatch batches for the same order) -> "Departed"
+ *     (in progress -- has left, not yet fully confirmed delivered).
+ * Every other OrderStatus passes straight through unchanged.
+ */
+export function getEffectiveOrderStatus({ status, dispatchStatuses }: EffectiveOrderStatusInput): EffectiveOrderStatus {
+  const baseLabel = (ORDER_STATUS_LABELS as Record<string, string>)[status] ?? status;
+  const baseStyle = (ORDER_STATUS_STYLES as Record<string, string>)[status] ?? "bg-gray-100 text-gray-500";
+
+  if (status !== "READY_TO_INVOICE" || dispatchStatuses.length === 0) {
+    return { label: baseLabel, style: baseStyle };
+  }
+
+  const hasDeparted = dispatchStatuses.some((s) => s !== "PLANNED");
+  if (!hasDeparted) {
+    return { label: baseLabel, style: baseStyle };
+  }
+
+  if (dispatchStatuses.every((s) => s === "DELIVERED")) {
+    return { label: "Delivered", style: "bg-teal-50 text-teal-700" };
+  }
+
+  return { label: "Departed", style: "bg-orange-50 text-orange-700" };
+}
 
 export const ORDER_SOURCES = ["EMAIL", "WHATSAPP", "MANUAL"] as const;
 export type OrderSourceValue = (typeof ORDER_SOURCES)[number];

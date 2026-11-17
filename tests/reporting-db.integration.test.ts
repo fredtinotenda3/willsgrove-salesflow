@@ -310,6 +310,8 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       // block's reports don't consume either one.
       currency: null,
       lostSalesReason: null,
+      unfulfilledDemandStatus: null,
+      customerDecisionType: null,
       includeDemo: true,
       // Milestone 14/15 added these five fields to ReportFilters; kept
       // null here since this describe block's reports don't consume any
@@ -388,6 +390,8 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       // block's reports don't consume either one.
       currency: null,
       lostSalesReason: null,
+      unfulfilledDemandStatus: null,
+      customerDecisionType: null,
       includeDemo: true,
       productCategory: null,
       productSearch: null,
@@ -464,6 +468,69 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       expect(nonMatching.rows.some((r) => r.orderReference === reference)).toBe(false);
     });
 
+    // Final completion phase, section 5 ("Dynamic order status
+    // propagation"): listOutstandingOrders' own "status" column used to
+    // show the raw, permanently-stuck OrderStatus enum (always "Ready to
+    // Invoice") for any order whose dispatch had actually departed or been
+    // delivered, since CustomerOrder.status itself is never written past
+    // READY_TO_INVOICE (see lib/order-display.ts's module comment). Fixed
+    // by routing toOutstandingOrderRow through getEffectiveOrderStatus.
+    // Only listOutstandingOrders can actually exhibit this -- its own
+    // where-clause only excludes orders with an ACCEPTED_IN_FULL delivery,
+    // never ones that have merely departed or been partially-rejected on
+    // delivery, unlike listOrdersAwaitingFulfilment (which excludes any
+    // DEPARTED/DELIVERED dispatch outright, so the same bug could never
+    // surface there -- not re-tested here for that reason).
+    it("listOutstandingOrders shows the derived 'Departed' label, not the raw 'Ready to Invoice' status, once a dispatch has departed but not yet delivered", async () => {
+      if (skipAll) return;
+      const { createDispatchRecord, departDispatchRecord } = await import("@/lib/fulfilment/dispatch");
+      const { listOutstandingOrders } = await import("@/lib/reporting/management-reports");
+
+      const { orderId, lineId, reference } = await createPartiallyPickedOrder("5.0000", "5.0000");
+      const dispatch = await createDispatchRecord(orderId, adminId, { lines: [{ orderLineId: lineId, quantity: "5.0000" }], driverId, assistantId, vehicleId });
+      if (!dispatch.ok) throw new Error(dispatch.message);
+      await departDispatchRecord(dispatch.dispatchRecordId, adminId);
+
+      const result = await listOutstandingOrders(filtersWith({}) as never, { page: 1, pageSize: 500 });
+      const row = result.rows.find((r) => r.reference === reference);
+      expect(row).toBeDefined();
+      expect(row!.status).toBe("Departed");
+      expect(row!.status).not.toBe("Ready to Invoice");
+    });
+
+    it("listOutstandingOrders shows the derived 'Delivered' label once a dispatch has been delivered, even with a partial rejection (the row is still 'outstanding' -- not ACCEPTED_IN_FULL -- but is no longer stuck at 'Ready to Invoice')", async () => {
+      if (skipAll) return;
+      const { createDispatchRecord, departDispatchRecord } = await import("@/lib/fulfilment/dispatch");
+      const { recordDelivery } = await import("@/lib/fulfilment/delivery");
+      const { getDispatchRecordDetail } = await import("@/lib/fulfilment/queries");
+      const { listOutstandingOrders } = await import("@/lib/reporting/management-reports");
+
+      const { orderId, lineId, reference } = await createPartiallyPickedOrder("4.0000", "4.0000");
+      const dispatch = await createDispatchRecord(orderId, adminId, { lines: [{ orderLineId: lineId, quantity: "4.0000" }], driverId, assistantId, vehicleId });
+      if (!dispatch.ok) throw new Error(dispatch.message);
+      await departDispatchRecord(dispatch.dispatchRecordId, adminId);
+      const detail = await getDispatchRecordDetail(dispatch.dispatchRecordId);
+      const dLine = detail!.lines[0]!;
+      const delivered = await recordDelivery(
+        dispatch.dispatchRecordId,
+        adminId,
+        { lines: [{ dispatchLineId: dLine.id, acceptedQuantity: "3.0000", rejectedQuantity: "1.0000", rejectionReason: "1 unit damaged" }] },
+        {}
+      );
+      if (!delivered.ok) throw new Error("recordDelivery failed");
+
+      // Still present: the delivery outcome is PARTIALLY_REJECTED, not
+      // ACCEPTED_IN_FULL, so listOutstandingOrders' own where-clause does
+      // not exclude it -- this assertion would fail loudly (row undefined)
+      // if that scoping behaviour ever changed, rather than silently
+      // passing on a row that no longer exists.
+      const result = await listOutstandingOrders(filtersWith({}) as never, { page: 1, pageSize: 500 });
+      const row = result.rows.find((r) => r.reference === reference);
+      expect(row).toBeDefined();
+      expect(row!.status).toBe("Delivered");
+      expect(row!.status).not.toBe("Ready to Invoice");
+    });
+
     it("demo-data exclusion: a demo-tagged order is absent with includeDemo=false and present with includeDemo=true", async () => {
       if (skipAll) return;
       const { listOrdersAwaitingFulfilment } = await import("@/lib/reporting/management-reports");
@@ -513,6 +580,8 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       // block's reports don't consume either one.
       currency: null,
       lostSalesReason: null,
+      unfulfilledDemandStatus: null,
+      customerDecisionType: null,
       includeDemo: true,
       productCategory: null,
       productSearch: null,
@@ -687,6 +756,8 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
         // doesn't consume either one.
         currency: null,
         lostSalesReason: null,
+        unfulfilledDemandStatus: null,
+        customerDecisionType: null,
         includeDemo: true,
       } as never);
 
@@ -736,6 +807,8 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
         communicationStatus: null,
         currency: null,
         lostSalesReason: null,
+        unfulfilledDemandStatus: null,
+        customerDecisionType: null,
         includeDemo: true,
       } as never);
 

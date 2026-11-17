@@ -86,6 +86,11 @@ export const unfulfilledDemandStatusValues = [
   "FULLY_CANCELLED",
   "CONFIRMED_LOST",
   "RESOLVED",
+  // Additional Implementation Requirements (lost-sales automation): see
+  // UnfulfilledDemandStatus.SUPERSEDED's schema.prisma comment. Listed
+  // here (filterable, same as every other status) rather than hidden --
+  // a superseded record is still real history, just no longer "current."
+  "SUPERSEDED",
 ] as const;
 
 export type UnfulfilledDemandStatusValue = (typeof unfulfilledDemandStatusValues)[number];

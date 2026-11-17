@@ -352,6 +352,69 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 10: dispatch and delivery 
   });
 
   /**
+   * Final completion phase, section 6: startPickingSession must refuse a
+   * new (re-pick) session once this order has a dispatch that's already
+   * departed -- before this fix, the pre-existing "a brand-new session is
+   * allowed once the previous one is AUTHORIZED" rule (see
+   * tests/picking-db.integration.test.ts) had no awareness of dispatch at
+   * all, so staff could silently reset an order that was already on a
+   * truck back to OrderStatus.PICKING. Covers both DEPARTED (first
+   * assertion) and DELIVERED (second, after recording an outcome) --
+   * there is no reopen workflow for either state (cancelDispatchRecord
+   * only accepts a still-PLANNED dispatch), so both must be a hard
+   * refusal, never a client-side-only disabled button.
+   */
+  it("startPickingSession refuses a new session once a dispatch for this order has departed or been delivered", async () => {
+    if (skipAll) return;
+    const { createDispatchRecord, departDispatchRecord } = await import("@/lib/fulfilment/dispatch");
+    const { recordDelivery } = await import("@/lib/fulfilment/delivery");
+    const { startPickingSession } = await import("@/lib/picking/start-picking");
+    const { getDispatchRecordDetail } = await import("@/lib/fulfilment/queries");
+
+    const { orderId, line1, line2 } = await createReadyToInvoiceOrder();
+    const dispatch = await createDispatchRecord(orderId, adminId, {
+      lines: [
+        { orderLineId: line1.id, quantity: "20.0000" },
+        { orderLineId: line2.id, quantity: "15.0000" },
+      ],
+      driverId,
+      assistantId,
+      vehicleId,
+    });
+    if (!dispatch.ok) throw new Error(dispatch.message);
+
+    // Still PLANNED at this point -- a re-pick is unaffected by a dispatch
+    // that hasn't left yet (it can still be cancelled or revised); that
+    // positive case is exactly what "allows starting a brand-new session
+    // after the previous one was authorized" in
+    // tests/picking-db.integration.test.ts already covers, so it isn't
+    // repeated here -- this test is purely the negative case.
+    const departed = await departDispatchRecord(dispatch.dispatchRecordId, adminId, "TRUCK-07");
+    expect(departed.ok).toBe(true);
+
+    const afterDeparture = await startPickingSession(orderId, adminId);
+    expect(afterDeparture.ok).toBe(false);
+    if (!afterDeparture.ok) {
+      expect(afterDeparture.status).toBe(409);
+      expect(afterDeparture.message).toMatch(/departed or been delivered/i);
+    }
+
+    const detail = await getDispatchRecordDetail(dispatch.dispatchRecordId);
+    const [dLine1, dLine2] = detail!.lines;
+    const delivered = await recordDelivery(dispatch.dispatchRecordId, adminId, {
+      lines: [
+        { dispatchLineId: dLine1!.id, acceptedQuantity: "20.0000", rejectedQuantity: "0.0000" },
+        { dispatchLineId: dLine2!.id, acceptedQuantity: "15.0000", rejectedQuantity: "0.0000" },
+      ],
+    }, {});
+    expect(delivered.ok).toBe(true);
+
+    const afterDelivery = await startPickingSession(orderId, adminId);
+    expect(afterDelivery.ok).toBe(false);
+    if (!afterDelivery.ok) expect(afterDelivery.status).toBe(409);
+  });
+
+  /**
    * Final Operational Enhancements (spec Part 3.3): the driver/assistant/
    * vehicle ids are re-validated server-side against REAL, ACTIVE
    * Personnel/Vehicle records of the correct role -- never trusting a

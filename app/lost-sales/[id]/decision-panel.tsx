@@ -2,22 +2,34 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Send, ShieldCheck } from "lucide-react";
-import {
-  customerDecisionTypeValues,
-  decisionSourceValues,
-  lostSaleReasonValues,
-  WHOLE_REMAINDER_DECISION_TYPES,
-} from "@/lib/lost-sales/validation";
-import { DECISION_TYPE_LABELS, DECISION_SOURCE_LABELS, LOST_SALE_REASON_LABELS } from "@/lib/lost-sales/display";
+import { Loader2, Send } from "lucide-react";
+import { customerDecisionTypeValues, decisionSourceValues, WHOLE_REMAINDER_DECISION_TYPES } from "@/lib/lost-sales/validation";
+import { DECISION_TYPE_LABELS, DECISION_SOURCE_LABELS } from "@/lib/lost-sales/display";
 
 /**
- * Milestone 4 (Lost-Sales Management). The one client-rendered island on
- * app/lost-sales/[id]/page.tsx -- records a customer decision and (for
- * SALES_MANAGER/ADMINISTRATOR only) confirms a lost sale. Always calls
- * router.refresh() after a successful submission rather than updating
- * local state optimistically -- the same "re-fetch, don't guess"
- * convention as PickingPanel/HandoverPanel, just via Next's own
+ * Milestone 4 (Lost-Sales Management), trimmed by the Additional
+ * Implementation Requirements (spec section 2: "Remove the Confirm Lost
+ * Sale card entirely from the user interface... Keep Record Customer
+ * Decision and its existing supported decision categories unchanged").
+ *
+ * The one client-rendered island on app/lost-sales/[id]/page.tsx -- now
+ * records ONLY a customer decision. The manual "Confirm Lost Sale" form
+ * that used to live here as a second card has been removed from this UI;
+ * the underlying lib/lost-sales/confirm-lost-sale.ts action and its API
+ * route are deliberately NOT deleted (see this round's delivery report --
+ * grep shows confirmLostSale is still exercised directly by several
+ * unrelated reporting-feature test fixtures and reporting modules read
+ * from LostSaleRecord, so it is not "solely" supporting this redundant
+ * UI step, the spec's own qualifying word). A lost sale is now always
+ * recorded automatically the moment a shortage is picked (see
+ * lib/lost-sales/create-unfulfilled-demand.ts) -- the read-only
+ * "Confirmed Lost Sales" history section on page.tsx still shows any
+ * records that exist from that automatic path or from history prior to
+ * this change.
+ *
+ * Always calls router.refresh() after a successful submission rather
+ * than updating local state optimistically -- the same "re-fetch, don't
+ * guess" convention as PickingPanel/HandoverPanel, just via Next's own
  * Server-Component-refresh mechanism (already used elsewhere in this
  * project -- app/login, app/change-password) instead of a second manual
  * client fetch, since the history lists this page also needs to refresh
@@ -31,12 +43,10 @@ const DECIMAL_PATTERN = /^\d+(\.\d{1,4})?$/;
 
 type Props = {
   unfulfilledDemandId: string;
-  canConfirmLost: boolean;
   unavailableQuantity: string;
   outstandingQuantity: string;
   cancelledQuantity: string;
   substitutedQuantity: string;
-  confirmedLostQuantity: string;
 };
 
 type ProductOption = { id: string; sapItemCode: string; itemName: string };
@@ -58,12 +68,10 @@ function approxUndecided(unavailable: string, outstanding: string, cancelled: st
 
 export default function DecisionPanel({
   unfulfilledDemandId,
-  canConfirmLost,
   unavailableQuantity,
   outstandingQuantity,
   cancelledQuantity,
   substitutedQuantity,
-  confirmedLostQuantity,
 }: Props) {
   const router = useRouter();
 
@@ -170,64 +178,9 @@ export default function DecisionPanel({
     }
   }
 
-  // --- Confirm lost sale (SALES_MANAGER/ADMINISTRATOR only) ---
-  const [lostQuantity, setLostQuantity] = useState("");
-  const [lostReason, setLostReason] = useState<(typeof lostSaleReasonValues)[number]>(lostSaleReasonValues[0]);
-  const [lostReasonDetail, setLostReasonDetail] = useState("");
-  const [lostDecisionSource, setLostDecisionSource] = useState<(typeof decisionSourceValues)[number]>(
-    decisionSourceValues[0]
-  );
-  const [lostRemarks, setLostRemarks] = useState("");
-  const [confirmingLost, setConfirmingLost] = useState(false);
-  const [lostError, setLostError] = useState<string | null>(null);
-  const [lostNotice, setLostNotice] = useState<string | null>(null);
-
-  async function submitConfirmLost() {
-    setLostError(null);
-    setLostNotice(null);
-
-    if (!lostQuantity || !DECIMAL_PATTERN.test(lostQuantity)) {
-      setLostError("Enter a valid quantity (up to 4 decimal places).");
-      return;
-    }
-    if (lostReason === "OTHER" && lostReasonDetail.trim().length === 0) {
-      setLostError("A reason detail is required when the reason is 'Other'.");
-      return;
-    }
-
-    setConfirmingLost(true);
-    try {
-      const response = await fetch(`/api/lost-sales/${unfulfilledDemandId}/confirm-lost`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          quantity: lostQuantity,
-          reason: lostReason,
-          reasonDetail: lostReasonDetail || undefined,
-          decisionSource: lostDecisionSource,
-          remarks: lostRemarks || undefined,
-        }),
-      });
-      const data = await readJson(response);
-      if (!response.ok || data.success !== true) {
-        setLostError(typeof data.message === "string" ? data.message : "Unable to confirm this lost sale.");
-        return;
-      }
-      setLostNotice("Lost sale confirmed.");
-      setLostQuantity("");
-      setLostReasonDetail("");
-      setLostRemarks("");
-      router.refresh();
-    } catch {
-      setLostError("A network error occurred while confirming this lost sale.");
-    } finally {
-      setConfirmingLost(false);
-    }
-  }
-
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-      <section className="rounded-xl border border-[#E8EBE6] bg-white p-5">
+    <div className="grid grid-cols-1 gap-6">
+      <section className="rounded-xl border border-[#E8EBE6] bg-white p-5 lg:max-w-xl">
         <h2 className="text-sm font-bold text-[#17251E]">Record Customer Decision</h2>
         <p className="mt-1 text-[11px] text-gray-400">Undecided remaining quantity: {undecided}</p>
 
@@ -380,96 +333,6 @@ export default function DecisionPanel({
           )}
         </div>
       </section>
-
-      {canConfirmLost && (
-        <section className="rounded-xl border border-[#E8EBE6] bg-white p-5">
-          <h2 className="text-sm font-bold text-[#17251E]">Confirm Lost Sale</h2>
-          <p className="mt-1 text-[11px] text-gray-400">
-            Available to confirm (cancelled not yet confirmed lost, plus outstanding): up to {cancelledQuantity}{" "}
-            cancelled (already {confirmedLostQuantity} confirmed) or {outstandingQuantity} outstanding.
-          </p>
-
-          <div className="mt-4 space-y-3">
-            <label className="block text-xs font-medium text-gray-600">
-              Quantity
-              <input
-                value={lostQuantity}
-                onChange={(event) => setLostQuantity(event.target.value)}
-                placeholder="0.0000"
-                className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-              />
-            </label>
-
-            <label className="block text-xs font-medium text-gray-600">
-              Reason
-              <select
-                value={lostReason}
-                onChange={(event) => setLostReason(event.target.value as typeof lostReason)}
-                className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-              >
-                {lostSaleReasonValues.map((value) => (
-                  <option key={value} value={value}>
-                    {LOST_SALE_REASON_LABELS[value] ?? value}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            {lostReason === "OTHER" && (
-              <label className="block text-xs font-medium text-gray-600">
-                Reason detail (required for &quot;Other&quot;)
-                <input
-                  value={lostReasonDetail}
-                  onChange={(event) => setLostReasonDetail(event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-                />
-              </label>
-            )}
-
-            <label className="block text-xs font-medium text-gray-600">
-              Customer decision source
-              <select
-                value={lostDecisionSource}
-                onChange={(event) => setLostDecisionSource(event.target.value as typeof lostDecisionSource)}
-                className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-              >
-                {decisionSourceValues.map((value) => (
-                  <option key={value} value={value}>
-                    {DECISION_SOURCE_LABELS[value] ?? value}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="block text-xs font-medium text-gray-600">
-              Remarks (optional)
-              <textarea
-                value={lostRemarks}
-                onChange={(event) => setLostRemarks(event.target.value)}
-                rows={2}
-                className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-              />
-            </label>
-
-            {lostError && <p className="text-xs text-red-600">{lostError}</p>}
-            {lostNotice && <p className="text-xs text-emerald-600">{lostNotice}</p>}
-
-            <button
-              type="button"
-              onClick={submitConfirmLost}
-              disabled={confirmingLost}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-red-600 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-red-700 disabled:opacity-50"
-            >
-              {confirmingLost ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
-              Confirm Lost Sale
-            </button>
-            <p className="text-center text-[11px] text-gray-400">
-              Restricted to Sales Manager / Administrator. This estimates a value only when a real, historically
-              valid price is available -- never invented.
-            </p>
-          </div>
-        </section>
-      )}
     </div>
   );
 }

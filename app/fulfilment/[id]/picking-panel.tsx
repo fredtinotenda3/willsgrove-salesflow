@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, PlayCircle, CheckCircle2, ShieldCheck } from "lucide-react";
+import { Loader2, PlayCircle, CheckCircle2, ShieldCheck, Lock } from "lucide-react";
 import { classifyAvailability, type AvailabilityStatus } from "@/lib/picking/validation";
 
 /**
@@ -145,10 +145,20 @@ const AVAILABILITY_BADGE: Record<AvailabilityStatus, { label: string; style: str
 export default function PickingPanel({
   orderId,
   canAuthorize,
+  dispatchHasDepartedOrDelivered,
   lines,
 }: {
   orderId: string;
   canAuthorize: boolean;
+  /**
+   * Final completion phase, section 6: true once this order has a
+   * non-cancelled dispatch that's already departed or been delivered.
+   * Disables + explains "Start a new picking session" below -- the real
+   * enforcement is server-side (lib/picking/start-picking.ts), which
+   * rejects the same condition even if this prop were somehow stale or
+   * bypassed, so this is purely the explanation, never the only guard.
+   */
+  dispatchHasDepartedOrDelivered: boolean;
   lines: OrderLineSummary[];
 }) {
   const [session, setSession] = useState<PickingSessionDetail | null>(null);
@@ -207,6 +217,16 @@ export default function PickingPanel({
   }, [orderId]);
 
   async function startPicking() {
+    // Defense in depth -- the button that calls this is already disabled
+    // in this state (see the render below), and lib/picking/start-picking.ts
+    // rejects it regardless either way, but this keeps the function itself
+    // honest rather than relying solely on the disabled attribute.
+    if (dispatchHasDepartedOrDelivered) {
+      setStartError(
+        "This order already has a dispatch that has departed or been delivered -- picking cannot be restarted."
+      );
+      return;
+    }
     setStarting(true);
     setStartError(null);
     try {
@@ -378,9 +398,11 @@ export default function PickingPanel({
         <div className="rounded-xl border border-[#E8EBE6] bg-white p-6">
           <h2 className="text-[15px] font-bold text-[#17251E]">{session ? "Start a new picking session" : "Start picking"}</h2>
           <p className="mt-1 text-xs text-gray-400">
-            {session
-              ? "A new session is a correction/re-pick -- the earlier, authorized session's history is kept, not overwritten."
-              : `${lines.length} line${lines.length === 1 ? "" : "s"} will be set up for picking, with the requested quantity snapshotted for each.`}
+            {dispatchHasDepartedOrDelivered
+              ? "This order already has a dispatch that has departed or been delivered, so picking can no longer be restarted -- the earlier, authorized session's history is kept exactly as recorded."
+              : session
+                ? "A new session is a correction/re-pick -- the earlier, authorized session's history is kept, not overwritten."
+                : `${lines.length} line${lines.length === 1 ? "" : "s"} will be set up for picking, with the requested quantity snapshotted for each.`}
           </p>
 
           <ul className="mt-4 space-y-1.5">
@@ -401,11 +423,18 @@ export default function PickingPanel({
           <button
             type="button"
             onClick={() => void startPicking()}
-            disabled={starting}
-            className="mt-4 flex items-center gap-2 rounded-lg bg-[#173D2E] px-4 py-2.5 text-xs font-semibold text-white transition hover:brightness-110 disabled:opacity-50"
+            disabled={starting || dispatchHasDepartedOrDelivered}
+            title={dispatchHasDepartedOrDelivered ? "Locked -- this order has already been dispatched." : undefined}
+            className="mt-4 flex items-center gap-2 rounded-lg bg-[#173D2E] px-4 py-2.5 text-xs font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {starting ? <Loader2 size={14} className="animate-spin" /> : <PlayCircle size={14} />}
-            {session ? "Start a new picking session" : "Start picking"}
+            {starting ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : dispatchHasDepartedOrDelivered ? (
+              <Lock size={14} />
+            ) : (
+              <PlayCircle size={14} />
+            )}
+            {dispatchHasDepartedOrDelivered ? "Picking locked -- already dispatched" : session ? "Start a new picking session" : "Start picking"}
           </button>
         </div>
       </section>

@@ -19,13 +19,17 @@ import DecisionPanel from "./decision-panel";
  * Milestone 4 (Lost-Sales Management). One UnfulfilledDemand record, its
  * full traceability chain, and its complete decision/lost-sale history --
  * spec section 6. DecisionPanel is the one client-rendered island here
- * (record-decision form + confirm-lost-sale form), same split as every
- * other order-scoped page in this project (PickingPanel, HandoverPanel).
+ * (record-decision form only -- see its own comment for why the manual
+ * confirm-lost-sale form was removed per Additional Implementation
+ * Requirements spec section 2).
  *
- * canConfirmLost is computed server-side and passed down as a plain
- * boolean, same "derived-boolean-prop" convention as
- * app/fulfilment/[id]/page.tsx's canAuthorize -- the Client Component
- * never sees the full user object.
+ * This page now also surfaces the AUTOMATIC lost-sales estimate
+ * (demand.estimatedValue/estimatedUnitPrice/estimatedValueSource, spec
+ * section 1) and, when this record was superseded by or itself
+ * supersedes another one (a re-pick/correction on the same order line --
+ * see lib/lost-sales/create-unfulfilled-demand.ts's module comment),
+ * a traceability banner linking to the other record -- so "update, not
+ * duplicate" is visible to the user, not just correct under the hood.
  */
 export const instant = false;
 
@@ -46,8 +50,6 @@ export default async function LostSaleDetailPage({ params }: RouteParams) {
   if (!demand) {
     notFound();
   }
-
-  const canConfirmLost = user.role === "SALES_MANAGER" || user.role === "ADMINISTRATOR";
 
   return (
     <div className="min-h-screen bg-[#F7F8F6]">
@@ -120,14 +122,63 @@ export default async function LostSaleDetailPage({ params }: RouteParams) {
             </p>
           )}
 
+          {demand.status === "SUPERSEDED" && (
+            <section className="rounded-xl border border-slate-200 bg-slate-50 px-5 py-4 text-xs text-slate-600">
+              This record was superseded by a later picking correction on the same order line and is now
+              read-only history.
+              {demand.supersededByDemandRef && (
+                <>
+                  {" "}
+                  The current record is{" "}
+                  <Link
+                    href={`/lost-sales/${demand.supersededByDemandRef.id}`}
+                    className="font-semibold text-[#173D2E] hover:underline"
+                  >
+                    here
+                  </Link>
+                  .
+                </>
+              )}
+            </section>
+          )}
+          {demand.supersedesDemandRef && (
+            <section className="rounded-xl border border-[#E8EBE6] bg-white px-5 py-4 text-xs text-gray-500">
+              This record replaces an earlier shortage on the same order line (unavailable quantity was{" "}
+              {demand.supersedesDemandRef.unavailableQuantity} before this correction) --{" "}
+              <Link
+                href={`/lost-sales/${demand.supersedesDemandRef.id}`}
+                className="font-semibold text-[#173D2E] hover:underline"
+              >
+                view the superseded record
+              </Link>
+              .
+            </section>
+          )}
+
+          <section className="rounded-xl border border-[#E8EBE6] bg-white p-5">
+            <h2 className="text-sm font-bold text-[#17251E]">Estimated Lost Sales (automatic)</h2>
+            <p className="mt-1 text-[11px] text-gray-400">
+              Calculated automatically the moment this shortage was recorded -- Unavailable Quantity x Applicable
+              Selling Price. Never shown as a confirmed loss; see Confirmed Lost Sales below for records a manager
+              has actually confirmed.
+            </p>
+            <p className="mt-3 text-sm font-semibold text-[#17251E]">
+              {demand.estimatedValue !== null
+                ? `${demand.estimatedValue} (unit price ${demand.estimatedUnitPrice} -- ${
+                    demand.estimatedValueSource === "ORDER_LINE_APPROVED_PRICE"
+                      ? "order's own approved price"
+                      : "price list"
+                  })`
+                : "No estimated value available -- no historically valid price resolved for this product."}
+            </p>
+          </section>
+
           <DecisionPanel
             unfulfilledDemandId={demand.id}
-            canConfirmLost={canConfirmLost}
             unavailableQuantity={demand.unavailableQuantity}
             outstandingQuantity={demand.outstandingQuantity}
             cancelledQuantity={demand.cancelledQuantity}
             substitutedQuantity={demand.substitutedQuantity}
-            confirmedLostQuantity={demand.confirmedLostQuantity}
           />
 
           <section className="overflow-hidden rounded-xl border border-[#E8EBE6] bg-white">

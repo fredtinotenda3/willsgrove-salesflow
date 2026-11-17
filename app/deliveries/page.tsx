@@ -4,14 +4,12 @@ import { getCurrentUser } from "@/lib/auth/current-user";
 import { listDispatchQueue } from "@/lib/fulfilment/queries";
 import Sidebar from "../components/sidebar";
 import {
-  ORDER_STATUS_LABELS,
-  ORDER_STATUS_STYLES,
+  getEffectiveOrderStatus,
   formatOrderDate,
   initialsFor,
   avatarColorFor,
-  type OrderStatusValue,
 } from "@/lib/order-display";
-import { Truck, ChevronRight, ChevronLeft } from "lucide-react";
+import { Truck, ChevronRight, ChevronLeft, History } from "lucide-react";
 
 /**
  * Milestone 10 (Communication Channels & Fulfilment). Builds out the
@@ -54,6 +52,13 @@ export default async function DeliveriesQueuePage({ searchParams }: RouteParams)
             <p className="text-xs text-gray-400">Workspace / Operations / Dispatch &amp; Delivery</p>
             <h2 className="mt-1 text-lg font-bold text-[#17251E]">Dispatch &amp; Delivery</h2>
           </div>
+          <Link
+            href="/deliveries/history"
+            className="flex items-center gap-2 rounded-lg border border-[#E8EBE6] px-3 py-2 text-xs font-semibold text-gray-600 transition hover:bg-gray-50"
+          >
+            <History size={14} />
+            Delivered History
+          </Link>
         </header>
 
         <div className="space-y-6 p-8">
@@ -97,8 +102,10 @@ export default async function DeliveriesQueuePage({ searchParams }: RouteParams)
                   <tbody>
                     {orders.map((order) => {
                       const customerName = order.customer?.name ?? "Unknown customer";
-                      const statusLabel = ORDER_STATUS_LABELS[order.status as OrderStatusValue] ?? order.status;
-                      const statusStyle = ORDER_STATUS_STYLES[order.status as OrderStatusValue] ?? "bg-gray-100 text-gray-500";
+                      const { label: statusLabel, style: statusStyle } = getEffectiveOrderStatus({
+                        status: order.status,
+                        dispatchStatuses: order.dispatchStatuses,
+                      });
 
                       return (
                         <tr key={order.id} className="border-b border-gray-50">

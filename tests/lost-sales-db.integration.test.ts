@@ -231,6 +231,142 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management",
     expect(auditEvents).toHaveLength(2);
   });
 
+  /**
+   * One order, one line, picked and authorized once (establishing an
+   * initial shortage), then re-picked a second time (lib/picking/
+   * start-picking.ts explicitly allows this once the prior session is
+   * AUTHORIZED -- a deliberate re-pick/correction, not a reopen). The
+   * caller supplies the SECOND session's found/unavailable split, so the
+   * same fixture drives both the "corrected to a smaller shortage" and
+   * "corrected to fully available" scenarios below.
+   */
+  async function createOrderPickedTwice(firstFound: string, firstUnavailable: string, secondFound: string, secondUnavailable: string) {
+    const { prisma } = await import("@/lib/prisma");
+    const { generateOrderReference } = await import("@/lib/orders");
+    const { startPickingSession } = await import("@/lib/picking/start-picking");
+    const { recordPickedLine } = await import("@/lib/picking/record-picked-line");
+    const { completePickingSession } = await import("@/lib/picking/complete-picking");
+    const { authorizePickingSession } = await import("@/lib/picking/authorize-picking");
+
+    const order = await prisma.customerOrder.create({
+      data: {
+        reference: generateOrderReference(),
+        customerId,
+        createdById: adminId,
+        source: "MANUAL",
+        status: "RECEIVED",
+        currency: "USD",
+        receivedAt: new Date(),
+        isDemo: true,
+        lines: {
+          create: [
+            {
+              lineNumber: 1,
+              originalProductDescription: `Re-pick correction item ${uniqueSuffix}`,
+              requestedQuantity: "10.0000",
+              requestedUnitCode: "EA",
+              productId: productAId,
+              isDemo: true,
+            },
+          ],
+        },
+      },
+      select: { id: true, lines: { select: { id: true } } },
+    });
+    createdOrderIds.push(order.id);
+    const lineId = order.lines[0]!.id;
+
+    const firstSession = await startPickingSession(order.id, adminId);
+    if (!firstSession.ok) throw new Error(firstSession.message);
+    await recordPickedLine(firstSession.session.id, lineId, firstFound, firstUnavailable, "Short on stock", adminId);
+    const firstCompleted = await completePickingSession(firstSession.session.id, adminId);
+    if (!firstCompleted.ok) throw new Error(firstCompleted.message);
+    const firstAuthorized = await authorizePickingSession(firstSession.session.id, adminId);
+    if (!firstAuthorized.ok) throw new Error(firstAuthorized.message);
+
+    // The first (and, at this point, only) UnfulfilledDemand for this
+    // order line -- created by the first authorization just above.
+    const originalDemand = await prisma.unfulfilledDemand.findFirstOrThrow({ where: { orderLineId: lineId } });
+
+    const secondSession = await startPickingSession(order.id, adminId);
+    if (!secondSession.ok) throw new Error(secondSession.message);
+    await recordPickedLine(secondSession.session.id, lineId, secondFound, secondUnavailable, secondUnavailable !== "0.0000" ? "Still short on re-count" : undefined, adminId);
+    const secondCompleted = await completePickingSession(secondSession.session.id, adminId);
+    if (!secondCompleted.ok) throw new Error(secondCompleted.message);
+    const secondAuthorized = await authorizePickingSession(secondSession.session.id, adminId);
+    if (!secondAuthorized.ok) throw new Error(secondAuthorized.message);
+
+    return { orderId: order.id, lineId, originalDemandId: originalDemand.id };
+  }
+
+  it("Additional Implementation Requirements (lost-sales automation): a re-pick correction with a reduced-but-still-real shortage supersedes the original demand with its replacement, rather than creating a duplicate", async () => {
+    if (skipAll) return;
+    const { prisma } = await import("@/lib/prisma");
+
+    // First pick: 4 unavailable out of 10. Second pick (correction): only
+    // 1 still unavailable out of 10 -- more stock turned up, but not all of it.
+    const { lineId, originalDemandId } = await createOrderPickedTwice("6.0000", "4.0000", "9.0000", "1.0000");
+
+    const original = await prisma.unfulfilledDemand.findUniqueOrThrow({ where: { id: originalDemandId } });
+    expect(original.status).toBe("SUPERSEDED");
+    expect(original.supersededByDemandId).not.toBeNull();
+    // The superseded row's own quantity bucket is untouched by the
+    // correction -- it still reflects exactly what was recorded at the
+    // time, never silently rewritten to match the new session.
+    expect(original.unavailableQuantity.toString()).toBe("4.0000");
+
+    const replacement = await prisma.unfulfilledDemand.findUniqueOrThrow({ where: { id: original.supersededByDemandId! } });
+    expect(replacement.orderLineId).toBe(lineId);
+    expect(replacement.unavailableQuantity.toString()).toBe("1.0000");
+    expect(replacement.status).toBe("PENDING_DECISION");
+
+    // No-duplicate guarantee: exactly one NON-superseded UnfulfilledDemand
+    // exists for this order line -- an aggregate that sums every
+    // non-superseded row never double-counts the same shortage twice.
+    const liveDemandsForLine = await prisma.unfulfilledDemand.findMany({
+      where: { orderLineId: lineId, status: { not: "SUPERSEDED" } },
+    });
+    expect(liveDemandsForLine).toHaveLength(1);
+    expect(liveDemandsForLine[0]!.id).toBe(replacement.id);
+
+    // Correction is itself audited, distinctly from the original creation.
+    const supersessionEvents = await prisma.auditEvent.findMany({
+      where: { action: "UNFULFILLED_DEMAND_SUPERSEDED", entityId: originalDemandId },
+    });
+    expect(supersessionEvents).toHaveLength(1);
+  });
+
+  it("Additional Implementation Requirements (lost-sales automation): a re-pick correction that finds the line fully available supersedes the original demand with NO replacement (zero outstanding, zero duplicate)", async () => {
+    if (skipAll) return;
+    const { prisma } = await import("@/lib/prisma");
+
+    // First pick: fully unavailable (0 found of 10). Second pick
+    // (correction): fully available this time (10 found of 10) -- the
+    // spec's own worked example ("corrected to 100: reverse the
+    // outstanding estimated lost sales to zero").
+    const { lineId, originalDemandId } = await createOrderPickedTwice("0.0000", "10.0000", "10.0000", "0.0000");
+
+    const original = await prisma.unfulfilledDemand.findUniqueOrThrow({ where: { id: originalDemandId } });
+    expect(original.status).toBe("SUPERSEDED");
+    // No replacement row exists for a line that is no longer short at all.
+    expect(original.supersededByDemandId).toBeNull();
+
+    // Zero live (non-superseded) UnfulfilledDemand rows for this line --
+    // the correction fully resolved it, and nothing was left behind to
+    // double-count in a reporting aggregate.
+    const liveDemandsForLine = await prisma.unfulfilledDemand.findMany({
+      where: { orderLineId: lineId, status: { not: "SUPERSEDED" } },
+    });
+    expect(liveDemandsForLine).toHaveLength(0);
+
+    const supersessionEvents = await prisma.auditEvent.findMany({
+      where: { action: "UNFULFILLED_DEMAND_SUPERSEDED", entityId: originalDemandId },
+    });
+    expect(supersessionEvents).toHaveLength(1);
+    const afterData = supersessionEvents[0]!.afterData as { supersededByDemandId: string | null };
+    expect(afterData.supersededByDemandId).toBeNull();
+  });
+
   it("scenario 15: recording decisions and confirming a lost sale never touches the original Customer PO", async () => {
     if (skipAll) return;
     const { prisma } = await import("@/lib/prisma");

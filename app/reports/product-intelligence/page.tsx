@@ -26,6 +26,8 @@ const EMPTY_FILTERS = {
   communicationStatus: null,
   currency: null,
   lostSalesReason: null,
+  unfulfilledDemandStatus: null,
+  customerDecisionType: null,
   includeDemo: false,
   productCategory: null,
   productSearch: null,

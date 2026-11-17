@@ -7,7 +7,16 @@ const SAMPLE_LIMIT = 20;
 const ERROR_LIMIT = 100;
 
 export async function POST(request: NextRequest) {
-  const auth = await requireUserOrResponse();
+  // Final completion phase, section 9: customer master data (credit
+  // limits, credit holds, TIN/VAT, pricing assignment) is restricted to
+  // SALES_MANAGER/ADMINISTRATOR -- unlike the other CSV-import routes in
+  // this codebase (price-list, tax-code), which deliberately follow the
+  // project's "no dedicated role for this action" precedent, this one is
+  // explicitly scoped by the directive to be role-gated. Gating the
+  // preview too (not just the execute route below) avoids a confusing
+  // flow where a SALESPERSON can review a full import plan and then only
+  // discover at confirm time that they can't run it.
+  const auth = await requireUserOrResponse(["SALES_MANAGER", "ADMINISTRATOR"]);
   if (!auth.ok) return auth.response;
 
   try {

@@ -140,6 +140,8 @@ export type PickingQueueOrderSummary = {
   lineCount: number;
   isDemo: boolean;
   createdAt: string;
+  /** Final completion phase, section 7 -- non-CANCELLED DispatchRecord.status values, for getEffectiveOrderStatus (an order can be dispatched/delivered before a handover is ever generated for it, independent of this queue's own handedToSapAt exit condition). */
+  dispatchStatuses: string[];
 };
 
 export type PickingQueueResult = {
@@ -195,6 +197,7 @@ export async function listPickingQueue(options: {
         createdAt: true,
         customer: { select: { id: true, name: true } },
         _count: { select: { lines: true } },
+        dispatchRecords: { where: { status: { not: "CANCELLED" } }, select: { status: true } },
       },
     }),
   ]);
@@ -210,6 +213,7 @@ export async function listPickingQueue(options: {
       lineCount: order._count.lines,
       isDemo: order.isDemo,
       createdAt: order.createdAt.toISOString(),
+      dispatchStatuses: order.dispatchRecords.map((d) => d.status),
     })),
     pagination: {
       page: options.page,

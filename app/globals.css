@@ -3,11 +3,108 @@
 :root {
   --background: #f7f8f6;
   --foreground: #17251e;
+
+  /*
+   * Additional Implementation Requirements (spec section 10: "Adopt
+   * shadcn/ui as the standard component system for new/updated
+   * interfaces"). Standard shadcn/ui token names, mapped onto this
+   * project's EXISTING brand palette (the dark-green #173D2E primary,
+   * #E8EBE6 borders, #17251E text already used by hand throughout
+   * app/**\/*.tsx) rather than shadcn's own default theme -- so
+   * components/ui/* components sit on the same visual language as every
+   * page already in this project instead of introducing a second,
+   * clashing color system. This project is light-mode only today (no
+   * theme toggle anywhere in the codebase), so only light values are
+   * defined -- adding a dark palette with no way to switch into it would
+   * be unused, untested surface area.
+   */
+  --card: #ffffff;
+  --card-foreground: #17251e;
+  --popover: #ffffff;
+  --popover-foreground: #17251e;
+  --primary: #173d2e;
+  --primary-foreground: #ffffff;
+  --secondary: #e8ebe6;
+  --secondary-foreground: #17251e;
+  --muted: #f7f8f6;
+  --muted-foreground: #6b7280;
+  --accent: #e8ebe6;
+  --accent-foreground: #17251e;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #e8ebe6;
+  --input: #e8ebe6;
+  --ring: #173d2e;
+  --radius: 0.75rem;
+
+  /*
+   * dataviz skill: validated, colorblind-checked default palette (see
+   * this round's delivery report for the validator figures) -- used
+   * verbatim rather than re-themed to the brand green, because
+   * re-coloring a categorical series order requires re-running the CVD
+   * validator against the new hues, and the skill's own guidance is not
+   * to ship an un-validated substitution. The brand green remains the
+   * UI's primary color (buttons, links, focus rings) via --primary
+   * above; these --chart-* tokens are for CHART SERIES DATA only.
+   */
+  --chart-1: #2a78d6; /* blue */
+  --chart-2: #eb6834; /* orange */
+  --chart-3: #1baf7a; /* aqua */
+  --chart-4: #eda100; /* yellow */
+  --chart-5: #e87ba4; /* magenta */
+  --chart-6: #008300; /* green */
+  --chart-7: #6250d6; /* violet */
+  --chart-8: #e34948; /* red */
+
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+
+  --chart-grid: #e1e0d9;
+  --chart-axis: #c3c2b7;
+  --chart-muted-ink: #898781;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --color-chart-7: var(--chart-7);
+  --color-chart-8: var(--chart-8);
+
+  --color-status-good: var(--status-good);
+  --color-status-warning: var(--status-warning);
+  --color-status-serious: var(--status-serious);
+  --color-status-critical: var(--status-critical);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);

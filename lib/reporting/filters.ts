@@ -4,6 +4,7 @@ import { ORDER_STATUSES } from "@/lib/order-display";
 import { QUOTATION_STATUS_LABELS } from "@/lib/quotations/display";
 import { CLAIM_STATUS_LABELS } from "@/lib/invoice-claims/display";
 import { LOST_SALE_REASON_LABELS } from "@/lib/lost-sales/display";
+import { unfulfilledDemandStatusValues, customerDecisionTypeValues } from "@/lib/lost-sales/validation";
 import { DECISION_CATEGORIES, DECISION_PRIORITIES, DECISION_RECOMMENDATION_STATUSES } from "@/lib/reporting/decision-types";
 import type { ReportFilters, PaginationParams } from "@/lib/reporting/types";
 
@@ -161,6 +162,24 @@ export function parseReportFilters(params: URLSearchParams): ParsedReportFilters
   const recommendationStatusResult = readEnumFilter(params.get("recommendationStatus"), DECISION_RECOMMENDATION_STATUSES, "recommendationStatus");
   if (!recommendationStatusResult.ok) return recommendationStatusResult;
 
+  // Additional Implementation Requirements (spec section 3: "Lost Sales
+  // Analytics Overhaul"). Each maps onto exactly one schema enum
+  // (UnfulfilledDemandStatus/CustomerDecisionType), so -- like
+  // orderStatus/quotationStatus/claimStatus/lostSalesReason above -- both
+  // ARE centrally validated here.
+  const unfulfilledDemandStatusResult = readEnumFilter(
+    params.get("unfulfilledDemandStatus"),
+    unfulfilledDemandStatusValues,
+    "unfulfilledDemandStatus"
+  );
+  if (!unfulfilledDemandStatusResult.ok) return unfulfilledDemandStatusResult;
+  const customerDecisionTypeResult = readEnumFilter(
+    params.get("customerDecisionType"),
+    customerDecisionTypeValues,
+    "customerDecisionType"
+  );
+  if (!customerDecisionTypeResult.ok) return customerDecisionTypeResult;
+
   return {
     ok: true,
     filters: {
@@ -188,6 +207,8 @@ export function parseReportFilters(params: URLSearchParams): ParsedReportFilters
       decisionCategory: decisionCategoryResult.value,
       priority: decisionPriorityResult.value,
       recommendationStatus: recommendationStatusResult.value,
+      unfulfilledDemandStatus: unfulfilledDemandStatusResult.value,
+      customerDecisionType: customerDecisionTypeResult.value,
     },
   };
 }

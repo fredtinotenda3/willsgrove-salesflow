@@ -28,6 +28,8 @@ const EMPTY_FILTERS = {
   includeDemo: false,
   currency: null,
   lostSalesReason: null,
+  unfulfilledDemandStatus: null,
+  customerDecisionType: null,
   productCategory: null,
   productSearch: null,
   sapItemCode: null,

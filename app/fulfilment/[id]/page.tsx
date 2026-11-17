@@ -5,11 +5,9 @@ import { getOrderById } from "@/lib/order-queries";
 import { isValidId } from "@/lib/http";
 import Sidebar from "../../components/sidebar";
 import {
-  ORDER_STATUS_LABELS,
-  ORDER_STATUS_STYLES,
+  getEffectiveOrderStatus,
   initialsFor,
   avatarColorFor,
-  type OrderStatusValue,
 } from "@/lib/order-display";
 import { ArrowLeft, ExternalLink, Ban } from "lucide-react";
 import PickingPanel from "./picking-panel";
@@ -51,8 +49,9 @@ export default async function FulfilmentOrderPage({ params }: RouteParams) {
   }
 
   const customerName = order.customer?.name ?? "Unknown customer";
-  const statusLabel = ORDER_STATUS_LABELS[order.status as OrderStatusValue] ?? order.status;
-  const statusStyle = ORDER_STATUS_STYLES[order.status as OrderStatusValue] ?? "bg-gray-100 text-gray-500";
+  // Final completion phase, section 7: derived label, not the raw
+  // status -- see lib/order-display.ts's getEffectiveOrderStatus.
+  const { label: statusLabel, style: statusStyle } = getEffectiveOrderStatus({ status: order.status, dispatchStatuses: order.dispatchStatuses });
   const canAuthorize = user.role === "SALES_MANAGER" || user.role === "ADMINISTRATOR";
   const notPickable = NOT_PICKABLE_STATUSES.has(order.status);
 
@@ -122,6 +121,15 @@ export default async function FulfilmentOrderPage({ params }: RouteParams) {
             <PickingPanel
               orderId={order.id}
               canAuthorize={canAuthorize}
+              // Final completion phase, section 6: lets the panel disable
+              // + explain "Start a new picking session" once this order has
+              // a dispatch that's already departed or delivered -- the
+              // same condition lib/picking/start-picking.ts enforces
+              // server-side, so the button being disabled here is purely
+              // an explanation, never the only thing standing in the way.
+              dispatchHasDepartedOrDelivered={order.dispatchStatuses.some(
+                (status) => status === "DEPARTED" || status === "DELIVERED"
+              )}
               lines={order.lines.map((line) => ({
                 id: line.id,
                 lineNumber: line.lineNumber,

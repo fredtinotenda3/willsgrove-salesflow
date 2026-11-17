@@ -81,17 +81,31 @@ export const CLAIM_LINE_REASON_CATEGORIES = [
 ] as const;
 export type ClaimLineReasonCategory = (typeof CLAIM_LINE_REASON_CATEGORIES)[number];
 
+/**
+ * Additional Implementation Requirements (final completion phase,
+ * section 8.2): "Use these exact display labels" -- ten fixed strings,
+ * given verbatim, including item 9's own wording ("BarCode Scabbing
+ * Problem"), reused as-is rather than "corrected" to "Scanning" since
+ * the instruction is explicit that these are the exact labels to show,
+ * and the sample supplier-claim document's own three present reasons
+ * (NOT DELIVERED, PRICE CLAIM, SHORT DELIVERY) are all covered by this
+ * list with no reason it uses that isn't already one of these ten.
+ * Changing ONLY this map, not CLAIM_LINE_REASON_CATEGORIES or the
+ * Prisma enum identifiers above, keeps this purely a display-label
+ * change -- no schema/migration, no stored value changes, no API
+ * contract change for any existing record.
+ */
 export const CLAIM_LINE_REASON_CATEGORY_LABELS: Record<ClaimLineReasonCategory, string> = {
-  PRICING_DISPUTE: "Price claim",
-  QUALITY_ISSUE: "Poor-quality product",
-  SHORT_DELIVERY: "Short delivery",
-  PRODUCT_NOT_ORDERED: "Product not ordered",
-  PRODUCT_NOT_DELIVERED: "Product not delivered",
-  OVERSUPPLY: "Oversupply",
-  EXPIRED_PRODUCT: "Expired product",
-  NO_BARCODE: "No barcode / missing barcode",
-  BARCODE_SCANNING_ISSUE: "Barcode scanning problems",
-  DUPLICATE_ENTRY: "Duplicate products / duplicate entries",
+  PRICING_DISPUTE: "Price Claim",
+  QUALITY_ISSUE: "Poor Quality",
+  SHORT_DELIVERY: "Short Delivery",
+  PRODUCT_NOT_ORDERED: "Not Ordered",
+  PRODUCT_NOT_DELIVERED: "Not Delivered",
+  OVERSUPPLY: "OverSupply",
+  EXPIRED_PRODUCT: "Expired",
+  NO_BARCODE: "No BarCode",
+  BARCODE_SCANNING_ISSUE: "BarCode Scabbing Problem",
+  DUPLICATE_ENTRY: "Duplicate",
 };
 
 // Spec Part 1 section 6, verbatim (reworded to identifiers).

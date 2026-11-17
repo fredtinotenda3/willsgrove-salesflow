@@ -17,6 +17,7 @@ import {
   ArrowUpRight,
   Filter,
   AlertTriangle,
+  Upload,
 } from "lucide-react";
 import Sidebar from "../components/sidebar";
 
@@ -363,6 +364,35 @@ export default function CustomersPage() {
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("All");
   const [page, setPage] = useState(1);
+
+  // Final completion phase, section 9: the "Import Customers" entry
+  // point is only shown to SALES_MANAGER/ADMINISTRATOR -- same
+  // client-knows-its-own-role pattern app/components/sidebar.tsx already
+  // uses (a plain /api/auth/session fetch, no shared context in this
+  // codebase). This is purely a display decision; the actual enforcement
+  // is server-side in the master-import API routes regardless of what
+  // this resolves to.
+  const [canImportCustomers, setCanImportCustomers] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/auth/session", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        const role = data?.user?.role;
+        if (role === "SALES_MANAGER" || role === "ADMINISTRATOR") {
+          setCanImportCustomers(true);
+        }
+      })
+      .catch(() => {
+        // No import button shown without a resolved role -- the same
+        // fail-closed default sidebar.tsx's own session fetch documents.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Add customer modal
   const [showAdd, setShowAdd] = useState(false);
@@ -758,13 +788,24 @@ export default function CustomersPage() {
               </p>
             </div>
 
-            <button
-              onClick={openAddModal}
-              className="flex items-center justify-center gap-2 rounded-lg bg-[#183D2D] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[#24543D]"
-            >
-              <Plus size={17} />
-              Add Customer
-            </button>
+            <div className="flex items-center gap-3">
+              {canImportCustomers && (
+                <Link
+                  href="/customers/master-import"
+                  className="flex items-center justify-center gap-2 rounded-lg border border-[#DCE5DC] bg-white px-4 py-2.5 text-sm font-medium text-[#315C43] transition hover:bg-[#EFF4EF]"
+                >
+                  <Upload size={16} />
+                  Import Customers
+                </Link>
+              )}
+              <button
+                onClick={openAddModal}
+                className="flex items-center justify-center gap-2 rounded-lg bg-[#183D2D] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[#24543D]"
+              >
+                <Plus size={17} />
+                Add Customer
+              </button>
+            </div>
           </div>
 
           <div className="mb-7 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">

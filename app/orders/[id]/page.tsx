@@ -6,7 +6,7 @@ import { isValidId } from "@/lib/http";
 import Sidebar from "../../components/sidebar";
 import {
   ORDER_STATUS_LABELS,
-  ORDER_STATUS_STYLES,
+  getEffectiveOrderStatus,
   VERIFICATION_STATUS_LABELS,
   VERIFICATION_STATUS_STYLES,
   DOCUMENT_TYPE_LABELS,
@@ -77,8 +77,16 @@ export default async function OrderDetailPage({ params }: RouteParams) {
   }
 
   const customerName = order.customer?.name ?? "Unknown customer";
-  const statusLabel = ORDER_STATUS_LABELS[order.status as OrderStatusValue] ?? order.status;
-  const statusStyle = ORDER_STATUS_STYLES[order.status as OrderStatusValue] ?? "bg-gray-100 text-gray-500";
+  // Final completion phase, section 7: the header badge shows the
+  // DERIVED Departed/Delivered label (never a second stored status) once
+  // dispatch has actually progressed past READY_TO_INVOICE, rather than
+  // staying frozen on "Ready to Invoice" -- see lib/order-display.ts's
+  // getEffectiveOrderStatus. Every other use of order.status on this page
+  // (the assembly-form gate, the HandoverPanel's readyToInvoice prop, the
+  // statusHistory timeline) intentionally keeps reading the REAL stored
+  // status, since those are genuine workflow/business-rule checks, not a
+  // user-facing "what state is this order in" label.
+  const { label: statusLabel, style: statusStyle } = getEffectiveOrderStatus({ status: order.status, dispatchStatuses: order.dispatchStatuses });
 
   return (
     <div className="min-h-screen bg-[#F7F8F6]">

@@ -76,6 +76,11 @@ describe("parseReportFilters", () => {
       decisionCategory: null,
       priority: null,
       recommendationStatus: null,
+      // Additional Implementation Requirements (spec section 3): absent
+      // from this request, so default to null, same as every other
+      // optional filter above that wasn't supplied.
+      unfulfilledDemandStatus: null,
+      customerDecisionType: null,
     });
   });
 
@@ -204,6 +209,24 @@ describe("parseReportFilters", () => {
 
     const badStatus = parseReportFilters(params({ recommendationStatus: "DELETED" }));
     expect(badStatus.ok).toBe(false);
+  });
+
+  it("Additional Implementation Requirements (spec section 3): accepts a valid unfulfilledDemandStatus/customerDecisionType and rejects a value outside each enum, the same centrally-validated treatment as decisionCategory/priority/recommendationStatus", () => {
+    const valid = parseReportFilters(
+      params({ unfulfilledDemandStatus: "AWAITING_SUPPLY", customerDecisionType: "ACCEPT_PARTIAL_CANCEL_REMAINDER" })
+    );
+    expect(valid.ok).toBe(true);
+    if (valid.ok) {
+      expect(valid.filters.unfulfilledDemandStatus).toBe("AWAITING_SUPPLY");
+      expect(valid.filters.customerDecisionType).toBe("ACCEPT_PARTIAL_CANCEL_REMAINDER");
+    }
+
+    const badDemandStatus = parseReportFilters(params({ unfulfilledDemandStatus: "NOT_A_REAL_STATUS" }));
+    expect(badDemandStatus.ok).toBe(false);
+    if (!badDemandStatus.ok) expect(badDemandStatus.message).toMatch(/unfulfilledDemandStatus must be one of/);
+
+    const badDecisionType = parseReportFilters(params({ customerDecisionType: "GIVE_UP" }));
+    expect(badDecisionType.ok).toBe(false);
   });
 
   it("passes fulfilmentStatus and communicationStatus through unvalidated -- each maps onto more than one schema enum depending on which report consumes it, so there is deliberately no single valid set to check here", () => {

@@ -61,6 +61,7 @@ export async function recordCustomerDecision(
     where: { id: input.unfulfilledDemandId },
     select: {
       id: true,
+      status: true,
       unavailableQuantity: true,
       outstandingQuantity: true,
       cancelledQuantity: true,
@@ -70,6 +71,23 @@ export async function recordCustomerDecision(
   });
   if (!demand) {
     return { ok: false, status: 404, message: "Unfulfilled demand record not found." };
+  }
+
+  // Additional Implementation Requirements (lost-sales automation): a
+  // SUPERSEDED record was replaced by a later re-pick/correction on the
+  // same order line -- it is frozen, historical data from that point on
+  // (see UnfulfilledDemandStatus.SUPERSEDED's schema.prisma comment).
+  // Recording a new decision against it would mutate history that a
+  // correction has already moved past; the current record (reachable
+  // from the order's latest picking session) is where a new decision
+  // belongs.
+  if (demand.status === "SUPERSEDED") {
+    return {
+      ok: false,
+      status: 409,
+      message:
+        "This shortage record was superseded by a later picking correction and is read-only. Record the decision against the current record instead.",
+    };
   }
 
   const unavailableText = demand.unavailableQuantity.toString();

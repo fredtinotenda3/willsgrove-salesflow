@@ -1543,6 +1543,26 @@ enum UnfulfilledDemandStatus {
   FULLY_CANCELLED
   CONFIRMED_LOST
   RESOLVED
+  // Additional Implementation Requirements (lost-sales automation,
+  // section 1): "Automatic lost sales must update, not duplicate." A
+  // PickingSession may be re-picked after its predecessor was AUTHORIZED
+  // (lib/picking/start-picking.ts already allows this -- a deliberate
+  // re-pick/correction). When that happens, lib/lost-sales/
+  // create-unfulfilled-demand.ts marks the ORDER LINE's previous
+  // UnfulfilledDemand SUPERSEDED (never deleted, never mutated in place --
+  // its quantity buckets, decision history and any lost-sale confirmations
+  // stay exactly as they were) and links it to whichever row replaces it
+  // (UnfulfilledDemand.supersededByDemandId), or to nothing at all if the
+  // correction found the line fully available (the spec's own worked
+  // example: "Found corrected to 100: reverse the outstanding estimated
+  // lost sales to zero" -- there is no replacement row in that case, only
+  // a superseded one). Every quantity/value aggregate in
+  // lib/lost-sales/queries.ts and lib/reporting excludes SUPERSEDED rows,
+  // which is what actually prevents the double-counting the spec warns
+  // about -- the status value exists so that exclusion is a single,
+  // indexable `status != SUPERSEDED` filter rather than a join every
+  // caller must remember to add.
+  SUPERSEDED
 }
 
 // Spec 4.6's configurable loss-reason list.
@@ -1629,6 +1649,40 @@ model UnfulfilledDemand {
   cancelledQuantity     Decimal @default(0) @db.Decimal(18, 4)
   substitutedQuantity   Decimal @default(0) @db.Decimal(18, 4)
   confirmedLostQuantity Decimal @default(0) @db.Decimal(18, 4)
+
+  // Additional Implementation Requirements (lost-sales automation,
+  // section 1): "When the unavailable quantity is greater than zero,
+  // automatically create... the corresponding lost-sales record... and
+  // calculate the estimated lost-sales value," using "the applicable
+  // selling price from the existing approved pricing/order records" --
+  // resolved automatically at creation time by
+  // lib/lost-sales/create-unfulfilled-demand.ts, reusing the exact same
+  // resolveEstimatedLostSaleValue() lib/lost-sales/confirm-lost-sale.ts
+  // already uses (OrderLine.approvedUnitPrice first, then the customer's
+  // PriceList). Deliberately separate columns from LostSaleRecord's own
+  // estimatedUnitPrice/estimatedValue/estimatedValueSource (which remain
+  // untouched) -- this is the spec's "estimated SUPPLY-SHORTAGE lost
+  // sale," automatic and unconditional the moment unavailableQuantity > 0,
+  // never requiring the separate deliberate LostSaleRecord confirmation
+  // the spec's section 2 removes from the user interface. Null (never 0)
+  // when no historically valid price resolves -- same "never invent a
+  // price" rule as estimate-value.ts's own comment.
+  estimatedUnitPrice   Decimal?             @db.Decimal(18, 4)
+  estimatedValue       Decimal?             @db.Decimal(18, 4)
+  estimatedValueSource LostSaleValueSource?
+
+  // Additional Implementation Requirements (lost-sales automation,
+  // section 1): the "update, not duplicate" link for a re-pick/correction
+  // on the same order line -- see UnfulfilledDemandStatus.SUPERSEDED's
+  // own comment above for the full rule. @unique because at most one
+  // later row can ever supersede a given one (one order line has at most
+  // one non-superseded, i.e. "current," UnfulfilledDemand at a time).
+  // onDelete: SetNull rather than Restrict purely for symmetry with this
+  // column's own nullability -- nothing in this codebase ever deletes an
+  // UnfulfilledDemand, so this never actually fires.
+  supersededByDemandId String?            @unique
+  supersededByDemand   UnfulfilledDemand? @relation("DemandSupersession", fields: [supersededByDemandId], references: [id], onDelete: SetNull)
+  supersedesDemand     UnfulfilledDemand? @relation("DemandSupersession")
 
   status UnfulfilledDemandStatus @default(PENDING_DECISION)
 

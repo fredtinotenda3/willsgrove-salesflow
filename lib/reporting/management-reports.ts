@@ -10,6 +10,7 @@ import { getCommunicationsMonitoringReport } from "@/lib/reporting/communication
 import { getLostSalesReportSummary } from "@/lib/lost-sales/queries";
 import { getQuotationDashboardCounts } from "@/lib/quotations/queries";
 import { utcDateToDateOnlyString } from "@/lib/dates";
+import { getEffectiveOrderStatus } from "@/lib/order-display";
 
 /**
  * Milestone 11 (Operational BI), spec section 9: the 9 named management
@@ -156,6 +157,12 @@ const orderListRowSelect = {
   currency: true,
   receivedAt: true,
   approvedAt: true,
+  // Final completion phase, section 7: non-CANCELLED DispatchRecord.status
+  // values, so this report's own "status" column can show the same
+  // derived label (e.g. "Departed"/"Delivered") as every other order
+  // surface instead of the raw, permanently-stuck OrderStatus enum value
+  // -- see lib/order-display.ts's getEffectiveOrderStatus.
+  dispatchRecords: { where: { status: { not: "CANCELLED" } }, select: { status: true } },
 } satisfies Prisma.CustomerOrderSelect;
 
 export type OutstandingOrderRow = {
@@ -172,10 +179,14 @@ export type OutstandingOrderRow = {
 
 function toOutstandingOrderRow(order: Prisma.CustomerOrderGetPayload<{ select: typeof orderListRowSelect }>): OutstandingOrderRow {
   const receivedAt = order.receivedAt;
+  const { label: statusLabel } = getEffectiveOrderStatus({
+    status: order.status,
+    dispatchStatuses: order.dispatchRecords.map((d) => d.status),
+  });
   return {
     id: order.id,
     reference: order.reference,
-    status: order.status,
+    status: statusLabel,
     customerName: order.customer.name,
     salespersonName: order.salesperson?.name ?? null,
     total: order.total?.toString() ?? null,

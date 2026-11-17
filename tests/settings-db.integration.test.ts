@@ -248,6 +248,28 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Final Operational Enhancements Part 
       if (!renameIntoDuplicate.ok) expect(renameIntoDuplicate.status).toBe(409);
     });
 
+    it("updateVehicle records statusChangedById/At only when status actually changes (surgical TS fix regression: data.statusChangedBy connect, not the raw scalar)", async () => {
+      if (skipAll) return;
+      const { prisma } = await import("@/lib/prisma");
+      const { createVehicle, updateVehicle } = await import("@/lib/vehicles");
+
+      const created = await createVehicle({ registrationNumber: `STATUS-${uniqueSuffix}` }, adminId);
+      if (!created.ok) throw new Error(created.message);
+      createdVehicleIds.push(created.id);
+
+      // No-op status (ACTIVE -> ACTIVE, the default) must not stamp statusChangedAt.
+      await updateVehicle(created.id, { status: "ACTIVE", notes: "no-op check" }, adminId);
+      const afterNoOp = await prisma.vehicle.findUniqueOrThrow({ where: { id: created.id } });
+      expect(afterNoOp.statusChangedAt).toBeNull();
+      expect(afterNoOp.notes).toBe("no-op check");
+
+      await updateVehicle(created.id, { status: "INACTIVE" }, adminId);
+      const afterChange = await prisma.vehicle.findUniqueOrThrow({ where: { id: created.id } });
+      expect(afterChange.status).toBe("INACTIVE");
+      expect(afterChange.statusChangedById).toBe(adminId);
+      expect(afterChange.statusChangedAt).not.toBeNull();
+    });
+
     it("deleteVehicle succeeds when unreferenced, and is refused (409) once a dispatch references it", async () => {
       if (skipAll) return;
       const { createVehicle, deleteVehicle } = await import("@/lib/vehicles");

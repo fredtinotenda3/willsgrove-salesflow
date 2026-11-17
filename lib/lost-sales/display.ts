@@ -14,6 +14,12 @@ export const UNFULFILLED_DEMAND_STATUS_LABELS: Record<string, string> = {
   FULLY_CANCELLED: "Fully cancelled",
   CONFIRMED_LOST: "Confirmed lost",
   RESOLVED: "Resolved",
+  // Additional Implementation Requirements (lost-sales automation): a
+  // superseded record was replaced by a later re-pick/correction on the
+  // same order line -- see UnfulfilledDemandStatus.SUPERSEDED's
+  // schema.prisma comment. Still shown, never hidden -- it's history,
+  // just no longer the current figure.
+  SUPERSEDED: "Superseded by correction",
 };
 
 export const UNFULFILLED_DEMAND_STATUS_STYLES: Record<string, string> = {
@@ -23,6 +29,7 @@ export const UNFULFILLED_DEMAND_STATUS_STYLES: Record<string, string> = {
   FULLY_CANCELLED: "bg-gray-100 text-gray-600",
   CONFIRMED_LOST: "bg-red-50 text-red-700",
   RESOLVED: "bg-emerald-50 text-emerald-700",
+  SUPERSEDED: "bg-slate-100 text-slate-500",
 };
 
 export const DECISION_TYPE_LABELS: Record<string, string> = {

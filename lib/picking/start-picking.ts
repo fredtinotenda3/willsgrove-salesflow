@@ -36,6 +36,15 @@ export async function startPickingSession(orderId: string, actorId: string): Pro
       id: true,
       status: true,
       lines: { select: { id: true, requestedQuantity: true }, orderBy: { lineNumber: "asc" } },
+      // Final completion phase, section 6: a non-CANCELLED dispatch that
+      // has already departed or been delivered makes this order physically
+      // gone from (or already confirmed at) the customer -- picking cannot
+      // be meaningfully redone once that's happened. Unfiltered-by-status
+      // selection would also catch PLANNED dispatches, which don't block a
+      // re-pick on their own (a plan can still be revised or cancelled via
+      // lib/fulfilment/dispatch.ts's own cancelDispatchRecord), so this is
+      // scoped to exactly DEPARTED/DELIVERED.
+      dispatchRecords: { where: { status: { in: ["DEPARTED", "DELIVERED"] } }, select: { id: true } },
     },
   });
   if (!order) {
@@ -46,6 +55,20 @@ export async function startPickingSession(orderId: string, actorId: string): Pro
   }
   if (order.lines.length === 0) {
     return { ok: false, status: 400, message: "This order has no lines to pick." };
+  }
+  // Final completion phase, section 6: block a new (or re-pick) picking
+  // session once dispatch has moved past PLANNED. There is no reopen
+  // workflow for a departed/delivered dispatch (cancelDispatchRecord only
+  // accepts a still-PLANNED one -- see its own comment) and this task is
+  // scoped to not invent one, so this is a hard stop, not a role-gated
+  // override.
+  if (order.dispatchRecords.length > 0) {
+    return {
+      ok: false,
+      status: 409,
+      message:
+        "Cannot start a new picking session: this order already has a dispatch that has departed or been delivered. Picking cannot be restarted once an order has left for delivery.",
+    };
   }
 
   // At most one session per order may be IN_PROGRESS or COMPLETED (but
