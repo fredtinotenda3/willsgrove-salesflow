@@ -191,65 +191,65 @@ describe("Milestone 6A: amount-only dispute validation", () => {
 });
 
 /**
- * Final Operational Enhancements (spec Part 6): the 10 named,
- * distinguishable per-line claim reasons the sample claim document
- * requires -- 3 reusing an existing equivalent category identifier
- * (PRICING_DISPUTE/QUALITY_ISSUE/SHORT_DELIVERY, each already present in
- * CLAIM_CATEGORIES for a different purpose -- the claim-LEVEL category),
- * 7 newly added. This is a per-LINE field (InvoiceClaimLine.reasonCategory),
- * independent of the claim-level category: a claim can legitimately mix
- * reasons across its lines.
+ * Management Analytics / Claims Standardisation spec, Part 4: the
+ * per-line claim-reason dropdown must offer EXACTLY these 8
+ * standardised reasons, in this exact order and wording. This
+ * supersedes the earlier "Final Operational Enhancements" round's
+ * 10-reason, differently-worded version of the same
+ * InvoiceClaimLine.reasonCategory field (including a typo in that
+ * round's item 7, "BarCode Scabbing Problem") -- see
+ * lib/invoice-claims/validation.ts's own comment on
+ * CLAIM_LINE_REASON_CATEGORIES/CLAIM_LINE_REASON_CATEGORY_LABELS for
+ * how the 2 now-unlisted legacy values (PRODUCT_NOT_ORDERED,
+ * PRODUCT_NOT_DELIVERED) are preserved for historical display only.
  */
-describe("Final Operational Enhancements Part 6: CLAIM_LINE_REASON_CATEGORIES", () => {
-  it("has exactly the 10 spec-named reasons, no more, no fewer", () => {
-    expect(CLAIM_LINE_REASON_CATEGORIES).toHaveLength(10);
-    expect(new Set(CLAIM_LINE_REASON_CATEGORIES).size).toBe(10); // no duplicates
+describe("Management Analytics spec Part 4: CLAIM_LINE_REASON_CATEGORIES", () => {
+  it("has exactly the 8 spec-named reasons, no more, no fewer", () => {
+    expect(CLAIM_LINE_REASON_CATEGORIES).toHaveLength(8);
+    expect(new Set(CLAIM_LINE_REASON_CATEGORIES).size).toBe(8); // no duplicates
   });
 
-  it("reuses the 3 existing equivalent categories by identifier (not reinvented under a new name)", () => {
-    expect(CLAIM_LINE_REASON_CATEGORIES).toContain("PRICING_DISPUTE"); // Price Claim
-    expect(CLAIM_LINE_REASON_CATEGORIES).toContain("QUALITY_ISSUE"); // Poor Quality
-    expect(CLAIM_LINE_REASON_CATEGORIES).toContain("SHORT_DELIVERY"); // Short Delivery
-  });
-
-  it("has exactly the 7 newly added reasons", () => {
-    for (const expected of [
-      "PRODUCT_NOT_ORDERED",
-      "PRODUCT_NOT_DELIVERED",
+  it("is exactly the 8 spec reasons, in the spec's own exact order", () => {
+    expect(CLAIM_LINE_REASON_CATEGORIES).toEqual([
+      "PRICING_DISPUTE",
+      "QUALITY_ISSUE",
+      "SHORT_DELIVERY",
       "OVERSUPPLY",
       "EXPIRED_PRODUCT",
       "NO_BARCODE",
       "BARCODE_SCANNING_ISSUE",
       "DUPLICATE_ENTRY",
-    ]) {
-      expect(CLAIM_LINE_REASON_CATEGORIES).toContain(expected);
-    }
+    ]);
   });
 
-  it("has a display label for every one of the 10 categories, and only those 10", () => {
-    const labelKeys = Object.keys(CLAIM_LINE_REASON_CATEGORY_LABELS);
-    expect(labelKeys.sort()).toEqual([...CLAIM_LINE_REASON_CATEGORIES].sort());
+  it("no longer offers the 2 superseded, non-spec legacy reasons as selectable", () => {
+    expect(CLAIM_LINE_REASON_CATEGORIES).not.toContain("PRODUCT_NOT_ORDERED");
+    expect(CLAIM_LINE_REASON_CATEGORIES).not.toContain("PRODUCT_NOT_DELIVERED");
+  });
+
+  it("has a display label for every one of the 8 selectable categories", () => {
     for (const category of CLAIM_LINE_REASON_CATEGORIES) {
       expect(CLAIM_LINE_REASON_CATEGORY_LABELS[category]).toBeTruthy();
     }
   });
 
-  // Final completion phase, section 8.2: "Use these exact display
-  // labels" -- locked down verbatim (including item 9's own spelling)
-  // so a future edit can't silently drift from the required wording.
-  it("uses the exact 10 standardized display labels from the final completion directive", () => {
-    expect(CLAIM_LINE_REASON_CATEGORY_LABELS).toEqual({
-      PRICING_DISPUTE: "Price Claim",
-      QUALITY_ISSUE: "Poor Quality",
-      SHORT_DELIVERY: "Short Delivery",
-      PRODUCT_NOT_ORDERED: "Not Ordered",
-      PRODUCT_NOT_DELIVERED: "Not Delivered",
-      OVERSUPPLY: "OverSupply",
-      EXPIRED_PRODUCT: "Expired",
-      NO_BARCODE: "No BarCode",
-      BARCODE_SCANNING_ISSUE: "BarCode Scabbing Problem",
-      DUPLICATE_ENTRY: "Duplicate",
-    });
+  // Spec Part 4, verbatim: "EXACTLY these 8 standardised options, in
+  // this exact order/wording" -- locked down so a future edit can't
+  // silently drift from the required wording.
+  it("uses the exact 8 standardised display labels from the spec, verbatim", () => {
+    expect(CLAIM_LINE_REASON_CATEGORY_LABELS.PRICING_DISPUTE).toBe("Price Claim");
+    expect(CLAIM_LINE_REASON_CATEGORY_LABELS.QUALITY_ISSUE).toBe("Poor Quality Product");
+    expect(CLAIM_LINE_REASON_CATEGORY_LABELS.SHORT_DELIVERY).toBe("Short Delivered");
+    expect(CLAIM_LINE_REASON_CATEGORY_LABELS.OVERSUPPLY).toBe("OverSupply");
+    expect(CLAIM_LINE_REASON_CATEGORY_LABELS.EXPIRED_PRODUCT).toBe("Expire");
+    expect(CLAIM_LINE_REASON_CATEGORY_LABELS.NO_BARCODE).toBe("No Barcode");
+    expect(CLAIM_LINE_REASON_CATEGORY_LABELS.BARCODE_SCANNING_ISSUE).toBe("Barcode Scanning Problems");
+    expect(CLAIM_LINE_REASON_CATEGORY_LABELS.DUPLICATE_ENTRY).toBe("Duplicates");
+  });
+
+  it("still carries a display label for the 2 superseded legacy reasons, for historical claim lines only", () => {
+    expect(CLAIM_LINE_REASON_CATEGORY_LABELS.PRODUCT_NOT_ORDERED).toBeTruthy();
+    expect(CLAIM_LINE_REASON_CATEGORY_LABELS.PRODUCT_NOT_DELIVERED).toBeTruthy();
   });
 
   it("claimLineInputSchema accepts a valid reasonCategory on both a QUANTITY and an AMOUNT_ONLY line", () => {
@@ -286,7 +286,7 @@ describe("Final Operational Enhancements Part 6: CLAIM_LINE_REASON_CATEGORIES", 
     ).toBe(true);
   });
 
-  it("rejects a reasonCategory outside the 10 named values", () => {
+  it("rejects a reasonCategory outside the 8 named values", () => {
     expect(
       claimLineInputSchema.safeParse({
         sapInvoiceLineId: "line-1",
@@ -295,6 +295,37 @@ describe("Final Operational Enhancements Part 6: CLAIM_LINE_REASON_CATEGORIES", 
         rejectedQuantity: "2",
         reason: "2 short",
         reasonCategory: "SOMETHING_ELSE",
+      }).success
+    ).toBe(false);
+  });
+
+  // Regression guard: these 2 values were valid, selectable reasonCategory
+  // input under the superseded 10-reason version of this field. Spec Part
+  // 4 drops them from the selectable set (they are not among the 8 named
+  // reasons), so new input using either must now be rejected -- even
+  // though both remain valid, non-rejected *stored* values for a
+  // historical claim line created before this change (see
+  // CLAIM_LINE_REASON_CATEGORY_LABELS, which still carries their display
+  // labels for that reason).
+  it("rejects the 2 superseded legacy reasons as NEW input, even though they were valid before this change", () => {
+    expect(
+      claimLineInputSchema.safeParse({
+        sapInvoiceLineId: "line-1",
+        disputeType: "QUANTITY",
+        acceptedQuantity: "8",
+        rejectedQuantity: "2",
+        reason: "Never ordered this product",
+        reasonCategory: "PRODUCT_NOT_ORDERED",
+      }).success
+    ).toBe(false);
+    expect(
+      claimLineInputSchema.safeParse({
+        sapInvoiceLineId: "line-1",
+        disputeType: "QUANTITY",
+        acceptedQuantity: "8",
+        rejectedQuantity: "2",
+        reason: "Never physically delivered",
+        reasonCategory: "PRODUCT_NOT_DELIVERED",
       }).success
     ).toBe(false);
   });

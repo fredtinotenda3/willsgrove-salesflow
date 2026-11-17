@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { getLostSalesAnalytics } from "@/lib/lost-sales/analytics-queries";
+import { getClaimReasonAnalytics } from "@/lib/invoice-claims/reason-analytics";
 import { parseLostSalesAnalyticsPeriod, lostSalesAnalyticsPeriodValues, type LostSalesAnalyticsPeriod } from "@/lib/lost-sales/analytics-validation";
 import { LOST_SALES_MAX_PAGE_SIZE } from "@/lib/lost-sales/queries";
 import { unfulfilledDemandStatusValues } from "@/lib/lost-sales/validation";
@@ -115,8 +116,9 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
   const rawPagination = parsedPagination.ok ? parsedPagination.pagination : { page: 1, pageSize: REPORT_DEFAULT_PAGE_SIZE };
   const pagination = { page: rawPagination.page, pageSize: Math.min(rawPagination.pageSize, LOST_SALES_MAX_PAGE_SIZE) };
 
-  const [analytics, filterOptions] = await Promise.all([
+  const [analytics, claimReasonAnalytics, filterOptions] = await Promise.all([
     getLostSalesAnalytics(filters, period, pagination),
+    getClaimReasonAnalytics(filters),
     getReportFilterOptions(),
   ]);
 
@@ -334,6 +336,74 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
               )}
             </SectionCard>
           </section>
+
+          <SectionCard
+            title="Claims by standardised reason"
+            description="InvoiceClaimLine.reasonCategory, the 8 standardised claim reasons -- a claim is a customer-reported dispute, never an automatic confirmed loss (see note below)"
+          >
+            <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900">
+              <Info size={16} className="mt-0.5 shrink-0" />
+              <p>
+                These figures describe what customers disputed, not confirmed loss -- a Price Claim may resolve via a price correction, a Poor
+                Quality Product claim via replacement, a Short Delivered claim via a later fulfilment, and so on. &ldquo;Exposure&rdquo; below is
+                the customer&rsquo;s own claimed value (informational only, per invoice line), never summed into the confirmed-lost figures
+                above. &ldquo;Resolved&rdquo; means the claim investigation concluded (approved, rejected, or closed) -- not that a financial
+                loss was confirmed.
+              </p>
+            </div>
+            {claimReasonAnalytics.byReason.length === 0 ? (
+              <EmptyState message="No standardised-reason claim lines match these filters." />
+            ) : (
+              <div className="space-y-5">
+                {claimReasonAnalytics.byReason.map((row) => {
+                  const maxCount = Math.max(...claimReasonAnalytics.byReason.map((r) => r.claimLineCount));
+                  return (
+                    <div key={row.reasonCategory} className="rounded-lg border border-[#EEF1ED] p-4">
+                      <BarRow label={row.label} count={row.claimLineCount} maxCount={maxCount} color="bg-[#b8562f]" />
+                      <div className="mt-2 grid grid-cols-2 gap-3 text-[11px] text-[#718078] sm:grid-cols-4">
+                        <p>{row.distinctClaimCount} claim(s)</p>
+                        <p>{formatQuantity(row.claimedQuantity)} unit(s) disputed</p>
+                        <p>{row.resolvedCount} resolved / {row.outstandingCount} outstanding</p>
+                        <p>
+                          {row.informationalExposureByCurrency.length === 0
+                            ? "No priced exposure"
+                            : row.informationalExposureByCurrency.map((e) => `${e.currency} ${formatQuantity(e.amount)}`).join(" · ")}
+                        </p>
+                      </div>
+                      {(row.topProducts.length > 0 || row.topCustomers.length > 0) && (
+                        <div className="mt-3 grid grid-cols-1 gap-4 border-t border-[#F2F4F1] pt-3 sm:grid-cols-2">
+                          {row.topProducts.length > 0 && (
+                            <div>
+                              <p className="text-[10px] font-semibold uppercase tracking-wide text-[#9AA59E]">Most affected products</p>
+                              <ul className="mt-1 space-y-0.5 text-[11px] text-[#17251E]">
+                                {row.topProducts.map((p) => (
+                                  <li key={`${p.sapItemCode ?? "none"}-${p.description ?? ""}`}>
+                                    {p.description ?? p.sapItemCode ?? "Unknown product"} -- {p.claimLineCount} line(s), {formatQuantity(p.claimedQuantity)} unit(s)
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          {row.topCustomers.length > 0 && (
+                            <div>
+                              <p className="text-[10px] font-semibold uppercase tracking-wide text-[#9AA59E]">Most affected customers</p>
+                              <ul className="mt-1 space-y-0.5 text-[11px] text-[#17251E]">
+                                {row.topCustomers.map((c) => (
+                                  <li key={c.customerId}>
+                                    {c.customerName} -- {c.claimLineCount} line(s), {formatQuantity(c.claimedQuantity)} unit(s)
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </SectionCard>
 
           <SectionCard title="Order-level drilldown" description={`${analytics.drilldown.pagination.totalItems} unfulfilled-demand record(s) match the current filters`}>
             {analytics.drilldown.demands.length === 0 ? (

@@ -11,6 +11,7 @@ import { getLostSalesReportSummary } from "@/lib/lost-sales/queries";
 import { getQuotationDashboardCounts } from "@/lib/quotations/queries";
 import { utcDateToDateOnlyString } from "@/lib/dates";
 import { getEffectiveOrderStatus } from "@/lib/order-display";
+import { sumDecimalStrings, formatScaledDecimal } from "@/lib/fulfilment/decimal";
 
 /**
  * Milestone 11 (Operational BI), spec section 9: the 9 named management
@@ -208,20 +209,39 @@ function toOutstandingOrderRow(order: Prisma.CustomerOrderGetPayload<{ select: t
  * aggregate level, not this list report's. See docs/milestones/
  * m11-metric-definitions.md.
  */
-export async function listOutstandingOrders(filters: ReportFilters, pagination: PaginationParams): Promise<PaginatedResult<OutstandingOrderRow>> {
-  // "status" is built via AND, never a later spread overwriting an earlier
-  // one in the same object literal -- an orderStatus filter narrows WITHIN
-  // the not-cancelled/not-rejected/not-fully-delivered definition, it never
-  // replaces it (a naive `...{status: filters.orderStatus}` spread after
-  // the base `status: {notIn:...}` key would silently discard that
-  // constraint on the one line that actually defines "outstanding").
-  const where: Prisma.CustomerOrderWhereInput = {
+// "status" is built via AND, never a later spread overwriting an earlier
+// one in the same object literal -- an orderStatus filter narrows WITHIN
+// the not-cancelled/not-rejected/not-fully-delivered definition, it never
+// replaces it (a naive `...{status: filters.orderStatus}` spread after
+// the base `status: {notIn:...}` key would silently discard that
+// constraint on the one line that actually defines "outstanding"). Pulled
+// out into its own function (Management Analytics spec Part 2) so the
+// paginated list and its breakdown-by-status aggregate below are
+// guaranteed to never disagree about which rows are "outstanding."
+function buildOutstandingOrdersWhere(filters: ReportFilters): Prisma.CustomerOrderWhereInput {
+  return {
     ...demoWhere(filters),
     dispatchRecords: { none: { deliveryRecord: { outcome: "ACCEPTED_IN_FULL" } } },
     ...(filters.customerId ? { customerId: filters.customerId } : {}),
     ...(filters.salespersonId ? { salespersonId: filters.salespersonId } : {}),
     AND: [{ status: { notIn: [OrderStatus.CANCELLED, OrderStatus.REJECTED] } }, ...(filters.orderStatus ? [{ status: filters.orderStatus as OrderStatus }] : [])],
   };
+}
+
+/**
+ * "Outstanding orders" -- not cancelled or rejected, and not yet
+ * confirmed fully delivered (no dispatch of this order has a
+ * DeliveryRecord with outcome ACCEPTED_IN_FULL). Documented
+ * approximation: a order delivered across SEVERAL partial dispatches
+ * that together cover its full requested quantity, with none of those
+ * individual deliveries itself marked ACCEPTED_IN_FULL, would still
+ * show here -- exact per-line quantity reconciliation across multiple
+ * dispatches is lib/reporting/fulfilment-intelligence.ts's job at the
+ * aggregate level, not this list report's. See docs/milestones/
+ * m11-metric-definitions.md.
+ */
+export async function listOutstandingOrders(filters: ReportFilters, pagination: PaginationParams): Promise<PaginatedResult<OutstandingOrderRow>> {
+  const where = buildOutstandingOrdersWhere(filters);
   const [totalItems, rows] = await Promise.all([
     prisma.customerOrder.count({ where }),
     prisma.customerOrder.findMany({ where, select: orderListRowSelect, orderBy: { receivedAt: "asc" }, skip: (pagination.page - 1) * pagination.pageSize, take: pagination.pageSize }),
@@ -229,27 +249,70 @@ export async function listOutstandingOrders(filters: ReportFilters, pagination: 
   return { rows: rows.map(toOutstandingOrderRow), pagination: { ...pagination, totalItems, totalPages: Math.max(1, Math.ceil(totalItems / pagination.pageSize)) } };
 }
 
-/** Orders APPROVED or PICKING with no dispatch that has actually departed yet. */
-export async function listOrdersAwaitingFulfilment(filters: ReportFilters, pagination: PaginationParams): Promise<PaginatedResult<OutstandingOrderRow>> {
-  // Same AND-array pattern as listOutstandingOrders above, and for the
-  // same reason: a later `status` key in the same object literal would
-  // silently replace this report's own defining `status: {in: [...]}`
-  // constraint rather than narrow within it. An orderStatus value outside
-  // {APPROVED, PICKING} (e.g. "REJECTED") correctly yields zero rows here
-  // via the AND, rather than needing its own validation -- it's not
-  // "awaiting fulfilment" by definition, which is the right answer.
-  const where: Prisma.CustomerOrderWhereInput = {
+// Same AND-array pattern as buildOutstandingOrdersWhere above, and for the
+// same reason: a later `status` key in the same object literal would
+// silently replace this report's own defining `status: {in: [...]}`
+// constraint rather than narrow within it. An orderStatus value outside
+// {APPROVED, PICKING} (e.g. "REJECTED") correctly yields zero rows here
+// via the AND, rather than needing its own validation -- it's not
+// "awaiting fulfilment" by definition, which is the right answer.
+function buildAwaitingFulfilmentWhere(filters: ReportFilters): Prisma.CustomerOrderWhereInput {
+  return {
     ...demoWhere(filters),
     dispatchRecords: { none: { status: { in: ["DEPARTED", "DELIVERED"] } } },
     ...(filters.customerId ? { customerId: filters.customerId } : {}),
     ...(filters.salespersonId ? { salespersonId: filters.salespersonId } : {}),
     AND: [{ status: { in: [OrderStatus.APPROVED, OrderStatus.PICKING] } }, ...(filters.orderStatus ? [{ status: filters.orderStatus as OrderStatus }] : [])],
   };
+}
+
+/** Orders APPROVED or PICKING with no dispatch that has actually departed yet. */
+export async function listOrdersAwaitingFulfilment(filters: ReportFilters, pagination: PaginationParams): Promise<PaginatedResult<OutstandingOrderRow>> {
+  const where = buildAwaitingFulfilmentWhere(filters);
   const [totalItems, rows] = await Promise.all([
     prisma.customerOrder.count({ where }),
     prisma.customerOrder.findMany({ where, select: orderListRowSelect, orderBy: { approvedAt: "asc" }, skip: (pagination.page - 1) * pagination.pageSize, take: pagination.pageSize }),
   ]);
   return { rows: rows.map(toOutstandingOrderRow), pagination: { ...pagination, totalItems, totalPages: Math.max(1, Math.ceil(totalItems / pagination.pageSize)) } };
+}
+
+export type OrderStatusBreakdownRow = { status: string; count: number };
+
+/**
+ * Management Analytics spec Part 2: a real distribution over the FULL
+ * filtered dataset (every matching order, not just the current page) --
+ * built from the exact same `where` the paginated list above uses, so the
+ * breakdown and the list can never disagree about which rows are in
+ * scope. avgDaysOutstanding is computed in JS from the same rows' own
+ * receivedAt (there is no SQL-level NOW()-receivedAt aggregate available
+ * through Prisma's groupBy), mirroring the same averaging approach
+ * lib/reporting/sales-pipeline.ts's averageDaysBetween already uses.
+ */
+async function getOrderStatusBreakdown(where: Prisma.CustomerOrderWhereInput): Promise<{ byStatus: OrderStatusBreakdownRow[]; avgDaysOutstanding: number | null; sampleSize: number }> {
+  const [grouped, receivedDates] = await Promise.all([
+    prisma.customerOrder.groupBy({ by: ["status"], where, _count: { _all: true } }),
+    prisma.customerOrder.findMany({ where, select: { receivedAt: true } }),
+  ]);
+  const withReceivedAt = receivedDates.filter((o: { receivedAt: Date | null }): o is { receivedAt: Date } => o.receivedAt !== null);
+  const avgDaysOutstanding =
+    withReceivedAt.length === 0
+      ? null
+      : Math.round((withReceivedAt.reduce((sum: number, o: { receivedAt: Date }) => sum + (Date.now() - o.receivedAt.getTime()), 0) / withReceivedAt.length / (1000 * 60 * 60 * 24)) * 10) / 10;
+  return {
+    byStatus: grouped
+      .map((g: { status: string; _count: { _all: number } }) => ({ status: g.status, count: g._count._all }))
+      .sort((a: { count: number }, b: { count: number }) => b.count - a.count),
+    avgDaysOutstanding,
+    sampleSize: withReceivedAt.length,
+  };
+}
+
+export async function getOutstandingOrdersBreakdown(filters: ReportFilters) {
+  return getOrderStatusBreakdown(buildOutstandingOrdersWhere(filters));
+}
+
+export async function getAwaitingFulfilmentBreakdown(filters: ReportFilters) {
+  return getOrderStatusBreakdown(buildAwaitingFulfilmentWhere(filters));
 }
 
 export type PickingShortageRow = {
@@ -264,14 +327,15 @@ export type PickingShortageRow = {
   pickedAt: string | null;
 };
 
-export async function listPickingShortages(filters: ReportFilters, pagination: PaginationParams): Promise<PaginatedResult<PickingShortageRow>> {
+// fulfilmentStatus applies here as a PickingSessionStatus value (this
+// report's own entity) -- see applicableEnumFilter's comment above for why
+// a value belonging to a different fulfilment-stage enum (DispatchStatus/
+// DeliveryOutcome) is simply not applied rather than forced into a
+// zero-row filter. Pulled out so the paginated list and its breakdown
+// aggregate below share one definition of "in scope."
+function buildPickingShortagesWhere(filters: ReportFilters): Prisma.PickingLineWhereInput {
   const range = dateRangeToTimestampFilter(filters);
-  // fulfilmentStatus applies here as a PickingSessionStatus value (this
-  // report's own entity) -- see applicableStatusFilter's comment above
-  // for why a value belonging to a different fulfilment-stage enum
-  // (DispatchStatus/DeliveryOutcome) is simply not applied rather than
-  // forced into a zero-row filter.
-  const where: Prisma.PickingLineWhereInput = {
+  return {
     unavailableQuantity: { not: null, gt: 0 },
     pickingSession: {
       ...demoWhere(filters),
@@ -284,6 +348,10 @@ export async function listPickingShortages(filters: ReportFilters, pagination: P
       },
     },
   };
+}
+
+export async function listPickingShortages(filters: ReportFilters, pagination: PaginationParams): Promise<PaginatedResult<PickingShortageRow>> {
+  const where = buildPickingShortagesWhere(filters);
   const [totalItems, rows] = await Promise.all([
     prisma.pickingLine.count({ where }),
     prisma.pickingLine.findMany({
@@ -317,6 +385,45 @@ export async function listPickingShortages(filters: ReportFilters, pagination: P
   };
 }
 
+export type ProductShortageBreakdownRow = { productDescription: string; lineCount: number; totalUnavailableQuantity: string };
+
+/**
+ * Management Analytics spec Part 2: top products by shortage quantity,
+ * aggregated over the FULL filtered set of picking lines (not just the
+ * current page), using the exact same `where` listPickingShortages
+ * itself queries. Prisma's groupBy cannot group by a nested relation
+ * field (the product description lives on OrderLine, not PickingLine
+ * itself), so this fetches the matching rows' own product identifiers
+ * and sums in JS -- the same approach lib/reporting/sales-pipeline.ts's
+ * quotationsIssuedValue already takes for summing decimal-string
+ * quantities (sumDecimalStrings/formatScaledDecimal from
+ * lib/fulfilment/decimal.ts), scoped to a reporting-sized filtered set,
+ * never the whole table.
+ */
+export async function getPickingShortagesBreakdown(filters: ReportFilters): Promise<{ topProducts: ProductShortageBreakdownRow[]; totalLines: number }> {
+  const where = buildPickingShortagesWhere(filters);
+  const rows = await prisma.pickingLine.findMany({
+    where,
+    select: {
+      unavailableQuantity: true,
+      orderLine: { select: { originalProductDescription: true, product: { select: { itemName: true } } } },
+    },
+  });
+  const byProduct = new Map<string, { lineCount: number; quantities: string[] }>();
+  for (const row of rows) {
+    const label = row.orderLine.product?.itemName ?? row.orderLine.originalProductDescription;
+    const existing = byProduct.get(label) ?? { lineCount: 0, quantities: [] };
+    existing.lineCount += 1;
+    if (row.unavailableQuantity) existing.quantities.push(row.unavailableQuantity.toString());
+    byProduct.set(label, existing);
+  }
+  const topProducts = [...byProduct.entries()]
+    .map(([productDescription, v]) => ({ productDescription, lineCount: v.lineCount, totalUnavailableQuantity: formatScaledDecimal(sumDecimalStrings(v.quantities)) }))
+    .sort((a, b) => Number.parseFloat(b.totalUnavailableQuantity) - Number.parseFloat(a.totalUnavailableQuantity))
+    .slice(0, 10);
+  return { topProducts, totalLines: rows.length };
+}
+
 export type DeliveryExceptionRow = {
   deliveryRecordId: string;
   orderId: string;
@@ -327,15 +434,17 @@ export type DeliveryExceptionRow = {
   rejectionNotes: string[];
 };
 
-export async function listDeliveryExceptions(filters: ReportFilters, pagination: PaginationParams): Promise<PaginatedResult<DeliveryExceptionRow>> {
+// Same AND-array pattern as buildOutstandingOrdersWhere/
+// buildAwaitingFulfilmentWhere above: narrows WITHIN "is an exception"
+// rather than replacing that definition. fulfilmentStatus applies here as
+// a DeliveryOutcome value (this report's own entity); ACCEPTED_IN_FULL is
+// a valid DeliveryOutcome but not an exception, so passing it here
+// correctly yields zero rows via the AND rather than needing special-case
+// rejection. Pulled out so the list and its by-outcome breakdown share one
+// definition of "in scope."
+function buildDeliveryExceptionsWhere(filters: ReportFilters): Prisma.DeliveryRecordWhereInput {
   const range = dateRangeToTimestampFilter(filters);
-  // Same AND-array pattern as listOutstandingOrders/listOrdersAwaitingFulfilment
-  // above: narrows WITHIN "is an exception" rather than replacing that
-  // definition. fulfilmentStatus applies here as a DeliveryOutcome value
-  // (this report's own entity); ACCEPTED_IN_FULL is a valid DeliveryOutcome
-  // but not an exception, so passing it here correctly yields zero rows via
-  // the AND rather than needing special-case rejection.
-  const where: Prisma.DeliveryRecordWhereInput = {
+  return {
     ...demoWhere(filters),
     recordedAt: range,
     AND: [{ outcome: { in: [DeliveryOutcome.PARTIALLY_REJECTED, DeliveryOutcome.FULLY_REJECTED] } }, ...asAndClauses(applicableEnumFilter("outcome", filters.fulfilmentStatus, DELIVERY_OUTCOMES))],
@@ -346,6 +455,10 @@ export async function listDeliveryExceptions(filters: ReportFilters, pagination:
       },
     },
   };
+}
+
+export async function listDeliveryExceptions(filters: ReportFilters, pagination: PaginationParams): Promise<PaginatedResult<DeliveryExceptionRow>> {
+  const where = buildDeliveryExceptionsWhere(filters);
   const [totalItems, rows] = await Promise.all([
     prisma.deliveryRecord.count({ where }),
     prisma.deliveryRecord.findMany({
@@ -373,6 +486,19 @@ export async function listDeliveryExceptions(filters: ReportFilters, pagination:
       rejectionNotes: record.lines.map((l) => l.rejectionReason).filter((r): r is string => r !== null),
     })),
     pagination: { ...pagination, totalItems, totalPages: Math.max(1, Math.ceil(totalItems / pagination.pageSize)) },
+  };
+}
+
+export type DeliveryOutcomeBreakdownRow = { outcome: string; count: number };
+
+/** Management Analytics spec Part 2: real counts by outcome over the full filtered set, same `where` as listDeliveryExceptions. */
+export async function getDeliveryExceptionsBreakdown(filters: ReportFilters): Promise<{ byOutcome: DeliveryOutcomeBreakdownRow[] }> {
+  const where = buildDeliveryExceptionsWhere(filters);
+  const grouped = await prisma.deliveryRecord.groupBy({ by: ["outcome"], where, _count: { _all: true } });
+  return {
+    byOutcome: grouped
+      .map((g: { outcome: string; _count: { _all: number } }) => ({ outcome: g.outcome, count: g._count._all }))
+      .sort((a: { count: number }, b: { count: number }) => b.count - a.count),
   };
 }
 
@@ -432,13 +558,21 @@ export function isManagementReportId(value: string): value is ManagementReportId
 
 export type ManagementReportResult =
   | { kind: "summary"; data: unknown }
-  | { kind: "list"; data: PaginatedResult<unknown> };
+  | { kind: "list"; data: PaginatedResult<unknown>; breakdown: unknown };
 
 /**
  * One switch, used by both the view route and the export route, so
  * neither can drift from "which report id maps to which function" --
  * see this file's own top comment on why operational-summary is a
  * single parameterized function rather than three.
+ *
+ * Management Analytics spec Part 2: every LIST-kind report now also
+ * carries a `breakdown` -- a real categorical distribution (or, for
+ * picking-shortages, a ranked top-10) computed over the FULL filtered
+ * set via the exact same `where` clause the paginated rows themselves
+ * use (see each buildXxxWhere helper above), never just the current
+ * page. `breakdown` is `null` for a SUMMARY-kind report, which already
+ * presents its own full set of distributions.
  */
 export async function runManagementReport(
   reportId: ManagementReportId,
@@ -455,16 +589,26 @@ export async function runManagementReport(
       return { kind: "summary", data: await getLostSalesManagementReport(filters) };
     case "invoice-claims-exposure":
       return { kind: "summary", data: await getInvoiceClaimsExposureManagementReport(filters) };
-    case "outstanding-orders":
-      return { kind: "list", data: await listOutstandingOrders(filters, pagination) };
-    case "awaiting-fulfilment":
-      return { kind: "list", data: await listOrdersAwaitingFulfilment(filters, pagination) };
-    case "picking-shortages":
-      return { kind: "list", data: await listPickingShortages(filters, pagination) };
-    case "delivery-exceptions":
-      return { kind: "list", data: await listDeliveryExceptions(filters, pagination) };
-    case "communication-failures":
-      return { kind: "list", data: await listCommunicationFailures(filters, pagination) };
+    case "outstanding-orders": {
+      const [data, breakdown] = await Promise.all([listOutstandingOrders(filters, pagination), getOutstandingOrdersBreakdown(filters)]);
+      return { kind: "list", data, breakdown };
+    }
+    case "awaiting-fulfilment": {
+      const [data, breakdown] = await Promise.all([listOrdersAwaitingFulfilment(filters, pagination), getAwaitingFulfilmentBreakdown(filters)]);
+      return { kind: "list", data, breakdown };
+    }
+    case "picking-shortages": {
+      const [data, breakdown] = await Promise.all([listPickingShortages(filters, pagination), getPickingShortagesBreakdown(filters)]);
+      return { kind: "list", data, breakdown };
+    }
+    case "delivery-exceptions": {
+      const [data, breakdown] = await Promise.all([listDeliveryExceptions(filters, pagination), getDeliveryExceptionsBreakdown(filters)]);
+      return { kind: "list", data, breakdown };
+    }
+    case "communication-failures": {
+      const [data, breakdown] = await Promise.all([listCommunicationFailures(filters, pagination), getCommunicationFailuresBreakdown(filters)]);
+      return { kind: "list", data, breakdown };
+    }
   }
 }
 
@@ -487,14 +631,18 @@ export type CommunicationFailureRow = {
  * other users (the communications monitoring view's channel breakdown
  * already shows this exact count), not on this already-fixed-status list.
  */
-export async function listCommunicationFailures(filters: ReportFilters, pagination: PaginationParams): Promise<PaginatedResult<CommunicationFailureRow>> {
+function buildCommunicationFailuresWhere(filters: ReportFilters): Prisma.OutboundMessageWhereInput {
   const range = dateRangeToTimestampFilter(filters);
-  const where: Prisma.OutboundMessageWhereInput = {
+  return {
     ...demoWhere(filters),
     status: "FAILED",
     createdAt: range,
     ...(filters.customerId ? { customerId: filters.customerId } : {}),
   };
+}
+
+export async function listCommunicationFailures(filters: ReportFilters, pagination: PaginationParams): Promise<PaginatedResult<CommunicationFailureRow>> {
+  const where = buildCommunicationFailuresWhere(filters);
   const [totalItems, rows] = await Promise.all([
     prisma.outboundMessage.count({ where }),
     prisma.outboundMessage.findMany({
@@ -516,5 +664,24 @@ export async function listCommunicationFailures(filters: ReportFilters, paginati
       lastErrorMessage: m.lastErrorMessage,
     })),
     pagination: { ...pagination, totalItems, totalPages: Math.max(1, Math.ceil(totalItems / pagination.pageSize)) },
+  };
+}
+
+export type CommunicationFailureBreakdownRow = { key: string; count: number };
+
+/** Management Analytics spec Part 2: failure counts by channel and by message type over the full filtered set, same `where` as listCommunicationFailures. */
+export async function getCommunicationFailuresBreakdown(filters: ReportFilters): Promise<{ byChannel: CommunicationFailureBreakdownRow[]; byType: CommunicationFailureBreakdownRow[] }> {
+  const where = buildCommunicationFailuresWhere(filters);
+  const [byChannel, byType] = await Promise.all([
+    prisma.outboundMessage.groupBy({ by: ["channel"], where, _count: { _all: true } }),
+    prisma.outboundMessage.groupBy({ by: ["type"], where, _count: { _all: true } }),
+  ]);
+  return {
+    byChannel: byChannel
+      .map((g: { channel: string; _count: { _all: number } }) => ({ key: g.channel, count: g._count._all }))
+      .sort((a: { count: number }, b: { count: number }) => b.count - a.count),
+    byType: byType
+      .map((g: { type: string; _count: { _all: number } }) => ({ key: g.type, count: g._count._all }))
+      .sort((a: { count: number }, b: { count: number }) => b.count - a.count),
   };
 }

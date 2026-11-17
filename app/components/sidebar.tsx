@@ -33,6 +33,7 @@ import {
   Plug,
   MessageSquare,
   Send,
+  PackageCheck,
 } from "lucide-react";
 import NotificationBell from "./notification-bell";
 
@@ -140,6 +141,17 @@ const navigation = [
         name: "Invoice Reconciliation",
         href: "/invoice-reconciliation",
         icon: Receipt,
+      },
+      // Management Analytics spec, Part 6: a dedicated, permanent history
+      // of every invoice whose delivery outcome has been recorded --
+      // complement to the "Ready for Invoice" queue above, not a
+      // replacement for it (see lib/delivered-orders/queries.ts's own
+      // top comment for how "delivered" is defined identically in both
+      // places).
+      {
+        name: "Delivered Orders",
+        href: "/delivered-orders",
+        icon: PackageCheck,
       },
       // Milestone 6A (Invoice Claims Management). Same "no pre-existing
       // dead placeholder link" situation as Lost Sales/Invoice

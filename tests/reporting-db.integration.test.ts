@@ -559,6 +559,139 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       expect(page1.pagination.totalItems).toBe(totalBefore);
       expect(page1.pagination.totalPages).toBe(totalBefore);
     });
+
+    // Management Analytics spec Part 2: every LIST-kind report's new
+    // breakdown is built from the EXACT same `where` as its paginated
+    // list, so the two can never disagree about which rows are in scope.
+    // These tests assert that agreement directly, rather than just that
+    // each breakdown function runs without throwing.
+
+    it("getAwaitingFulfilmentBreakdown's byStatus counts sum to exactly the same total the paginated list itself reports, and never include a status outside {APPROVED, PICKING}", async () => {
+      if (skipAll) return;
+      const { listOrdersAwaitingFulfilment, getAwaitingFulfilmentBreakdown } = await import("@/lib/reporting/management-reports");
+      await createOrderWithStatus("APPROVED");
+      await createOrderWithStatus("PICKING");
+
+      const [list, breakdown] = await Promise.all([
+        listOrdersAwaitingFulfilment(filtersWith({}) as never, { page: 1, pageSize: 500 }),
+        getAwaitingFulfilmentBreakdown(filtersWith({}) as never),
+      ]);
+
+      const breakdownTotal = breakdown.byStatus.reduce((sum, s) => sum + s.count, 0);
+      expect(breakdownTotal).toBe(list.pagination.totalItems);
+      for (const row of breakdown.byStatus) {
+        expect(["APPROVED", "PICKING"]).toContain(row.status);
+      }
+      // Every order created above has a receivedAt, so the sample must be non-empty.
+      expect(breakdown.sampleSize).toBeGreaterThanOrEqual(2);
+      expect(breakdown.avgDaysOutstanding).not.toBeNull();
+      expect(breakdown.avgDaysOutstanding!).toBeGreaterThanOrEqual(0);
+    });
+
+    it("getOutstandingOrdersBreakdown excludes an order with an ACCEPTED_IN_FULL delivery, exactly like listOutstandingOrders itself", async () => {
+      if (skipAll) return;
+      const { createDispatchRecord, departDispatchRecord } = await import("@/lib/fulfilment/dispatch");
+      const { recordDelivery } = await import("@/lib/fulfilment/delivery");
+      const { getDispatchRecordDetail } = await import("@/lib/fulfilment/queries");
+      const { listOutstandingOrders, getOutstandingOrdersBreakdown } = await import("@/lib/reporting/management-reports");
+
+      const { orderId, lineId } = await createPartiallyPickedOrder("2.0000", "2.0000");
+      const dispatch = await createDispatchRecord(orderId, adminId, { lines: [{ orderLineId: lineId, quantity: "2.0000" }], driverId, assistantId, vehicleId });
+      if (!dispatch.ok) throw new Error(dispatch.message);
+      await departDispatchRecord(dispatch.dispatchRecordId, adminId);
+      const detail = await getDispatchRecordDetail(dispatch.dispatchRecordId);
+      const delivered = await recordDelivery(dispatch.dispatchRecordId, adminId, { lines: [{ dispatchLineId: detail!.lines[0]!.id, acceptedQuantity: "2.0000", rejectedQuantity: "0" }] }, {});
+      if (!delivered.ok) throw new Error("recordDelivery failed");
+
+      const [list, breakdown] = await Promise.all([
+        listOutstandingOrders(filtersWith({}) as never, { page: 1, pageSize: 500 }),
+        getOutstandingOrdersBreakdown(filtersWith({}) as never),
+      ]);
+      const breakdownTotal = breakdown.byStatus.reduce((sum, s) => sum + s.count, 0);
+      expect(breakdownTotal).toBe(list.pagination.totalItems);
+    });
+
+    it("getPickingShortagesBreakdown's top products sum to no more than the matching line count, and ranks by shortage quantity descending", async () => {
+      if (skipAll) return;
+      const { listPickingShortages, getPickingShortagesBreakdown } = await import("@/lib/reporting/management-reports");
+      await createPartiallyPickedOrder("10.0000", "3.0000"); // 7 units short
+
+      const [list, breakdown] = await Promise.all([
+        listPickingShortages(filtersWith({}) as never, { page: 1, pageSize: 500 }),
+        getPickingShortagesBreakdown(filtersWith({}) as never),
+      ]);
+
+      expect(breakdown.totalLines).toBe(list.pagination.totalItems);
+      const lineCountSum = breakdown.topProducts.reduce((sum, p) => sum + p.lineCount, 0);
+      expect(lineCountSum).toBeLessThanOrEqual(breakdown.totalLines);
+      // Descending by quantity -- never an arbitrary or alphabetical order.
+      for (let i = 1; i < breakdown.topProducts.length; i++) {
+        expect(Number.parseFloat(breakdown.topProducts[i - 1]!.totalUnavailableQuantity)).toBeGreaterThanOrEqual(Number.parseFloat(breakdown.topProducts[i]!.totalUnavailableQuantity));
+      }
+    });
+
+    it("getDeliveryExceptionsBreakdown's byOutcome counts sum to exactly the paginated list's own total, and never include ACCEPTED_IN_FULL", async () => {
+      if (skipAll) return;
+      const { createDispatchRecord, departDispatchRecord } = await import("@/lib/fulfilment/dispatch");
+      const { recordDelivery } = await import("@/lib/fulfilment/delivery");
+      const { getDispatchRecordDetail } = await import("@/lib/fulfilment/queries");
+      const { listDeliveryExceptions, getDeliveryExceptionsBreakdown } = await import("@/lib/reporting/management-reports");
+
+      const { orderId, lineId } = await createPartiallyPickedOrder("5.0000", "5.0000");
+      const dispatch = await createDispatchRecord(orderId, adminId, { lines: [{ orderLineId: lineId, quantity: "5.0000" }], driverId, assistantId, vehicleId });
+      if (!dispatch.ok) throw new Error(dispatch.message);
+      await departDispatchRecord(dispatch.dispatchRecordId, adminId);
+      const detail = await getDispatchRecordDetail(dispatch.dispatchRecordId);
+      const delivered = await recordDelivery(
+        dispatch.dispatchRecordId,
+        adminId,
+        { lines: [{ dispatchLineId: detail!.lines[0]!.id, acceptedQuantity: "4.0000", rejectedQuantity: "1.0000", rejectionReason: "test" }] },
+        {}
+      );
+      if (!delivered.ok) throw new Error("recordDelivery failed");
+
+      const [list, breakdown] = await Promise.all([
+        listDeliveryExceptions(filtersWith({}) as never, { page: 1, pageSize: 500 }),
+        getDeliveryExceptionsBreakdown(filtersWith({}) as never),
+      ]);
+      const breakdownTotal = breakdown.byOutcome.reduce((sum, o) => sum + o.count, 0);
+      expect(breakdownTotal).toBe(list.pagination.totalItems);
+      for (const row of breakdown.byOutcome) {
+        expect(row.outcome).not.toBe("ACCEPTED_IN_FULL");
+      }
+    });
+
+    it("getCommunicationFailuresBreakdown's byChannel and byType counts each sum to exactly listCommunicationFailures' own total", async () => {
+      if (skipAll) return;
+      const { prisma } = await import("@/lib/prisma");
+      const { listCommunicationFailures, getCommunicationFailuresBreakdown } = await import("@/lib/reporting/management-reports");
+
+      const outbound = await prisma.outboundMessage.create({
+        data: {
+          type: "ORDER_CONFIRMATION",
+          channel: "EMAIL",
+          status: "FAILED",
+          idempotencyKey: `m11-breakdown-${uniqueSuffix}-${Date.now()}`,
+          customerId,
+          bodyText: "Test notification body",
+          triggeredById: adminId,
+          attemptCount: 2,
+          lastAttemptAt: new Date(),
+          lastErrorMessage: "SMTP timeout (test fixture)",
+          isDemo: true,
+        },
+        select: { id: true },
+      });
+      createdOutboundMessageIds.push(outbound.id);
+
+      const [list, breakdown] = await Promise.all([
+        listCommunicationFailures(filtersWith({}) as never, { page: 1, pageSize: 500 }),
+        getCommunicationFailuresBreakdown(filtersWith({}) as never),
+      ]);
+      expect(breakdown.byChannel.reduce((sum, c) => sum + c.count, 0)).toBe(list.pagination.totalItems);
+      expect(breakdown.byType.reduce((sum, t) => sum + t.count, 0)).toBe(list.pagination.totalItems);
+      expect(breakdown.byChannel.some((c) => c.key === "EMAIL")).toBe(true);
+    });
   });
 
   // --- Section 4: communications monitoring ---

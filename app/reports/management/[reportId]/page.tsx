@@ -9,7 +9,6 @@ import {
   type ManagementReportId,
   type OperationalSummaryPeriod,
 } from "@/lib/reporting/management-reports";
-import { flattenToKeyValueRows } from "@/lib/reporting/export-csv";
 import { getReportFilterOptions } from "@/lib/reporting/filter-options";
 import { parseReportFilters, parsePagination, REPORT_DEFAULT_PAGE_SIZE } from "@/lib/reporting/filters";
 import { ORDER_STATUSES, ORDER_STATUS_LABELS } from "@/lib/order-display";
@@ -17,6 +16,21 @@ import { toFlatSearchParams, toURLSearchParams, type ReportSearchParams } from "
 import Sidebar from "../../../components/sidebar";
 import { PageHeader, SectionCard, Pagination, EmptyState } from "../../_components/ui";
 import { ReportFilterBar, type StatusFilterConfig } from "../../_components/filter-bar";
+import {
+  OperationalSummarySections,
+  QuotationsPerformanceSections,
+  LostSalesSections,
+  FinancialExposureSections,
+  OrderStatusBreakdownSection,
+  ProductShortageBreakdownSection,
+  DeliveryOutcomeBreakdownSection,
+  CommunicationFailureBreakdownSection,
+  type OperationalSummaryData,
+  type QuotationsPerformanceData,
+} from "../_components/summary-sections";
+import type { FinancialExposureReport } from "@/lib/reporting/financial-exposure";
+import type { LostSalesReportSummary } from "@/lib/lost-sales/queries";
+import type { OrderStatusBreakdownRow, ProductShortageBreakdownRow, DeliveryOutcomeBreakdownRow, CommunicationFailureBreakdownRow } from "@/lib/reporting/management-reports";
 import { AlertCircle } from "lucide-react";
 
 export const instant = false;
@@ -64,6 +78,7 @@ const DELIVERY_OUTCOME_OPTIONS = [
   { value: "PARTIALLY_REJECTED", label: "Partially Rejected" },
   { value: "FULLY_REJECTED", label: "Fully Rejected" },
 ];
+const DELIVERY_OUTCOME_LABELS: Record<string, string> = Object.fromEntries(DELIVERY_OUTCOME_OPTIONS.map((o) => [o.value, o.label]));
 
 const ORDER_STATUS_OPTIONS = ORDER_STATUSES.map((s) => ({ value: s, label: ORDER_STATUS_LABELS[s] }));
 
@@ -129,17 +144,6 @@ const REPORT_FILTER_CONFIG: Record<
     note: "No status filter is offered -- this report's identity is already fixed to failed outbound messages.",
   },
 };
-
-function formatMetricLabel(path: string): string {
-  return path
-    .split(".")
-    .map((segment) =>
-      segment
-        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-        .replace(/^./, (c) => c.toUpperCase())
-    )
-    .join(" › ");
-}
 
 function formatCellValue(value: unknown): string {
   if (value === null || value === undefined) return "—";
@@ -257,21 +261,29 @@ export default async function ManagementReportDetailPage({ params, searchParams 
           )}
 
           {result.kind === "summary" ? (
-            <SectionCard title="Report figures" description="Every figure below is also what the CSV export contains, in the same order">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <tbody className="divide-y divide-[#EEF1ED]">
-                    {flattenToKeyValueRows(result.data).map((row) => (
-                      <tr key={row.metric}>
-                        <td className="py-2 pr-6 text-[#536158]">{formatMetricLabel(row.metric)}</td>
-                        <td className="py-2 font-semibold tabular-nums text-[#17251E]">{row.value === "" ? "—" : row.value}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </SectionCard>
+            <>
+              {reportId === "operational-summary" && <OperationalSummarySections data={result.data as OperationalSummaryData} />}
+              {reportId === "quotations-performance" && <QuotationsPerformanceSections data={result.data as QuotationsPerformanceData} />}
+              {reportId === "lost-sales" && <LostSalesSections data={result.data as LostSalesReportSummary} />}
+              {reportId === "invoice-claims-exposure" && <FinancialExposureSections data={result.data as FinancialExposureReport} />}
+              <p className="text-center text-[11px] text-[#9AA59E]">
+                Every figure above is also included, as a flat key/value list, in this report&apos;s CSV export.
+              </p>
+            </>
           ) : (
+            <>
+              {(reportId === "outstanding-orders" || reportId === "awaiting-fulfilment") && (
+                <OrderStatusBreakdownSection data={result.breakdown as { byStatus: OrderStatusBreakdownRow[]; avgDaysOutstanding: number | null; sampleSize: number }} statusLabels={ORDER_STATUS_LABELS} />
+              )}
+              {reportId === "picking-shortages" && <ProductShortageBreakdownSection data={result.breakdown as { topProducts: ProductShortageBreakdownRow[]; totalLines: number }} />}
+              {reportId === "delivery-exceptions" && <DeliveryOutcomeBreakdownSection data={result.breakdown as { byOutcome: DeliveryOutcomeBreakdownRow[] }} outcomeLabels={DELIVERY_OUTCOME_LABELS} />}
+              {reportId === "communication-failures" && (
+                <CommunicationFailureBreakdownSection data={result.breakdown as { byChannel: CommunicationFailureBreakdownRow[]; byType: CommunicationFailureBreakdownRow[] }} />
+              )}
+            </>
+          )}
+
+          {result.kind === "list" && (
             <SectionCard title="Matching records" description={`${result.data.pagination.totalItems} total`}>
               {result.data.rows.length === 0 ? (
                 <EmptyState message="No records match these filters." />

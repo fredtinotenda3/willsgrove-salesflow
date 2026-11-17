@@ -55,22 +55,60 @@ export const CLAIM_LINE_DISPUTE_TYPES = ["QUANTITY", "AMOUNT_ONLY"] as const;
 export type ClaimLineDisputeType = (typeof CLAIM_LINE_DISPUTE_TYPES)[number];
 
 /**
- * Final Operational Enhancements (spec Part 6): the 10 named, mutually
- * distinguishable claim reasons the sample claim document requires,
- * mapped 1:1 to prisma/schema.prisma's InvoiceClaimCategory enum values
- * (CLAIM_LINE_REASON_CATEGORY_LABELS below carries the exact spec wording
- * for display -- the enum identifiers themselves predate or extend the
- * existing claim-level `category` vocabulary above). This is a per-LINE
- * field (InvoiceClaimLine.reasonCategory), independent of the claim-level
- * `category` enum: a single claim/invoice can legitimately mix reasons
- * across its lines (spec: "support multiple claim lines/different
- * reasons per invoice"), which the claim-level category alone cannot
+ * Management Analytics / Claims Standardisation spec, Part 4 (verbatim):
+ * the per-line claim-reason dropdown must offer EXACTLY these 8
+ * standardised options, in this exact order and wording --
+ * Willsgrove's own business terms, never SAP claim categories, and
+ * never arbitrary free text. This supersedes an EARLIER "Final
+ * Operational Enhancements" round (2026-11-16) that built the same
+ * per-line `reasonCategory` concept with 10 options and different
+ * wording (including a typo -- "BarCode Scabbing Problem" for item 7
+ * below). That round is not simply overwritten: see the full-enum
+ * comment on CLAIM_LINE_REASON_CATEGORIES_ALL/CLAIM_LINE_REASON_CATEGORY_LABELS
+ * just below for how its 2 extra, now-unlisted values are preserved.
+ *
+ * All 8 identifiers here are pre-existing members of
+ * prisma/schema.prisma's InvoiceClaimCategory enum (added additively by
+ * that earlier round's migration, 20261116070000_add_final_operational_enhancements)
+ * -- no schema/migration change is needed for this list; only the
+ * selectable set and the display wording change here.
+ *
+ * This is a per-LINE field (InvoiceClaimLine.reasonCategory),
+ * independent of the claim-level `category` enum above: a single
+ * claim/invoice can legitimately mix reasons across its lines (spec:
+ * "support multiple claim lines... associate each reason with its
+ * affected product"), which the claim-level category alone cannot
  * express.
  */
 export const CLAIM_LINE_REASON_CATEGORIES = [
-  "PRICING_DISPUTE",
-  "QUALITY_ISSUE",
-  "SHORT_DELIVERY",
+  "PRICING_DISPUTE", // 1. Price Claim
+  "QUALITY_ISSUE", // 2. Poor Quality Product
+  "SHORT_DELIVERY", // 3. Short Delivered
+  "OVERSUPPLY", // 4. OverSupply
+  "EXPIRED_PRODUCT", // 5. Expire
+  "NO_BARCODE", // 6. No Barcode
+  "BARCODE_SCANNING_ISSUE", // 7. Barcode Scanning Problems
+  "DUPLICATE_ENTRY", // 8. Duplicates
+] as const;
+export type ClaimLineReasonCategory = (typeof CLAIM_LINE_REASON_CATEGORIES)[number];
+
+/**
+ * The full set of values InvoiceClaimLine.reasonCategory may hold in
+ * the database -- every member of the InvoiceClaimCategory Prisma enum,
+ * since that column is typed as that same (nullable) enum. This is
+ * CLAIM_LINE_REASON_CATEGORIES above (the 8 now-selectable reasons)
+ * PLUS 2 values the earlier "Final Operational Enhancements" round
+ * also added to that enum but which are NOT among this spec's 8
+ * (PRODUCT_NOT_ORDERED, PRODUCT_NOT_DELIVERED) PLUS the 11 claim-HEADER
+ * categories (CLAIM_CATEGORIES above) that the column's type permits
+ * but that no code path in this codebase actually writes to a line's
+ * reasonCategory. Used only to type CLAIM_LINE_REASON_CATEGORY_LABELS
+ * below exhaustively, for safe display of any value that could ever be
+ * read back out of this column -- never for the dropdown, which must
+ * offer only the 8 standardised reasons.
+ */
+export const CLAIM_LINE_REASON_CATEGORIES_ALL = [
+  ...CLAIM_CATEGORIES,
   "PRODUCT_NOT_ORDERED",
   "PRODUCT_NOT_DELIVERED",
   "OVERSUPPLY",
@@ -79,33 +117,57 @@ export const CLAIM_LINE_REASON_CATEGORIES = [
   "BARCODE_SCANNING_ISSUE",
   "DUPLICATE_ENTRY",
 ] as const;
-export type ClaimLineReasonCategory = (typeof CLAIM_LINE_REASON_CATEGORIES)[number];
+export type AnyStoredClaimLineReasonCategory = (typeof CLAIM_LINE_REASON_CATEGORIES_ALL)[number];
 
 /**
- * Additional Implementation Requirements (final completion phase,
- * section 8.2): "Use these exact display labels" -- ten fixed strings,
- * given verbatim, including item 9's own wording ("BarCode Scabbing
- * Problem"), reused as-is rather than "corrected" to "Scanning" since
- * the instruction is explicit that these are the exact labels to show,
- * and the sample supplier-claim document's own three present reasons
- * (NOT DELIVERED, PRICE CLAIM, SHORT DELIVERY) are all covered by this
- * list with no reason it uses that isn't already one of these ten.
- * Changing ONLY this map, not CLAIM_LINE_REASON_CATEGORIES or the
- * Prisma enum identifiers above, keeps this purely a display-label
- * change -- no schema/migration, no stored value changes, no API
- * contract change for any existing record.
+ * Spec Part 4 (verbatim wording, exact capitalisation, for the 8
+ * standardised reasons). Changing ONLY this map and the selectable list
+ * above, never the Prisma enum identifiers, keeps this purely an
+ * application-layer change -- no schema/migration, no stored value
+ * changes, no API contract change for any existing record.
+ *
+ * PRODUCT_NOT_ORDERED/PRODUCT_NOT_DELIVERED: retained ONLY so a claim
+ * line created under the superseded 10-reason wording still displays a
+ * sensible label (data-compatibility requirement: "do not destroy
+ * historical claim data... do not silently convert unknown historical
+ * reasons into an incorrect category") -- never offered as a selectable
+ * option going forward.
+ *
+ * The remaining 11 keys are the claim-HEADER-only categories
+ * (CLAIM_CATEGORY_LABELS in lib/invoice-claims/display.ts carries their
+ * real, user-facing labels for the header `category` field) -- included
+ * here only so this map is exhaustive over every value the database
+ * column's type permits, never because any code path actually sets a
+ * line's reasonCategory to one of them.
  */
-export const CLAIM_LINE_REASON_CATEGORY_LABELS: Record<ClaimLineReasonCategory, string> = {
+export const CLAIM_LINE_REASON_CATEGORY_LABELS: Record<AnyStoredClaimLineReasonCategory, string> = {
+  // The 8 standardised reasons -- spec Part 4, exact order and wording.
   PRICING_DISPUTE: "Price Claim",
-  QUALITY_ISSUE: "Poor Quality",
-  SHORT_DELIVERY: "Short Delivery",
+  QUALITY_ISSUE: "Poor Quality Product",
+  SHORT_DELIVERY: "Short Delivered",
+  OVERSUPPLY: "OverSupply",
+  EXPIRED_PRODUCT: "Expire",
+  NO_BARCODE: "No Barcode",
+  BARCODE_SCANNING_ISSUE: "Barcode Scanning Problems",
+  DUPLICATE_ENTRY: "Duplicates",
+  // Superseded, display-only (see comment above).
   PRODUCT_NOT_ORDERED: "Not Ordered",
   PRODUCT_NOT_DELIVERED: "Not Delivered",
-  OVERSUPPLY: "OverSupply",
-  EXPIRED_PRODUCT: "Expired",
-  NO_BARCODE: "No BarCode",
-  BARCODE_SCANNING_ISSUE: "BarCode Scabbing Problem",
-  DUPLICATE_ENTRY: "Duplicate",
+  // Claim-header-only categories -- never actually stored on a line;
+  // included only for an exhaustive, defensive Record type. Wording
+  // matches lib/invoice-claims/display.ts's CLAIM_CATEGORY_LABELS (the
+  // real, user-facing labels for the header `category` field) so the
+  // two maps never drift into inconsistent wording for the same enum
+  // value, even though this map's copy of them is never actually
+  // rendered by any current code path.
+  DAMAGED_PRODUCTS: "Damaged products",
+  SPOILAGE: "Spoilage",
+  MISSING_PRODUCTS: "Missing products",
+  WRONG_PRODUCT_SUPPLIED: "Wrong product supplied",
+  QUANTITY_DISCREPANCY: "Quantity discrepancy",
+  INCORRECT_INVOICE: "Incorrect invoice",
+  CUSTOMER_REJECTION: "Customer rejection",
+  OTHER: "Other",
 };
 
 // Spec Part 1 section 6, verbatim (reworded to identifiers).

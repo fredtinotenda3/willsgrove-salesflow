@@ -197,7 +197,13 @@ export async function getProductLostSalesSummary(sapItemCode: string, productId:
 
   const lostSales = await prisma.lostSaleRecord.findMany({
     where: {
-      ...demo,
+      // Bug fix: LostSaleRecord itself has no isDemo column -- only its
+      // UnfulfilledDemand relation does (see that model's own isDemo
+      // field and @@index([isDemo])). demoWhere()'s `{ isDemo?: false }`
+      // belongs ONLY inside the nested unfulfilledDemand filter below,
+      // never spread at this top level -- a top-level spread here is
+      // exactly what produced the reported
+      // "Unknown argument `isDemo`" PrismaClientValidationError.
       confirmedAt: timestampRange,
       ...(filters.lostSalesReason ? { reason: filters.lostSalesReason as LostSaleReason } : {}),
       unfulfilledDemand: { ...(productMatchWhere(sapItemCode, productId) as Prisma.UnfulfilledDemandWhereInput), ...demo },
@@ -259,7 +265,13 @@ export async function getProductLostSalesRanking(filters: ReportFilters): Promis
 
   const lostSales = await prisma.lostSaleRecord.findMany({
     where: {
-      ...demo,
+      // Bug fix: same root cause as getProductLostSalesSummary above --
+      // LostSaleRecord has no isDemo column, so demoWhere()'s filter
+      // only ever belongs inside the nested unfulfilledDemand relation
+      // filter, never spread at this top level. This exact call site is
+      // the one named in the reported error
+      // (lib/reporting/product-demand-queries.ts:260,
+      // getProductLostSalesRanking()).
       confirmedAt: timestampRange,
       ...(filters.lostSalesReason ? { reason: filters.lostSalesReason as LostSaleReason } : {}),
       unfulfilledDemand: { ...demo },

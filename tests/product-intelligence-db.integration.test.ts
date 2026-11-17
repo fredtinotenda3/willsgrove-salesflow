@@ -474,6 +474,98 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
       expect(row!.confirmedLostSaleCount).toBe(1);
       expect(Number(row!.confirmedLostSaleQuantityTotal)).toBe(10);
     });
+
+    it("regression: getProductLostSalesRanking/getProductLostSalesSummary do not throw PrismaClientValidationError with the DEFAULT (demo-excluded) filter set, and correctly exclude a demo-only confirmed lost sale", async () => {
+      if (skipAll) return;
+      // emptyFilters() above sets includeDemo: true, which made
+      // demoWhere() return {} -- so the previous test's call never
+      // actually exercised the top-level `...demo` spread that produced
+      // the reported "Unknown argument `isDemo`"
+      // PrismaClientValidationError (that spread is a no-op once demo is
+      // {}). The real bug only ever fires with the DEFAULT, non-demo
+      // filter set every normal page load uses -- includeDemo: false,
+      // which is what this test exercises specifically.
+      const { prisma } = await import("@/lib/prisma");
+      const { generateOrderReference } = await import("@/lib/orders");
+      const { startPickingSession } = await import("@/lib/picking/start-picking");
+      const { recordPickedLine } = await import("@/lib/picking/record-picked-line");
+      const { completePickingSession } = await import("@/lib/picking/complete-picking");
+      const { authorizePickingSession } = await import("@/lib/picking/authorize-picking");
+      const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
+      const { confirmLostSale } = await import("@/lib/lost-sales/confirm-lost-sale");
+      const { getProductLostSalesRanking, getProductLostSalesSummary } = await import("@/lib/reporting/product-demand-queries");
+
+      const itemCode = `ITEM-${uniqueSuffix}-lostsale-demo`;
+      const product = await createProduct({ sapItemCode: itemCode });
+
+      const order = await prisma.customerOrder.create({
+        data: {
+          reference: generateOrderReference(),
+          customerId: customer1Id,
+          createdById: adminId,
+          source: "MANUAL",
+          status: "RECEIVED",
+          currency: "USD",
+          orderDate: new Date(),
+          requestedDeliveryDate: new Date(),
+          receivedAt: new Date(),
+          isDemo: true,
+          lines: {
+            create: [
+              {
+                lineNumber: 1,
+                originalProductDescription: `M14 regression demo item ${uniqueSuffix}`,
+                productId: product.id,
+                sapItemCodeSnapshot: itemCode,
+                requestedQuantity: "4.0000",
+                requestedUnitCode: "EA",
+                isDemo: true,
+              },
+            ],
+          },
+        },
+        select: { id: true, lines: { select: { id: true } } },
+      });
+      createdOrderIds.push(order.id);
+      const lineId = order.lines[0]!.id;
+
+      const started = await startPickingSession(order.id, adminId);
+      if (!started.ok) throw new Error(started.message);
+      await recordPickedLine(started.session.id, lineId, "0.0000", "4.0000", undefined, adminId);
+      const completed = await completePickingSession(started.session.id, adminId);
+      if (!completed.ok) throw new Error(completed.message);
+      const authorized = await authorizePickingSession(started.session.id, adminId);
+      if (!authorized.ok) throw new Error(authorized.message);
+
+      const demand = await prisma.unfulfilledDemand.findFirst({ where: { orderId: order.id }, select: { id: true } });
+      if (!demand) throw new Error("Expected an UnfulfilledDemand row after authorization.");
+
+      const decided = await recordCustomerDecision({ unfulfilledDemandId: demand.id, decisionType: "ENTIRE_LINE_CANCELLED", source: "CUSTOMER_EMAIL", quantity: "4.0000" }, adminId);
+      if (!decided.ok) throw new Error(decided.message);
+      const confirmed = await confirmLostSale({ unfulfilledDemandId: demand.id, quantity: "4.0000", reason: "PRODUCT_UNAVAILABLE", decisionSource: "CUSTOMER_EMAIL" }, adminId);
+      if (!confirmed.ok) throw new Error(confirmed.message);
+
+      const demoExcluded = { ...emptyFilters(), includeDemo: false };
+      const demoIncluded = { ...emptyFilters(), includeDemo: true };
+
+      // The actual regression check: this must not throw.
+      const rankingExcluded = await getProductLostSalesRanking(demoExcluded);
+      expect(rankingExcluded.rows.find((r) => r.sapItemCode === itemCode)).toBeUndefined();
+
+      const rankingIncluded = await getProductLostSalesRanking(demoIncluded);
+      const includedRow = rankingIncluded.rows.find((r) => r.sapItemCode === itemCode);
+      expect(includedRow).toBeDefined();
+      expect(includedRow!.confirmedLostSaleCount).toBe(1);
+
+      // getProductLostSalesSummary shares the exact same bug pattern at
+      // its own call site -- same regression check.
+      const summaryExcluded = await getProductLostSalesSummary(itemCode, product.id, demoExcluded);
+      expect(summaryExcluded.confirmedLostSaleCount).toBe(0);
+
+      const summaryIncluded = await getProductLostSalesSummary(itemCode, product.id, demoIncluded);
+      expect(summaryIncluded.confirmedLostSaleCount).toBe(1);
+      expect(Number(summaryIncluded.confirmedLostSaleQuantityTotal)).toBe(4);
+    });
   });
 
   // --- Item 6: claims and returns (inclusive count + multi-product exclusion) ---
