@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { Prisma, OrderStatus } from "@prisma/client";
 import type { OrderSource } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { prisma, type PrismaTransactionClient } from "@/lib/prisma";
 import type { CreateOrderInput } from "@/lib/order-validation";
 import { getOrderById } from "@/lib/order-queries";
 import { dateOnlyStringToUtcDate } from "@/lib/dates";
@@ -84,7 +84,7 @@ export function generateOrderReference(): string {
  * be the wrong fit there, not an oversight).
  */
 export async function createOrderCore(
-  tx: Prisma.TransactionClient,
+  tx: PrismaTransactionClient,
   reference: string,
   input: OrderCreationInput,
   createdById: string,

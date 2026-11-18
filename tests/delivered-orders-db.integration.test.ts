@@ -380,4 +380,54 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Management Analytics spec Part 6: De
     const detail = await getDeliveredOrderDetail(invoiceId);
     expect(detail).toBeNull();
   });
+
+  // Workflow/Navigation/Performance round, Part 2: once an invoice's
+  // delivery outcome is recorded, its order must disappear from every
+  // active Orders tab (listOrders, with or without a status filter) and
+  // be findable ONLY via listDeliveredOrders -- never both, never
+  // neither. This directly proves the "one consistent definition of
+  // delivered, never two" requirement, not just that listOrders runs.
+  it("removes an order from every active Orders tab once its invoice's delivery outcome is recorded, while it remains fully visible in Delivered Orders", async () => {
+    if (skipAll) return;
+    const { listOrders } = await import("@/lib/order-queries");
+    const { recordInvoiceDeliveryOutcome } = await import("@/lib/invoice-delivery/record-outcome");
+    const { listDeliveredOrders } = await import("@/lib/delivered-orders/queries");
+
+    const { orderId, orderReference } = await createFullyDispatchedOrder();
+    const { invoiceId } = await createSapInvoice([{ quantityInvoiced: "10.0000", unitPrice: "20.0000" }], { matchedOrderId: orderId });
+
+    const baseQuery = { search: "", includeDemo: true, page: 1, pageSize: 200 } as const;
+
+    // Before the delivery outcome is recorded, the order is a perfectly
+    // normal READY_TO_INVOICE order -- visible on "All Orders" and on
+    // its own status tab, same as any other.
+    const allBefore = await listOrders({ ...baseQuery, status: null });
+    expect(allBefore.orders.some((o: { id: string }) => o.id === orderId)).toBe(true);
+    const readyBefore = await listOrders({ ...baseQuery, status: "READY_TO_INVOICE" });
+    expect(readyBefore.orders.some((o: { id: string }) => o.id === orderId)).toBe(true);
+
+    const result = await recordInvoiceDeliveryOutcome(invoiceId, adminId, { outcome: "NO_CLAIM", podReference: "POD-ORDERS-EXCL-1" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    createdDeliveryRecordIds.push(result.id);
+
+    // After: gone from "All Orders" AND from the READY_TO_INVOICE tab it
+    // was previously sitting in -- not merely hidden from one view.
+    const allAfter = await listOrders({ ...baseQuery, status: null });
+    expect(allAfter.orders.some((o: { id: string }) => o.id === orderId)).toBe(false);
+    const readyAfter = await listOrders({ ...baseQuery, status: "READY_TO_INVOICE" });
+    expect(readyAfter.orders.some((o: { id: string }) => o.id === orderId)).toBe(false);
+
+    // Never deleted, and never "lost": fully visible, with its full
+    // reference, in the dedicated Delivered Orders history instead.
+    const delivered = await listDeliveredOrders({ includeDemo: true }, { page: 1, pageSize: 200 });
+    const deliveredRow = delivered.rows.find((r) => r.sapInvoiceId === invoiceId);
+    expect(deliveredRow).toBeDefined();
+    expect(deliveredRow!.orderReference).toBe(orderReference);
+
+    const { prisma } = await import("@/lib/prisma");
+    const stillInDb = await prisma.customerOrder.findUnique({ where: { id: orderId }, select: { id: true, status: true } });
+    expect(stillInDb).not.toBeNull();
+    expect(stillInDb!.status).toBe("READY_TO_INVOICE"); // CustomerOrder.status itself is untouched by this -- "delivered" is derived, never a second stored status.
+  });
 });

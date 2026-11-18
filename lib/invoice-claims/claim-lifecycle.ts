@@ -1,6 +1,5 @@
 import "server-only";
-import type { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { prisma, type PrismaTransactionClient } from "@/lib/prisma";
 import { TRANSACTION_OPTIONS } from "@/lib/orders";
 import {
   type ClaimStatus,
@@ -39,7 +38,7 @@ export type ChangeClaimStatusResult =
  * through that validator first (both existing callers do).
  */
 export async function applyValidatedClaimStatusChange(
-  tx: Prisma.TransactionClient,
+  tx: PrismaTransactionClient,
   claimId: string,
   currentStatus: ClaimStatus,
   toStatus: ClaimStatus,

@@ -1,225 +1,322 @@
-# Implementation Report: Management Analytics, Claims Standardisation, Delivery Control and Complete Delivered History
+# Willsgrove SalesFlow — Workflow, Navigation, Dispatch History & Database Performance Improvement
 
-Scope: enhancement to the existing Willsgrove SalesFlow architecture — a Prisma runtime bug fix, real analytical rendering for the Management Reports module, standardisation of invoice-claim rejection reasons, connecting those reasons to Lost Sales analytics, and a dedicated Delivered Orders history page. No order-lifecycle, picking/dispatch, or invoice-reconciliation business rule was changed. **Zero Prisma schema/migration changes were required or made this round.** No dependency was added, removed, or upgraded.
+Implementation report for this engagement segment. 75 changed/new files, zero schema changes, zero unrelated dependency upgrades.
 
-This report **replaces** the repository's previous `IMPLEMENTATION-REPORT.md` (which covered an earlier, unrelated round — "Deep Chart Intelligence, Product-Level Breakdown and Rich Tooltips"). It does not append to it.
-
----
-
-## 1. Prisma error root cause (Part 1)
-
-**Reported error:** a `PrismaClientValidationError: Unknown argument isDemo` thrown from `lib/reporting/product-demand-queries.ts`, surfacing on the Product Intelligence pages whenever their lost-sales figures were computed with the demo-exclusion filter (the default).
-
-**Root cause:** `getProductLostSalesSummary` and `getProductLostSalesRanking` both called `prisma.lostSaleRecord.findMany({ where: { ...demoWhere(filters), ... } })`, spreading `demoWhere()`'s `{ isDemo: false }` (or `{}`) at the **top level** of the `where` clause. `LostSaleRecord` itself has **no `isDemo` column** — only its `unfulfilledDemand` relation does (`UnfulfilledDemand.isDemo`, see `prisma/schema.prisma` line ~1774 vs. the `UnfulfilledDemand` model). Every other query in the codebase that filters `LostSaleRecord` by demo status does so correctly, nested inside the relation filter (e.g. `lib/reporting/customer-insights-queries.ts`: `unfulfilledDemand: { ...demo, customerId }`) — these two functions were the only call sites that got it wrong.
-
-**Fix:** moved the demo filter into the nested `unfulfilledDemand: { isDemo: ... }` relation filter at both call sites, matching the pattern already used everywhere else. No schema change — this was a pure application-layer bug in the `where` clause shape.
-
-**Files changed:** `lib/reporting/product-demand-queries.ts`.
-
-**Regression test:** `tests/product-intelligence-db.integration.test.ts` — `"regression: getProductLostSalesRanking/getProductLostSalesSummary do not throw PrismaClientValidationError with the DEFAULT (demo-excluded) filter set, and correctly exclude a demo-only confirmed lost sale"`. This both reproduces the exact reported failure mode and asserts the demo-exclusion/-inclusion behavior is still correct after the fix.
+> **Revision note:** this report supersedes an earlier delivery of the same engagement segment. After that delivery, a real `npm run build` against this project's actual generated Prisma client surfaced a genuine type-compatibility regression in the Part 5 fix (see §2 and §8) — invisible in the development sandbox used to build this round, because that sandbox's `@prisma/client` is a non-functional stub with no generated types. The regression has been fixed (16 additional files) and is documented fully below. Sections 2, 3, 8, 9, and 11 reflect the fix; the rest of this report is otherwise unchanged from the original delivery.
 
 ---
 
-## 2. Management Reports audited (Part 2)
+## 1. Every issue investigated
 
-Every page under `app/reports/` was read and classified:
-
-| Report | Kind | Verdict |
-|---|---|---|
-| `operational-summary`, `quotations-performance`, `lost-sales`, `invoice-claims-exposure` (all under `app/reports/management/[reportId]/page.tsx`) | SUMMARY | **Defective** — rendered via a generic `flattenToKeyValueRows` flat key→value table. This was the actual, isolated source of the "JSON-like information" defect. |
-| `outstanding-orders`, `awaiting-fulfilment`, `picking-shortages`, `delivery-exceptions`, `communication-failures` (same page, LIST kind) | LIST | Paginated and correctly scoped, but offered **no distribution over the full matching set** — only the current page of raw rows. |
-| `customer-intelligence`, `decision-intelligence`, `financial-exposure`, `fulfilment`, `pipeline`, `sales-performance`, `communications` | — | Already real analytical pages (ranked tables, rate stats, `BarRow` breakdowns) from earlier M11–M15 builds. No changes needed. |
-| `product-intelligence` | — | Deliberately built (M14) as 10 independent, clearly-labeled ranked tables rather than the shared `BarRow`/`MetricCard` components. This already satisfies the spec's intent (no composite/invented score, every number traceable to its contributing rows) via a different, equally valid presentation. **Left unchanged** — a considered decision, not an oversight. |
-
-Net: the defect was real but narrow — one rendering path on one page, reused across 4 report IDs — plus a genuine gap (no full-dataset breakdown) on the 5 LIST reports.
-
----
-
-## 3. Analytics implemented (Part 2)
-
-### SUMMARY reports — real presentation, zero new business logic
-Built `app/reports/management/_components/summary-sections.tsx`: pure-presentational React Server Components (`PipelineFunnelSections`, `FulfilmentSections`, `CommunicationsSections`, `OperationalSummarySections`, `FinancialExposureSections`, `QuotationsPerformanceSections`, `LostSalesSections`) that render the **same already-computed, already-correct** aggregate payload each report was already producing — via `MetricCard`/`RateStat`/`BarRow`/ranked lists instead of a flat table. No new query, no new metric, no invented statistic. `FinancialExposureSections` is shared: used standalone for `invoice-claims-exposure` and embedded inside `OperationalSummarySections` (since `operational-summary.financial` and `invoice-claims-exposure`'s whole payload are the identical `FinancialExposureReport` type). `app/reports/management/[reportId]/page.tsx` now dispatches to the matching component per `reportId` instead of flattening.
-
-### LIST reports — genuine full-dataset breakdowns
-For each of the 5 LIST reports, the inline Prisma `where` was refactored into a named `buildXxxWhere(filters)` helper, reused by **both** the existing paginated list query and a new sibling `getXxxBreakdown(filters)` — so the breakdown and the list can never disagree about which rows are in scope (same `where`, same filters, computed in the same `Promise.all`):
-
-- `getOutstandingOrdersBreakdown` / `getAwaitingFulfilmentBreakdown` → `getOrderStatusBreakdown` (shared): counts by order status via `prisma.customerOrder.groupBy`, plus `avgDaysOutstanding` computed in JS from each matching order's own `receivedAt` (mirroring `lib/reporting/sales-pipeline.ts`'s `averageDaysBetween` — no SQL `NOW()-receivedAt` aggregate exists through Prisma) and an explicit `sampleSize`.
-- `getPickingShortagesBreakdown`: top-product ranking by total unavailable quantity, aggregated in JS (via `sumDecimalStrings`/`formatScaledDecimal` from `lib/fulfilment/decimal.ts` — the same decimal-summing convention used elsewhere) because the product dimension lives on `OrderLine`, not `PickingLine`.
-- `getDeliveryExceptionsBreakdown`: counts by `DeliveryOutcome` via `groupBy`.
-- `getCommunicationFailuresBreakdown`: counts by channel and by message type via `groupBy`.
-
-`ManagementReportResult`'s list variant was extended additively (`{ kind: "list"; data: PaginatedResult<unknown>; breakdown: unknown }`); `PaginatedResult<T>` itself was left untouched. `runManagementReport` now runs each list query and its breakdown together via `Promise.all`. The page renders each breakdown via new components (`OrderStatusBreakdownSection`, `ProductShortageBreakdownSection`, `DeliveryOutcomeBreakdownSection`, `CommunicationFailureBreakdownSection`, all in `summary-sections.tsx`).
-
-**No incompatible currency/UOM combining**: `QuotationsPerformanceSections` keeps per-currency value tables separate; `FinancialExposureSections` keeps Source A/Source B lost-sales figures side by side, never summed (matching the pre-existing codebase convention this spec requires). **No misleading small-sample statistics**: every rate/average is computed only from its own real `sampleSize`/count, never defaulted or interpolated. **Demo data excluded by default** throughout — every breakdown function receives the same `ReportFilters` (and therefore the same demo-exclusion) as its paired list query.
-
-**Files changed:** `app/reports/management/_components/summary-sections.tsx` (new), `app/reports/management/[reportId]/page.tsx`, `lib/reporting/management-reports.ts`.
+| # | Area | Issue as reported/specified |
+|---|------|------------------------------|
+| 1 | Dispatch History | Claim-reason entry on dispatch records had no structured dropdown — free text only, no validation against the actual claim taxonomy. |
+| 2 | Delivered Orders | Delivered orders remained visible in active operational queues (Orders, Fulfilment, Dispatch) instead of being removed once their lifecycle was complete. |
+| 3 | Workflow navigation | The order lifecycle (Order → Picking → Dispatch → Invoice Reconciliation → Delivered Orders, plus Invoice Claims and Lost Sales branches) had no two-way contextual links between stages. Users had to leave a record and manually search for the next/previous stage. |
+| 4 | Sidebar / site navigation | The sidebar was a flat, unsectioned list with no grouping, no role-based visibility, and (on inspection) a mobile-responsiveness defect. |
+| 5 | Database performance | Homepage dashboard load intermittently failed with `Timed out fetching a new connection from the connection pool. Current connection pool timeout: 10, Connection limit: 9`. |
+| 6 | Regression risk | Every change above had to be checked against the existing, working order/dispatch/invoice/claims/lost-sales/dashboard/auth logic for duplication, data loss, incorrect status mutation, broken reconciliation, invalid routes, auth bypass, or demo-data leakage. |
+| 7 | Database/migration discipline | Confirm whether any of the above required a schema or migration change. |
+| 8 | Testing & delivery | Run every available check, honestly distinguish Passed/Failed/Skipped/Blocked-by-environment, and deliver only the changed/new files plus this report. |
 
 ---
 
-## 4. Delivery duplicate-prevention mechanism (Part 3)
+## 2. Root cause of each confirmed issue
 
-Investigated and **verified already correctly implemented** by an earlier round (predates this engagement's work); no code changes were needed or made here.
-
-- `InvoiceDeliveryRecord.sapInvoiceId` is `@unique` in `prisma/schema.prisma` — a **database-level** constraint, not just an application check, so a concurrent double-submit (two requests racing past an application-level check) is still rejected by Postgres itself.
-- `lib/invoice-delivery/record-outcome.ts`'s `recordInvoiceDeliveryOutcome`: does a pre-check (`findUnique` on `sapInvoiceId`) for a clean `409` in the common non-racing case, then performs the actual insert plus (for `WITH_CLAIM`) every `InvoiceClaim` row inside a single `prisma.$transaction`, and separately catches the Postgres unique-violation code (`P2002`) in case the pre-check and the write race. Either path, exactly one outcome per invoice, and a `WITH_CLAIM` outcome's claim rows can never be created without their parent delivery record (or vice versa) because both are written in the same transaction.
-- `lib/invoice-delivery/queries.ts` derives the `/invoice-reconciliation` page's "Delivered" status from the same `InvoiceDeliveryRecord` existence this constraint protects — UI and server enforcement agree by construction, not by convention.
-
-No files changed for this part.
-
----
-
-## 5. Standardised claim reasons (Part 4)
-
-`lib/invoice-claims/validation.ts`'s `CLAIM_LINE_REASON_CATEGORIES` now exposes **exactly** the 8 spec-mandated options, in this exact order and wording, for the per-line claim-reason dropdown:
-
-1. Price Claim
-2. Poor Quality Product
-3. Short Delivered
-4. OverSupply
-5. Expire
-6. No Barcode
-7. Barcode Scanning Problems
-8. Duplicates
-
-All 8 map to pre-existing `InvoiceClaimCategory` enum members (added additively by an earlier round's own migration) — **no schema/migration change was needed**, only the selectable set and display wording. This supersedes an earlier, different 10-option version (which included a typo, "BarCode Scabbing Problem"); the 2 now-unlisted legacy values (`PRODUCT_NOT_ORDERED`, `PRODUCT_NOT_DELIVERED`) and the typo-era values are deliberately **retained** in `CLAIM_LINE_REASON_CATEGORIES_ALL`/`CLAIM_LINE_REASON_CATEGORY_LABELS` so that any historical claim line written under the old wording still displays correctly — no silent data loss, no stored value rewritten.
-
-This is a per-**line** field (`InvoiceClaimLine.reasonCategory`), independent of the claim-level `category` enum, so one claim/invoice can legitimately mix reasons across its lines.
-
-**Scope decision carried forward and documented here:** `reasonCategory` remains optional at the server/schema level (not made mandatory), consistent with this engagement's "enhancement only, no new validation that could reject previously-valid historical data" posture — flagged again in §11 (Remaining limitations).
-
-**Files changed:** `lib/invoice-claims/validation.ts`, `tests/invoice-claims.test.ts`.
+- **#1 (Dispatch History claim reasons)** — fixed in an earlier part of this engagement (prior to this continuation); carried forward unchanged here.
+- **#2 (Delivered Orders in active queues)** — fixed in an earlier part of this engagement (prior to this continuation); carried forward unchanged here.
+- **#3 (Workflow navigation gaps)** — root cause: `getOrderById` (the single query backing `/orders/[id]` and `/fulfilment/[id]`) already had every relation needed to link forward (matched SAP invoices, invoice claims, unfulfilled demand/lost-sales records) but was not selecting them, and no page rendered links from them even where the data existed. This was a presentation/query-shape gap, not a data-model gap — every relation already existed in `prisma/schema.prisma`.
+- **#4 (Sidebar)** — two separate root causes:
+  - *Structure*: the navigation array was a single flat list with no section headers and no connection to the user's role, despite several linked pages already enforcing role restrictions server-side (`requireUserOrResponse`/`requireUser` with explicit role arrays in `app/api/`).
+  - *Mobile responsiveness* (found during investigation, not in the original ticket list, but a genuine defect): 48 of 66 page files used a hardcoded `pl-[260px]` class that unconditionally reserved the sidebar's 260px gutter even when the sidebar itself was hidden off-canvas below the `md` breakpoint — content was shifted right with no sidebar visible on mobile. The other 18 pages already used the correct `md:`-prefixed variant, proving the correct pattern already existed in the codebase; it just hadn't been applied everywhere.
+- **#5 (Connection pool timeout)** — root cause fully documented in `lib/prisma.ts`'s module comment (see §8 below for the full chain): the homepage's `getDecisionDashboard()` fans out through nested `Promise.all` calls to roughly 60–100+ concurrent Prisma queries per single page load, against a 9-connection pool (`num_cpus * 2 + 1`, Prisma's documented default — never explicitly configured by anyone). No individual query was wasteful or redundant; the problem was the complete absence of a ceiling on how many of those genuinely-necessary queries could be in flight against the database at once. A secondary, compounding factor: the pre-existing Prisma singleton only cached onto `globalThis` outside of `NODE_ENV === "production"`, so in production a second module instantiation (a documented Next.js/Prisma interaction) could silently create a second client with its own separate 9-connection pool.
+- **#5b (post-delivery regression, found via a real `npm run build`)** — the Part 5 fix wraps the exported `prisma` client in `.$extends()` to install the query-concurrency gate. This is correct and necessary, but it also changes `prisma`'s TypeScript type from plain `PrismaClient` to an extended-client type parameterized on the extension's own generic args. This codebase has a long-standing, deliberate pattern — documented in `lib/invoice-claims/create-claim.ts`'s own module comment — of helper functions typed to accept either a real transaction's `tx` or the bare `prisma` export directly, using the parameter type `Prisma.TransactionClient`. That type is auto-generated by Prisma against the *unextended* default client and has no way to know about any later extension, so once `prisma` became an extended client, it stopped being structurally assignable to `Prisma.TransactionClient` everywhere that pattern was used — roughly 20 files, ~30 call sites. This is a documented Prisma typing limitation whenever `.$extends()` is used (see e.g. prisma/prisma#20738 and related issues), not a defect in how the extension itself was written, and it could not have been caught in the development sandbox because that sandbox's `@prisma/client` is a non-functional stub with no generated types at all — this specific class of type error simply has nothing to check against there. See §8 for the fix and why it is architecturally sound.
 
 ---
 
-## 6. Lost-sales integration (Part 5)
+## 3. Every changed/new file and why
 
-Built `lib/invoice-claims/reason-analytics.ts`, answering the spec's named questions for `InvoiceClaimLine.reasonCategory` (the field Part 4 standardised): claim counts and claimed quantity per reason, repeat-affected products/customers, and informational financial exposure per reason — **kept per-currency, never summed across currencies**, matching `lib/reporting/financial-exposure.ts`'s own `computeExposureByCurrency` convention.
+### New files (4)
+| File | Why |
+|------|-----|
+| `app/components/order-lifecycle-stepper.tsx` | New reusable presentational component rendering the order lifecycle progress indicator (Part 3). Pure, no data fetching — takes `steps` computed by `getOrderLifecycleSteps`. |
+| `lib/query-concurrency-gate.ts` | Pure (no `@prisma/client` import) extraction of the `Semaphore` class and `resolveQueryConcurrency()` from `lib/prisma.ts`, specifically so the actual concurrency-limiting mechanism behind the Part 5 fix can be unit-tested without a database (Part 8's explicit test requirement). |
+| `tests/query-concurrency-gate.test.ts` | New unit tests for the above — 9 tests, always run, no database needed. |
+| `tests/dashboard-concurrency-db.integration.test.ts` | New DB-integration test (gated, like every other `*-db.integration.test.ts` file in this codebase) covering dashboard orchestration through the gate, concurrent loads, demo-exclusion, and duplicate-counting — Part 8's explicit test requirement for Part 5. |
 
-Critically, this module is **deliberately never folded into** `lib/lost-sales/queries.ts`'s confirmed-lost-value figures: a claim is a customer-reported dispute, not an automatic confirmed loss (the spec is explicit: a rejection reason must not be auto-classified as confirmed lost revenue — a Price Claim may resolve via price correction, Short Delivered may be fulfilled later, etc.). The module's own exports are named to keep this distinction unmistakable at the type level: `claimLineCount`/`claimedQuantity` (what was disputed) and `informationalExposureByCurrency` (the customer's claimed value, informational only) vs. `resolvedCount`/`outstandingCount` (the claim's own investigation status — not a financial-loss determination; `ClaimResolution`/`CreditNote`/`ClaimReturn` remain the actual record of what financially happened).
+### Changed — core logic (3)
+| File | Why |
+|------|-----|
+| `lib/order-queries.ts` | `getOrderById`'s `select` extended (additive only) to also fetch `matchedSapInvoices` (with `deliveryRecord`), `invoiceClaims`, and `unfulfilledDemands` — all pre-existing schema relations — so the order detail and fulfilment pages can link forward to every stage the order has actually reached. |
+| `lib/order-display.ts` | New exported pure function `getOrderLifecycleSteps()` — derives a lifecycle step list (Received → Verification → Approval → Picking → Ready for Invoice → Invoiced → Dispatched → Delivered) from already-stored fields. Introduces **no new stored status** — it's a read-time projection only. |
+| `lib/prisma.ts` | Part 5 fix: unconditional singleton caching (removes the previous `NODE_ENV !== "production"` guard that allowed a second client in production) + a Prisma Client Extension (`$extends`) wrapping every model operation through a process-wide FIFO concurrency gate (default ceiling: 6 concurrent queries, configurable via `DATABASE_QUERY_CONCURRENCY`, clamped to a max of 50). **Post-delivery addition:** a new exported type, `PrismaTransactionClient` (see §8), fixing the regression described in §2. |
 
-Legacy claim lines written under the superseded 10-reason wording are included in their own explicit "Other (legacy reason)" row rather than being dropped — a historical claim's own data is never discarded from analytics. Surfaced on `app/lost-sales/analytics/page.tsx` alongside the existing Source A/Source B confirmed-loss figures, visually and typographically distinct from them.
+### Changed — workflow navigation / Part 3 (5)
+| File | Why |
+|------|-----|
+| `app/orders/[id]/page.tsx` | Added lifecycle stepper, clickable breadcrumbs, and a "Related Records" section linking to Fulfilment, each matched Invoice Reconciliation record (with status badge, and a further link to Delivered Orders once delivered), each Invoice Claim (with status badge), and each Lost Sales/unfulfilled-demand record (with status badge). All using real IDs already available from `getOrderById`. |
+| `app/fulfilment/[id]/page.tsx` | Same lifecycle stepper + related-records pattern as the order detail page, reusing the same `getOrderById` data — no duplicate query logic. |
+| `app/delivered-orders/[id]/page.tsx` | Added clickable breadcrumbs, a "View full order detail" link back to `/orders/[orderId]`, a "View invoice reconciliation record" link, and clickable claim-reference links to `/invoice-claims/[id]` — closing the backward-navigation gap from the terminal lifecycle stage. |
+| `app/invoice-reconciliation/[id]/page.tsx` | Clickable breadcrumbs (Workspace → Invoice Reconciliation → record). |
+| `app/invoice-reconciliation/[id]/delivery-outcome-panel.tsx` | Added a forward link to the matching Delivered Orders record, shown only once a delivery outcome has actually been recorded (`record !== null`) — never a guessed or premature link. |
 
-**Files changed:** `lib/invoice-claims/reason-analytics.ts` (new), `app/lost-sales/analytics/page.tsx`, `tests/claim-reason-analytics-db.integration.test.ts`.
+### Changed — sidebar / Part 4 (1 + 48 mechanical)
+| File | Why |
+|------|-----|
+| `app/components/sidebar.tsx` | Full restructuring: 6 logical sections (Overview, Sales Operations, Fulfilment, After-Sales, Reports & Intelligence, Administration); role-based visibility for the two genuinely role-restricted links (Customer Master Import, SAP Integration), mirroring their existing server-side enforcement; and a proper off-canvas mobile drawer (hamburger toggle, backdrop, `inert`/`aria-hidden` wiring, `matchMedia`-driven desktop/mobile state) to fix the mobile-responsiveness defect found during investigation. |
+| 48 × `app/**/page.tsx` | Mechanical fix: `pl-[260px]` → `md:pl-[260px]` (50 occurrences — `app/orders/new/page.tsx` has 2) so the sidebar gutter is only reserved at desktop widths, matching the pattern the other 18 pages already used correctly. Full list in the table below. |
+
+### Changed — test coverage for pre-existing code (1)
+| File | Why |
+|------|-----|
+| `tests/delivered-orders-db.integration.test.ts` | Added explicit type annotations to 4 callback parameters that became implicit-`any` once `@prisma/client`'s stub shape shifted under an unrelated edit elsewhere in this round; no behavioral change. |
+
+### Changed — post-delivery regression fix for Part 5 (15)
+Every file below had one or more functions declared with a parameter typed `tx: Prisma.TransactionClient`. Each is changed to `tx: PrismaTransactionClient` (the new type exported from `lib/prisma.ts`, described in §8) and its import statement updated accordingly — removing the now-unused `Prisma` import entirely in the three files where it had no other use. **No logic, query, or behavior changes in any of these files** — this is purely a type-annotation fix restoring compatibility with the real generated Prisma client.
+
+| File | Occurrences fixed |
+|------|---|
+| `lib/approvals/quotation-gate.ts` | 2 (`buildSnapshot`, `invalidateStaleApprovalRequests`) |
+| `lib/approvals/requests.ts` | 2 (`createApprovalRequest`, `invalidateApprovalRequest`) |
+| `lib/invoice-claims/claim-lifecycle.ts` | 1 — `Prisma` import removed (no other use) |
+| `lib/invoice-claims/create-claim.ts` | 1 (`createInvoiceClaimCore`) — `Prisma` import removed (no other use); its explanatory module comment updated to match |
+| `lib/invoice-claims/queries.ts` | 2 |
+| `lib/invoice-reconciliation/manual-actions.ts` | 1 (`snapshotLine`) — `Prisma` import removed (no other use) |
+| `lib/invoice-reconciliation/match-invoice.ts` | 5 |
+| `lib/lost-sales/create-unfulfilled-demand.ts` | 1 |
+| `lib/lost-sales/estimate-value.ts` | 1 |
+| `lib/matching/aliases.ts` | 2 — `Prisma` import removed (no other use) |
+| `lib/notifications/create.ts` | 2 — `Prisma` import removed (no other use) |
+| `lib/orders.ts` | 1 |
+| `lib/quotations/edit.ts` | 1 (`recomputeAndStoreQuotationTotals`) |
+| `lib/returns-credits/apply-status-recompute.ts` | 1 |
+| `lib/returns-credits/credit-notes.ts` | 1 (`snapshotCreditNote`) — `Prisma` import removed (no other use) |
+| `lib/returns-credits/match-credit-note.ts` | 2 |
+
+<details>
+<summary>Full list of the 48 mechanically-fixed page files (click to expand)</summary>
+
+```
+app/approvals/[id]/page.tsx
+app/approvals/page.tsx
+app/approvals/policies/page.tsx
+app/communications/inbox/[id]/page.tsx
+app/communications/inbox/page.tsx
+app/communications/page.tsx
+app/customers/[id]/page.tsx
+app/delivered-orders/[id]/page.tsx
+app/delivered-orders/page.tsx
+app/deliveries/history/page.tsx
+app/deliveries/page.tsx
+app/integrations/sap/page.tsx
+app/integrations/sap/settings/page.tsx
+app/invoice-claims/[id]/page.tsx
+app/invoice-claims/dashboard/page.tsx
+app/invoice-claims/new/page.tsx
+app/invoice-claims/page.tsx
+app/invoice-reconciliation/page.tsx
+app/invoice-reconciliation/reports/page.tsx
+app/lost-sales/[id]/page.tsx
+app/lost-sales/analytics/page.tsx
+app/lost-sales/page.tsx
+app/orders/new/page.tsx
+app/orders/page.tsx
+app/page.tsx
+app/products/[id]/page.tsx
+app/quotations/[id]/page.tsx
+app/quotations/new/page.tsx
+app/quotations/page.tsx
+app/reports/communications/page.tsx
+app/reports/customer-intelligence/page.tsx
+app/reports/decision-intelligence/[id]/page.tsx
+app/reports/decision-intelligence/page.tsx
+app/reports/financial-exposure/page.tsx
+app/reports/fulfilment/page.tsx
+app/reports/management/[reportId]/page.tsx
+app/reports/management/page.tsx
+app/reports/page.tsx
+app/reports/pipeline/page.tsx
+app/reports/product-intelligence/page.tsx
+app/reports/sales-performance/page.tsx
+app/returns-credits/[id]/page.tsx
+app/returns-credits/import-history/page.tsx
+app/returns-credits/page.tsx
+app/fulfilment/page.tsx
+app/invoice-reconciliation/[id]/page.tsx
+app/orders/[id]/page.tsx
+app/fulfilment/[id]/page.tsx
+```
+(The last four of these also received Part 3 content changes beyond the mechanical `pl-[260px]` fix, listed separately above.)
+</details>
+
+Note on `app/fulfilment/[id]/dispatch-panel.tsx`: this file also differs from the pristine original. It changed only in whitespace/formatting incidental to an adjacent edit in the same directory during this round — no logic, markup, or behavior was altered. Included in the delivery for completeness/traceability since it genuinely differs from the original upload.
 
 ---
 
-## 7. Delivered Orders history (Part 6)
+## 4. Dispatch dropdown implementation (Part 1)
 
-New dedicated page at `/delivered-orders` plus a detail page at `/delivered-orders/[id]`, both linked from the sidebar.
-
-- **`lib/delivered-orders/queries.ts`**: `listDeliveredOrders(filters, pagination)` and `getDeliveredOrderDetail(sapInvoiceId)`. "Delivered" is defined **identically** to `lib/invoice-delivery/queries.ts`'s existing derived status (a `SapInvoice` with a linked `InvoiceDeliveryRecord`) — the new page and the existing `/invoice-reconciliation` "Delivered" filter read the same underlying fact and can never disagree.
-- **Filters**: customer, invoice number, PO reference, product, salesperson, driver, vehicle, delivery date range, outcome (No Claim / With Claim), and rejection-reason category (reusing Part 4's standardised 8).
-- **Full lifecycle detail (A–H)**: purchase order → quotation → order → picking session(s) → dispatch(es) → physical delivery → invoice outcome/claims → durations between each stage. Durations (`DurationResult.milliseconds: number | null`) are explicitly `null` → rendered "Not Available" whenever either endpoint timestamp is missing — **never a fabricated zero**. Where an order went through multiple dispatches (e.g. a split delivery), the same driver/assistant appearing on more than one dispatch is de-duplicated in the people list rather than listed twice.
-- Two distinct, pre-existing "delivery" concepts are kept correctly separated and both surfaced: `DeliveryRecord`/`DeliveryLine` (the older, per-dispatch physical truck/gate outcome) as the detail page's `physicalDelivery` sub-section, vs. `InvoiceDeliveryRecord`/`InvoiceClaim` (the newer, per-invoice reconciliation outcome from Part 3) as the top-level delivery outcome.
-
-**Files changed:** `lib/delivered-orders/queries.ts` (new), `app/delivered-orders/page.tsx` (new), `app/delivered-orders/[id]/page.tsx` (new), `app/components/sidebar.tsx`, `tests/delivered-orders-db.integration.test.ts` (new).
-
-**Post-delivery fix (`next build` failure on `/delivered-orders/[id]`):** the user's own production build (Windows, real Neon Postgres database, `npm run build`) reported `tsc`/`eslint`/`vitest` all clean against this delivery, but failed during static-page generation with: `Route "/delivered-orders/[id]": Next.js encountered uncached or runtime data during prerendering.` Root cause: this codebase runs with `cacheComponents: true` (`next.config.ts`), and **every** other authenticated page that reads the session and live DB data directly in the Server Component body (not through an API route) carries `export const instant = false;` as the documented escape hatch — confirmed present on `app/delivered-orders/page.tsx` (this feature's own list page, right next to the detail page) and on every other `[id]` detail page in the repo (`app/products/[id]/page.tsx`, `app/customers/[id]/page.tsx`, `app/orders/[id]/page.tsx`, `app/invoice-reconciliation/[id]/page.tsx`, etc.). The new `app/delivered-orders/[id]/page.tsx` was the one file in this delivery missing it. Added `export const instant = false;` to that file, matching the exact repo-wide convention and comment style (`app/page.tsx`'s own comment). Re-verified: `eslint` clean on the file, `tsc --noEmit` baseline unchanged (478/131/104/42/9/9/6, zero new errors). This sandbox still cannot run `next build` itself (no network access to Google Fonts — see §10/§11), so this fix is verified by direct comparison against the repo's own established, already-working pattern rather than by rerunning the build here; the user's own build log is the authority that this was in fact the failure's exact cause.
+Completed earlier in this engagement, prior to this continuation. No files from that work are touched in this delivery (already delivered in a prior segment). Carried forward unchanged.
 
 ---
 
-## 8. Database / schema changes
+## 5. Delivered Orders queue-removal logic (Part 2)
 
-**None.** No `schema.prisma` edit and no new migration were made or are needed for any part of this round's scope — confirmed per-part above (Part 1 is a pure query-shape bug fix; Part 2 and Part 6 compose entirely from pre-existing models; Part 4 reuses an already-existing, already-migrated enum; Part 3 and Part 5 required no code changes to their respective models at all). The repository's standing additive-only migration policy was never invoked because nothing here required it.
-
----
-
-## 9. Files changed
-
-New files:
-- `lib/delivered-orders/queries.ts`
-- `app/delivered-orders/page.tsx`
-- `app/delivered-orders/[id]/page.tsx`
-- `tests/delivered-orders-db.integration.test.ts`
-- `app/reports/management/_components/summary-sections.tsx`
-- `lib/invoice-claims/reason-analytics.ts`
-- `tests/claim-reason-analytics-db.integration.test.ts`
-
-Modified files:
-- `lib/reporting/product-demand-queries.ts` (Part 1)
-- `tests/product-intelligence-db.integration.test.ts` (Part 1 regression test)
-- `lib/invoice-claims/validation.ts` (Part 4)
-- `tests/invoice-claims.test.ts` (Part 4)
-- `app/lost-sales/analytics/page.tsx` (Part 5)
-- `app/components/sidebar.tsx` (Part 6 nav entry)
-- `app/reports/management/[reportId]/page.tsx` (Part 2)
-- `lib/reporting/management-reports.ts` (Part 2)
-- `tests/reporting-db.integration.test.ts` (Part 2 breakdown-function tests)
-- `IMPLEMENTATION-REPORT.md` (this file — overwrites the previous round's report)
-
-No file outside this list was touched. No migration file was added.
+Completed earlier in this engagement, prior to this continuation. No files from that work are touched in this delivery (already delivered in a prior segment). Carried forward unchanged.
 
 ---
 
-## 10. Tests executed and results
+## 6. Workflow links / navigation improvements (Part 3)
 
-Run from the repository root, `/home/claude/work/round2/extract/willsgrove-salesflow-main`:
+**Problem:** the most-visited page in the system, `/orders/[id]`, had zero forward links to any downstream lifecycle stage (Fulfilment, Invoice Reconciliation, Invoice Claims, Lost Sales, Delivered Orders). `/fulfilment/[id]` had the same gap. `/delivered-orders/[id]` (the terminal stage) had no backward links to the order, invoice, or claims it originated from. `/invoice-reconciliation/[id]`'s delivery-outcome panel recorded a delivery outcome but never linked onward to the resulting Delivered Orders record.
 
-| Command | Result |
-|---|---|
-| `npx eslint .` | **Clean** — zero errors, zero warnings, full repository. |
-| `npx tsc --noEmit` | **779 pre-existing errors** (478 × TS7006, 131 × TS2694, 104 × TS2339, 42 × TS2305, 9 × TS2345, 9 × TS2322, 6 × TS18046) — **zero new error categories**. This sandbox's `@prisma/client` install is a non-functional stub (confirmed and documented across this entire engagement), producing implicit-`any` and missing-namespace-member errors for any code touching real Prisma types/delegates. This round's edits legitimately added exactly **one** new instance of the already-existing `Prisma.CustomerOrderWhereInput` (TS2694) category — from splitting one inline `where` clause into two named helper functions plus one shared downstream type reference — confirmed by line-by-line review to be the same error shape occurring one additional time, not a new category. Every new TS7006 introduced by this round's own new `.map()`/`.sort()`/`.filter()`/`.reduce()` callbacks was fixed with explicit parameter type annotations, bringing TS7006 back down to its exact pre-existing baseline (478). |
-| `npx vitest run` | **952 passed, 223 skipped** (87 test files: 60 passed, 27 skipped), 0 failed. |
+**Fix, in order of data flow:**
 
-**Honest sandbox-limitation note on the skipped tests:** every DB-integration test in this repository (including the new ones added this round — 5 in `tests/reporting-db.integration.test.ts`'s Section 3 for the new breakdown functions, plus the 4 in `tests/delivered-orders-db.integration.test.ts`, plus the regression test in `tests/product-intelligence-db.integration.test.ts` and the tests in `tests/claim-reason-analytics-db.integration.test.ts`) is written behind `describe.skipIf(!RUN_DB_INTEGRATION_TESTS)` and **skips cleanly** in this sandbox because no `DATABASE_URL` is configured here. They have **not been executed against a live database in this environment** — that is reported honestly, not claimed as "passing." They were written, reviewed line-by-line against the real exported function signatures and return-type shapes (confirmed via direct `grep`/`Read` of `lib/reporting/management-reports.ts` and `lib/delivered-orders/queries.ts`), and are ready to run the moment `DATABASE_URL` points at a real Postgres instance with the existing schema applied (see §12).
+1. **Extended `getOrderById`'s query** (additive-only `select` changes) to also return `matchedSapInvoices` (id, SAP doc number, reconciliation status, and whether a delivery record exists for it), `invoiceClaims` (id, reference, status), and `unfulfilledDemands` (id, status) — all via relations that already existed in the schema. No new query, no new schema field.
+2. **Added `getOrderLifecycleSteps()`** to `lib/order-display.ts` — a pure function that derives an 8-stage progress indicator (Received → Verification → Approval → Picking → Ready for Invoice → Invoiced → Dispatched → Delivered) from the order's existing status, dispatch statuses, and invoice/delivery flags. It does not introduce a second stored status anywhere — it's purely a read-time view over data that already exists, and returns `null` for DRAFT/CANCELLED/REJECTED orders where a lifecycle view doesn't make sense.
+3. **Added `OrderLifecycleStepper`**, a stateless presentational component, and wired it into both `/orders/[id]` and `/fulfilment/[id]`.
+4. **Added a "Related Records" section** to both pages, rendering real links (using IDs returned by step 1) to each matched invoice's Invoice Reconciliation page (plus a Delivered Orders link once that invoice has an associated delivery record), each Invoice Claim, and each Lost Sales/unfulfilled-demand record — each with its live status badge, reusing the existing display-label/style maps from `lib/invoice-reconciliation/display.ts` and `lib/lost-sales/display.ts`.
+5. **Closed the reverse direction** on `/delivered-orders/[id]` (links back to the originating order and invoice reconciliation record, and clickable claim references) and on `/invoice-reconciliation/[id]`'s delivery-outcome panel (a forward link to Delivered Orders, shown only once `record !== null`, i.e., only once a delivery outcome has genuinely been recorded).
+6. **Converted plain-text breadcrumbs into clickable navigation** (`<nav aria-label="Breadcrumb">`) on every page touched above.
 
-**New tests added this round, by area:**
-- Part 1: 1 regression test (`tests/product-intelligence-db.integration.test.ts`).
-- Part 2: 5 new tests in `tests/reporting-db.integration.test.ts` — one each for `getAwaitingFulfilmentBreakdown`, `getOutstandingOrdersBreakdown`, `getPickingShortagesBreakdown`, `getDeliveryExceptionsBreakdown`, `getCommunicationFailuresBreakdown`, each asserting the breakdown's counts sum to exactly the paired paginated list's own total (never disagree) rather than merely asserting the function runs without throwing.
-- Part 4: new tests in `tests/invoice-claims.test.ts` for the 8-reason standardisation.
-- Part 5: `tests/claim-reason-analytics-db.integration.test.ts` (new file).
-- Part 6: `tests/delivered-orders-db.integration.test.ts` (new file, 4 tests) — list-filter correctness cross-checked against `getDeliveredSapInvoiceIds()`, full A–H detail assembly with people-de-duplication verification, "Not Available" (null) handling for every duration when a timestamp is missing, and the `null`-detail case for an invoice never given a delivery outcome.
-
-**Not executed in this sandbox (environment limitation, not a code defect):**
-- `npx prisma validate` / `npx prisma format`: fail immediately with `Missing required environment variable: DATABASE_URL` (this repo's `prisma.config.ts` requires it to even load); forcing a dummy `DATABASE_URL` instead hits the sandbox's network allowlist blocking the Prisma engine-binary CDN (`binaries.prisma.sh`, 403). Moot in any case: §8 confirms zero schema changes this round.
-- `npx next build`: fails on this sandbox's network allowlist blocking `fonts.googleapis.com` (the project's `next/font/google` Geist fonts) — a pre-existing environment constraint unrelated to any change in this round. It also surfaced an unrelated, pre-existing Next.js CLI security-upgrade nudge; per this engagement's standing "no unnecessary upgrades" restriction, that was not acted on and is flagged for the user to decide on separately, outside this round's scope.
+No existing query logic, status mutation, or business rule was changed anywhere in this part — every change is additive (new `select` fields, new UI, new links) over data the system already computed correctly.
 
 ---
 
-## 11. Remaining limitations
+## 7. Sidebar restructuring (Part 4)
 
-1. **`InvoiceClaimLine.reasonCategory` is not server-side-mandatory.** Carried forward from Part 4's original scope decision (documented there and here again): the field stays optional at the schema/validation level so that existing claim-creation flows and historical data are never retroactively invalidated. The UI dropdown only ever offers the 8 standardised values, but nothing currently prevents a claim line from being created with `reasonCategory: null` via a direct API call. If the business wants this made mandatory, that is a deliberate follow-up decision (likely with a data backfill plan for existing `null` rows) rather than something to slip in silently under this round's "enhancement only" instruction.
-2. **Legacy claim-reason values remain live, not migrated.** `PRODUCT_NOT_ORDERED`/`PRODUCT_NOT_DELIVERED` and the typo-era wording are preserved for historical display (§5) rather than backfilled onto the new 8-value set. Any claim line still carrying one of these will keep showing under "Other (legacy reason)" in Part 5's analytics indefinitely, unless a one-time, approved data-migration/backfill is run.
-3. **Sandbox `@prisma/client` stub noise.** As documented in §10, this environment's Prisma client install cannot produce real generated types, which is the source of all 779 `tsc` errors above (all seven categories pre-date this round). This is an environment artifact, not a defect in the delivered code — every file touched this round was manually checked line-by-line to confirm no *new* error category was introduced, only new instances within already-known categories (and in one case, TS7006, brought back down to the original baseline by adding explicit type annotations).
-4. **No DB-integration test has been executed against a live database in this sandbox**, for the reason given in §10. They are believed correct from direct inspection of the real function signatures/return shapes they call, but "believed correct from inspection" is reported as exactly that, not as "passing."
-5. **`next build` could not be run end-to-end here** (§10) due to this sandbox's network allowlist. `tsc --noEmit`, `eslint`, and `vitest` were used as the available proxy for build-time correctness; a real build (and the DB-integration suite) should both be run in CI or staging before this reaches production, per this engagement's standing verification bar.
-6. **`product-intelligence`'s divergent presentation style was a deliberate choice, not a gap** (§2) — flagged here only so it is not mistaken for an oversight in a future review pass.
+**Structure:** the flat navigation list was reorganized into 6 sections — Overview, Sales Operations, Fulfilment, After-Sales, Reports & Intelligence, Administration — matching how the application's own routes naturally group, without inventing entries for routes that don't exist (no fake "Users"/"Personnel"/"Vehicles" links, no artificial splitting of the existing Reports hub into 6 separate sidebar entries — `/reports` is itself already a role-gated hub that fans out to every report sub-page, confirmed by reading `app/reports/page.tsx`).
+
+**Role-based visibility:** two sidebar entries — Customer Master Import and SAP Integration — are now shown only to users whose role matches what the corresponding API routes already enforce server-side (confirmed via a full-repo grep of `requireUserOrResponse`/`requireUser` calls with explicit role arrays under `app/api/`). This is UI-layer visibility only; it changes nothing about server-side authorization, which was already correct and is unchanged.
+
+**Mobile responsiveness (defect found during investigation, fixed as part of this part):**
+- The sidebar itself gained a real off-canvas drawer for mobile: a hamburger toggle button, a backdrop, `aria-hidden`/`inert` on the `<aside>` when closed (so it's correctly removed from the tab order, not just visually hidden), and `window.matchMedia("(min-width: 768px)")`-driven desktop/mobile state (a pure CSS media query can't drive `aria-hidden`/`inert` correctly).
+- 48 page files had a hardcoded `pl-[260px]` class that reserved the sidebar's gutter unconditionally — even on mobile, where the sidebar is no longer permanently visible. Fixed to `md:pl-[260px]`, matching the pattern the other 18 pages already used correctly. This was a genuine, previously-undiscovered defect affecting more than half the application's pages on mobile; it was not in the original ticket list but is squarely within "professional navigation and a consistent user experience," so it was fixed rather than left for a future round.
 
 ---
 
-## 12. Windows PowerShell verification commands
+## 8. Prisma connection-pool diagnosis and fixes (Part 5)
 
-Run from the project root in PowerShell:
+Full investigation and root-cause chain is documented in `lib/prisma.ts`'s module comment (reproduced in full below as the authoritative record):
 
-```powershell
-# Install (if not already) — unchanged, no new/updated dependency this round
-npm install
+> Root cause: Home → `getDecisionDashboard()` fires a 7-way `Promise.all`, one member of which is `getOperationalDashboard()` — itself its own 13-way `Promise.all`. Three of those 13 are themselves composite functions that each run their own internal `Promise.all` (`getLostSalesReportSummary` alone is an 8-way `Promise.all`, landing last in its batch and so the one left waiting when the pool is already exhausted — the exact reported failure site). `getDecisionDashboard`'s other 6 members are themselves further multi-query compositions. One homepage load therefore fires on the order of 60–100+ concurrent Prisma calls against a 9-connection pool. Nothing here duplicates the same aggregate for no reason — the "current" vs "prior" period pairs are genuinely different date ranges needed for period-over-period deltas — and no query loads an unbounded dataset where an aggregate would do; every call in the trace is already a count/aggregate/groupBy. No long-running transaction holds a connection around unrelated work. This is an actual fan-out explosion, not "a few queries, pool too small."
 
-# Type check
-npx tsc --noEmit
+**Fix:** rather than rewriting a dozen already-correct, already-tested reporting modules, the fix sits at the one place every one of those calls necessarily passes through — the Prisma Client itself, via a Prisma Client Extension's `query` component wrapping every model operation (find/count/aggregate/groupBy/create/etc., every model, every call site, present or future) through a single, process-wide, FIFO concurrency gate. At most `DATABASE_QUERY_CONCURRENCY` queries (default 6, configurable, clamped to a maximum of 50) are ever in flight against the database at once; everything beyond that queues and runs as soon as a slot frees up — controlled concurrency, not blind serialization, and a single central safeguard rather than something every future report module has to remember to apply itself.
 
-# Lint
-npx eslint .
+A secondary fix: the Prisma singleton now caches onto `globalThis` unconditionally (previously only outside `NODE_ENV === "production"`), closing a documented Next.js/Prisma interaction where a second module instantiation in production could silently create a second client with its own separate connection pool.
 
-# Full test suite (DB-integration tests will skip without DATABASE_URL)
-npx vitest run
+**Operational note for deployment:** `DATABASE_QUERY_CONCURRENCY` can be tuned via environment variable if the production connection pool size differs from the default assumption; it is never trusted unbounded (clamped to 50 regardless of the value supplied).
 
-# To also execute the DB-integration tests, set DATABASE_URL first, e.g.:
-$env:DATABASE_URL = "postgresql://USER:PASSWORD@HOST:5432/DBNAME?schema=public"
-$env:RUN_DB_INTEGRATION_TESTS = "1"
-npx vitest run
+### 8a. Post-delivery regression and fix: `.$extends()` breaking `Prisma.TransactionClient` compatibility
 
-# Schema sanity check (no changes expected — this should report the schema unchanged)
-npx prisma validate
+**How this was found:** after the first delivery, a real `npm run build` against this project's actual generated Prisma client (not the stub used in the development sandbox) failed `next build`'s TypeScript pass with over 20 `TS2345` errors of the shape:
 
-# Production build
-npx next build
+```
+Argument of type 'Omit<DynamicClientExtensionThis<TypeMap<InternalArgs & { result: {}; model: {}; query: {}; client: {}; }, {}>, ...>, "$connect" | ... 3 more ... | "$extends">' is not assignable to parameter of type 'TransactionClient'.
 ```
 
-Expected results matching this report: `tsc` — the 779 pre-existing errors listed in §10 (none introduced by this round beyond the one documented new TS2694 instance); `eslint` — clean; `vitest` — 952 passed / 223 skipped without `DATABASE_URL`, or the same 952 plus however many of the DB-integration tests execute (and should pass) with it set.
+**Root cause:** this codebase has a long-standing, deliberate architectural pattern — explicitly documented in `lib/invoice-claims/create-claim.ts`'s own pre-existing module comment — of helper functions (mostly "snapshot and validate" or "recompute and write" helpers used across approvals, invoice claims, invoice reconciliation, lost sales, matching, notifications, orders, quotations, and returns/credits) typed to accept a single parameter, `tx: Prisma.TransactionClient`, and called with **either**:
+- a real transaction's `tx`, from inside `prisma.$transaction(async (tx) => { ... })`, when atomicity is required, **or**
+- the top-level `prisma` export directly, when it isn't.
+
+This worked for as long as `prisma` was a plain `PrismaClient` instance, because `Prisma.TransactionClient` is generated as `Omit<PrismaClient<DefaultArgs>, '$connect' | '$disconnect' | '$on' | '$transaction' | '$extends'>` — a plain client is always structurally assignable to that type. The Part 5 fix above wraps `prisma` in `.$extends()`, which is necessary to install the concurrency gate, but it also changes `prisma`'s *type* to an extended-client type parameterized on the extension's own generic arguments — and `Prisma.TransactionClient`, generated once against the library's default (unextended) arguments, has no way to reflect that. This is a documented Prisma typing limitation whenever a client is extended (see e.g. the various open issues on prisma/prisma referencing "$extends breaks TransactionClient"), not a bug in how the extension's `$allOperations` callback was written — confirmed by checking that the type mismatch is identical regardless of how that callback's parameters are annotated.
+
+**Why the sandbox used to build this round could not have caught this:** `@prisma/client` in that sandbox is a non-functional stub with no generated types at all (documented throughout this engagement as the reason the project's `tsc --noEmit` baseline sits at a fixed 780 pre-existing errors). `Prisma.TransactionClient` itself doesn't meaningfully resolve there, so there was never a real type for the extended client to be checked against — this class of error has nothing to manifest against until a real generated client exists, which only happens on a machine where `npx prisma generate` can actually reach Prisma's engine-binary CDN (this sandbox's network allowlist blocks that, as documented in §10/§11 below).
+
+**Fix:** rather than touching any of the ~25 call sites (which correctly continue passing either `tx` or `prisma` — exactly as before), a single new type is derived directly from the project's own `prisma` export in `lib/prisma.ts`:
+
+```ts
+export type PrismaTransactionClient = Omit<
+  typeof prisma,
+  "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends"
+>;
+```
+
+This mirrors exactly what `Prisma.TransactionClient` itself does (`Omit` of the same five members), but computed from whatever `prisma` actually resolves to — extended or not — so it automatically stays correct through any future change to the extension, rather than hardcoding an assumption about the client's shape. The 16 affected files (listed in §3) then have their `tx: Prisma.TransactionClient` parameter annotations changed to `tx: PrismaTransactionClient`, importing it from `@/lib/prisma`. This is purely a type-annotation change — no runtime behavior, query, or business logic in any of these 16 files was touched.
+
+**Why this is architecturally sound, not a patch:** a full-repo check (`grep -rn "new PrismaClient("`) confirms there is exactly one `PrismaClient` instantiation in the entire codebase (`lib/prisma.ts`), and a full-repo check of every `.$transaction(` call site confirms every single one is invoked on the exported `prisma` (never on the un-extended `basePrismaClient`, which isn't exported or referenced anywhere else). `PrismaTransactionClient`, derived from that same single `prisma` export, is therefore guaranteed to be structurally compatible with both (a) the bare `prisma` export itself, and (b) the `tx` parameter Prisma infers inside `prisma.$transaction(async (tx) => ...)` — the only two things ever passed into these ~16 functions anywhere in the codebase.
+
+**Honest limitation on verification:** this fix could not be directly verified in the development sandbox for the same reason the original bug escaped it — `@prisma/client` there has no real generated types to check the fix against. What **was** verified in-sandbox: `npx eslint .` is clean (0 errors, 0 warnings) after the fix, including catching and removing three now-unused `Prisma` imports; `npx tsc --noEmit` returns to the exact same pre-existing 780-error baseline (no new errors, no fewer — consistent with a type-annotation-only change against a stub client that can't distinguish the two types either way); and the full `npx vitest run` suite is unchanged at 961 passed / 228 skipped, zero regressions. **This fix must be confirmed by re-running `npm run build` in the real environment** (§12 has the exact command) — that is the only environment that can actually exercise the real `Prisma.TransactionClient` vs. extended-client type check this bug depends on.
 
 ---
 
-## 13. Migration commands needing manual review or run
+## 9. Database / schema / migration changes
 
-**None.** This round made no `schema.prisma` changes, so there is no new migration file and nothing to run or review here. The repository's existing migration history is untouched.
+**None.** No part of this engagement segment required a schema change, a new table, a new column, or a Prisma migration of any kind — including the post-delivery regression fix in §8a, which is a TypeScript type-annotation change only, with zero impact on `prisma/schema.prisma`, generated SQL, or runtime query shape. `prisma/schema.prisma` was read for reference (confirming existing relations on `CustomerOrder`, `SapInvoice`, `UnfulfilledDemand`, `InvoiceClaim`) but never modified. Part 3's navigation work reused 100% pre-existing relations; Part 5's fix (and its follow-up type fix) operate entirely at the Prisma Client / TypeScript layer, not the schema layer. This satisfies the engagement's standing constraint against unnecessary or destructive migrations — there was nothing to migrate.
+
+---
+
+## 10. Tests actually executed and results
+
+All commands below were run from the project root after `npm install`, and re-run again after the §8a regression fix. Results are reported exactly as returned — nothing here is asserted without having been run.
+
+| Check | Command | Result |
+|---|---|---|
+| Lint | `npx eslint .` | **Passed** — exit code 0, zero errors, zero warnings, across the full repository including every changed/new file (re-verified after §8a; initially surfaced 2 unused-import warnings from the fix, both cleaned up and re-verified clean). |
+| Type-check | `npx tsc --noEmit` | **Passed against the established baseline.** The project has a fixed, pre-existing baseline of 780 TypeScript errors (478 × TS7006, 132 × TS2694, 104 × TS2339, 42 × TS2305, 9 × TS2345, 9 × TS2322, 6 × TS18046), entirely caused by `@prisma/client` being a non-functional stub package in this sandbox (it ships no generated types). This baseline was re-verified as **exactly unchanged** after every single edit in this round, including the §8a fix. **Important caveat:** this baseline check, by construction, cannot verify the real-world bug described in §8a either way — see that section's "Honest limitation on verification." |
+| Unit + integration tests | `npx vitest run` | **961 passed, 228 skipped** (89 test files: 61 passed, 28 skipped). Before this round's two new test files, the suite stood at 952 passed / 224 skipped; the 9 new tests in `tests/query-concurrency-gate.test.ts` (pure, DB-free, always run) now pass, and the 4 new tests in `tests/dashboard-concurrency-db.integration.test.ts` correctly skip in this sandbox for the same reason every other `*-db.integration.test.ts` file in this codebase skips (`@prisma/client` is a non-functional stub; `RUN_DB_INTEGRATION_TESTS` is unset). **Zero regressions** — every previously-passing test still passes, confirmed both before and after the §8a fix. |
+| Prisma schema validation | `npx prisma validate` | **Blocked by environment.** Fails with `403 Forbidden` fetching engine binaries from `binaries.prisma.sh`, even with `PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1` set and a dummy `DATABASE_URL` supplied to get past config loading. This is the sandbox's network allowlist, not a defect in the schema or this delivery — the same limitation present in every prior round of this engagement. |
+| Prisma client generation | `npx prisma generate` | **Blocked by environment**, same root cause (network allowlist blocking `binaries.prisma.sh`). This is also precisely why the §8a regression could not be caught before the real build: without a real generated client, there is no real `Prisma.TransactionClient` type to check against. |
+| Production build | `npm run build` (`next build`) | **Blocked by environment in this sandbox** (Geist font fetch blocked by the network allowlist — pre-existing, unrelated to this delivery). **In the real environment that reported the §8a bug, the build got past that stage and reached a real TypeScript check against a real generated client — which is exactly how the §8a regression was found.** Re-running the build after this fix is the one verification step this sandbox genuinely cannot perform; see §12 for the exact command and §8a for what to expect. |
+| Next.js CLI advisory | (encountered incidentally during the build attempt above) | The Next.js CLI surfaced a one-time security-upgrade nudge (`next upgrade --agent=security ...`) on the first build attempt. **Not acted upon** — upgrading Next.js is an unrelated dependency change outside this engagement's scope and explicitly prohibited by the standing "no unrelated dependency upgrades" constraint. Reported here as a factual FYI only. |
+
+**What the two new test files specifically verify (Part 8's own stated requirement for Part 5 — "Prisma singleton behavior... concurrent dashboard loading... correct aggregates after consolidation... demo-exclusion preserved... no duplicate counting"):**
+- `tests/query-concurrency-gate.test.ts` (always runs, 9/9 passing): `resolveQueryConcurrency`'s env-var parsing and clamping, and the `Semaphore`'s actual concurrency-limiting behavior — never exceeding its ceiling under 10 concurrent tasks, FIFO ordering at concurrency 1, slot release on task failure (so one error can't deadlock the gate), and a correctness check across an 80-task batch mirroring the real bug's reported scale (every task completes exactly once).
+- `tests/dashboard-concurrency-db.integration.test.ts` (gated, run it against a real database with `RUN_DB_INTEGRATION_TESTS=1 npm test` after `npm run db:seed`): `getDecisionDashboard` completing end-to-end through the real gate; 5 concurrent full dashboard loads (simulating 5 simultaneous users) never throwing a pool-timeout error; demo-exclusion preserved under the gate (a newly created `isDemo` order is excluded from `ordersReceived` when `includeDemo: false` and included when `true`); and no duplicate-counting from the gate itself (two parallel calls to `getLostSalesReportSummary` return identical totals).
+
+---
+
+## 11. Remaining issues / limitations
+
+- **The §8a fix needs one confirmation this sandbox cannot provide:** run `npm run build` in the real environment (§12) and confirm the TypeScript pass completes. Everything about the fix has been checked that can be checked without a real generated Prisma client (lint, the unchanged stub-driven baseline, the full test suite, and a manual trace confirming there is exactly one `PrismaClient` instance and exactly one `.$transaction()` call pattern in the entire codebase, both of which the new `PrismaTransactionClient` type is derived from) — but the actual structural-assignability check this bug turns on only exists once real types are generated.
+- **Environment-only blockers** (not defects in this delivery, consistent with every prior round of this engagement): `prisma validate`, `prisma generate`, and `next build` are all blocked by this sandbox's network allowlist (Prisma's engine-binary CDN and Google Fonts are both unreachable from here). None of these are reachable from within this task; they should be re-run in a real deployment environment with normal network access as part of standard CI, where they are expected to pass cleanly given everything else that was verified (clean lint, unchanged type-check baseline, full test suite passing) plus the §8a fix above.
+- **Part 5's integration test is written but not yet run against a live database** in this sandbox (by design — it correctly skips, like every other DB-integration test in this codebase, exactly as intended). It should be run once with `RUN_DB_INTEGRATION_TESTS=1 npm test` (after `npm run db:seed`) in a real environment to get its first live pass/fail signal before this goes to production, though its logic has been carefully checked against the real `getDecisionDashboard`/`getOperationalDashboard`/`getLostSalesReportSummary` signatures and return shapes.
+- **`DATABASE_QUERY_CONCURRENCY` default of 6** was chosen to stay safely under the reported 9-connection pool with headroom for other concurrent requests/users. If the production database's actual connection pool size differs materially from 9, this value should be reviewed and tuned via the environment variable rather than left at the default.
+- **Next.js CLI security-upgrade advisory**: surfaced during the (environment-blocked) build attempt; not evaluated or acted on in this delivery as it's outside this engagement's scope. Worth a separate look through normal dependency-update process.
+- **General takeaway for this project's toolchain:** this episode is a direct illustration of why the repeatedly-documented "`@prisma/client` is a non-functional stub in this sandbox" limitation matters beyond just inflating the `tsc` baseline — any type-level interaction specifically involving Prisma's *generated* types (as opposed to its hand-written public API, like `Prisma.Decimal` or `Prisma.InputJsonValue`, which the stub still exposes) cannot be fully verified until code reaches an environment with a real generated client. Future Prisma-adjacent changes in this project should budget for a real-build confirmation step, not just the sandbox's lint/tsc-baseline/vitest checks, before being considered fully verified.
+
+---
+
+## 12. Exact Windows PowerShell commands to install, validate, test, build, and start
+
+```powershell
+# From the project root, after extracting this delivery's files over the existing codebase:
+
+# 1. Install dependencies
+npm install
+
+# 2. Generate the Prisma client (required before type-checking/building in a real environment with network access)
+npx prisma generate
+
+# 3. Validate the Prisma schema
+npx prisma validate
+
+# 4. Type-check
+npx tsc --noEmit
+
+# 5. Lint
+npx eslint .
+
+# 6. Run the full test suite (fast, no database required)
+npx vitest run
+
+# 7. (Optional, requires a seeded database) Run the DB-integration suite, including the new
+#    dashboard-concurrency test, against a real database:
+$env:DATABASE_URL = "<your real connection string>"
+$env:RUN_DB_INTEGRATION_TESTS = "1"
+npm run db:seed
+npx vitest run
+Remove-Item Env:\RUN_DB_INTEGRATION_TESTS
+
+# 8. Build for production -- this is the step that previously failed with the TS2345
+#    "not assignable to parameter of type 'TransactionClient'" errors (see section 8a).
+#    It should now complete cleanly; if it does not, capture the full error output exactly
+#    as before so it can be diagnosed further.
+npm run build
+
+# 9. Start the production server
+npm run start
+
+# Optional: tune the database-query concurrency ceiling if your production connection pool
+# differs materially from the default assumption of 9 connections (default here: 6; max: 50)
+$env:DATABASE_QUERY_CONCURRENCY = "6"
+```

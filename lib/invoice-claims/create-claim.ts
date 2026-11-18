@@ -1,7 +1,6 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
-import type { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { prisma, type PrismaTransactionClient } from "@/lib/prisma";
 import { TRANSACTION_OPTIONS } from "@/lib/orders";
 import { dateOnlyStringToUtcDate } from "@/lib/dates";
 import {
@@ -40,11 +39,12 @@ export function generateClaimReference(): string {
 
 /**
  * The full validate-then-insert core, written to run against ANY
- * Prisma.TransactionClient -- the top-level `prisma` client itself
- * (which satisfies Prisma.TransactionClient structurally: TransactionClient
- * is PrismaClient minus a few top-level methods like `$transaction`/
- * `$connect`, so every model delegate used here is present with no cast),
- * or the `tx` handed to an ALREADY-OPEN transaction's callback.
+ * PrismaTransactionClient -- the top-level `prisma` client itself
+ * (which satisfies PrismaTransactionClient structurally: see
+ * lib/prisma.ts's own module comment -- it's our actual `prisma` export
+ * minus a few top-level methods like `$transaction`/`$connect`, so every
+ * model delegate used here is present with no cast), or the `tx` handed
+ * to an ALREADY-OPEN transaction's callback.
  *
  * This split exists for the Final Operational Enhancements spec (Part 5):
  * recording an invoice's delivery outcome as "With Claim" must create the
@@ -68,7 +68,7 @@ export function generateClaimReference(): string {
  * field, check and error shape below is unchanged Milestone 6A logic.
  */
 export async function createInvoiceClaimCore(
-  tx: Prisma.TransactionClient,
+  tx: PrismaTransactionClient,
   input: CreateInvoiceClaimInput,
   reportedById: string,
   invoiceDeliveryRecordId?: string

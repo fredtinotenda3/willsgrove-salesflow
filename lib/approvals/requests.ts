@@ -1,6 +1,6 @@
 import "server-only";
 import type { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { prisma, type PrismaTransactionClient } from "@/lib/prisma";
 import { TRANSACTION_OPTIONS } from "@/lib/orders";
 import { createNotification, createNotificationForRoles } from "@/lib/notifications/create";
 import {
@@ -50,7 +50,7 @@ export type CreateApprovalRequestInput = {
  * (spec section 2), since this milestone does not build named
  * assignment to one specific approver.
  */
-export async function createApprovalRequest(tx: Prisma.TransactionClient, input: CreateApprovalRequestInput) {
+export async function createApprovalRequest(tx: PrismaTransactionClient, input: CreateApprovalRequestInput) {
   const refCheck = validateApprovalTargetRef(input.module, input);
   if (!refCheck.ok) {
     throw new Error(`createApprovalRequest: ${refCheck.message}`);
@@ -113,7 +113,7 @@ export async function createApprovalRequest(tx: Prisma.TransactionClient, input:
  * defensively (lib/quotations/edit.ts calls this after every line
  * change; it should simply no-op for a quotation with no live request).
  */
-export async function invalidateApprovalRequest(tx: Prisma.TransactionClient, requestId: string, notes: string): Promise<void> {
+export async function invalidateApprovalRequest(tx: PrismaTransactionClient, requestId: string, notes: string): Promise<void> {
   const request = await tx.approvalRequest.findUnique({ where: { id: requestId }, select: { status: true } });
   if (!request) return;
   const transition = validateApprovalStatusTransition(request.status as ApprovalRequestStatus, "CANCELLED");

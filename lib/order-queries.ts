@@ -80,8 +80,44 @@ const orderListSelect = {
   dispatchRecords: { where: { status: { not: "CANCELLED" } }, select: { status: true } },
 } satisfies Prisma.CustomerOrderSelect;
 
+/**
+ * Workflow/Navigation/Performance round, Part 2: once an invoice's
+ * delivery outcome has been recorded (No Claim or With Claim), the
+ * order behind it is DONE -- it must stop appearing in every active
+ * Orders tab (including "All Orders") and live only on the dedicated
+ * /delivered-orders page from here on, without being deleted or having
+ * any other field touched.
+ *
+ * CustomerOrder.status itself never reflects this: it is pinned at
+ * READY_TO_INVOICE forever once set there (prisma/schema.prisma's own
+ * OrderStatus comment, and lib/order-display.ts's getEffectiveOrderStatus
+ * module comment, both document why -- it's the SAP-handover gate, not a
+ * tracked terminal state), so a status-only filter can never express
+ * "delivered." The authoritative definition of "delivered" is, and must
+ * stay, the SAME one lib/delivered-orders/queries.ts and
+ * lib/invoice-delivery/queries.ts already use: an InvoiceDeliveryRecord
+ * exists for an invoice matched to this order. Reusing
+ * CustomerOrder.matchedSapInvoices (not the line-level
+ * matchedSapInvoiceLines) is deliberate, not an oversight -- it is the
+ * EXACT same header-level linkage /delivered-orders itself is built on
+ * (lib/delivered-orders/queries.ts's own listDeliveredOrders), so an
+ * order excluded here is always findable there; broadening this to the
+ * line-level link would exclude a few more orders from this list while
+ * /delivered-orders (unchanged) still couldn't show them, making an
+ * order vanish from both views -- a regression strictly worse than the
+ * rare multi-order-invoice edge case this leaves unexcluded.
+ *
+ * Applied unconditionally (every tab, not just READY_TO_INVOICE) so one
+ * `where` clause is correct for every caller, including "All Orders" --
+ * a REJECTED/CANCELLED/DRAFT order can never have a matched invoice at
+ * all, so this is a no-op for those tabs, not a behavior change.
+ */
+const EXCLUDE_DELIVERED_ORDERS: Prisma.CustomerOrderWhereInput = {
+  matchedSapInvoices: { none: { deliveryRecord: { isNot: null } } },
+};
+
 export async function listOrders(query: OrderListQuery) {
-  const where: Prisma.CustomerOrderWhereInput = {};
+  const where: Prisma.CustomerOrderWhereInput = { ...EXCLUDE_DELIVERED_ORDERS };
 
   if (!query.includeDemo) {
     where.isDemo = false;
@@ -226,6 +262,33 @@ export async function getOrderById(id: string) {
       // Final completion phase, section 7 -- see orderListSelect's own
       // comment above for why this is needed and why CANCELLED is excluded.
       dispatchRecords: { where: { status: { not: "CANCELLED" } }, select: { status: true } },
+      // Workflow/Navigation/Performance round, Part 3: real related-record
+      // IDs for the order detail page's "related records" panel and
+      // lifecycle indicator -- every relation here already exists on
+      // CustomerOrder (see that model's own relation block), so this is
+      // read-only reuse, not a new query path or a second definition of
+      // any of these relationships. Header-level matchedSapInvoices is
+      // used rather than the line-level matchedSapInvoiceLines, same
+      // choice and same reasoning as EXCLUDE_DELIVERED_ORDERS above (an
+      // order detail page showing "this order's invoice" should show
+      // exactly the invoice /delivered-orders itself would show for it,
+      // never a second, line-level reading that could disagree).
+      matchedSapInvoices: {
+        select: {
+          id: true,
+          sapDocNum: true,
+          reconciliationStatus: true,
+          deliveryRecord: { select: { id: true, outcome: true } },
+        },
+      },
+      invoiceClaims: {
+        orderBy: { claimDate: "desc" },
+        select: { id: true, claimReference: true, status: true },
+      },
+      unfulfilledDemands: {
+        orderBy: { createdAt: "desc" },
+        select: { id: true, status: true },
+      },
     },
   });
 
@@ -300,6 +363,25 @@ export async function getOrderById(id: string) {
       notes: entry.notes,
       createdAt: entry.createdAt.toISOString(),
       changedBy: entry.changedBy,
+    })),
+    // Workflow/Navigation/Performance round, Part 3.
+    matchedSapInvoices: order.matchedSapInvoices.map(
+      (invoice: { id: string; sapDocNum: string; reconciliationStatus: string; deliveryRecord: { id: string; outcome: string } | null }) => ({
+        id: invoice.id,
+        sapDocNum: invoice.sapDocNum,
+        reconciliationStatus: invoice.reconciliationStatus,
+        delivered: invoice.deliveryRecord !== null,
+        deliveryOutcome: invoice.deliveryRecord?.outcome ?? null,
+      }),
+    ),
+    invoiceClaims: order.invoiceClaims.map((claim: { id: string; claimReference: string; status: string }) => ({
+      id: claim.id,
+      claimReference: claim.claimReference,
+      status: claim.status,
+    })),
+    unfulfilledDemands: order.unfulfilledDemands.map((demand: { id: string; status: string }) => ({
+      id: demand.id,
+      status: demand.status,
     })),
   };
 }

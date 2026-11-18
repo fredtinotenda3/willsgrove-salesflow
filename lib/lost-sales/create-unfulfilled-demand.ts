@@ -1,5 +1,6 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
+import type { PrismaTransactionClient } from "@/lib/prisma";
 import { resolveOriginalDemandFields } from "@/lib/lost-sales/resolve-fields";
 import { deriveUnfulfilledDemandStatus } from "@/lib/lost-sales/validation";
 import { resolveEstimatedLostSaleValue } from "@/lib/lost-sales/estimate-value";
@@ -59,7 +60,7 @@ import { resolveEstimatedLostSaleValue } from "@/lib/lost-sales/estimate-value";
 export type CreateUnfulfilledDemandsResult = { createdCount: number; supersededCount: number };
 
 export async function createUnfulfilledDemandsForSession(
-  tx: Prisma.TransactionClient,
+  tx: PrismaTransactionClient,
   pickingSessionId: string,
   actorId: string
 ): Promise<CreateUnfulfilledDemandsResult> {

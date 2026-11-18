@@ -92,7 +92,7 @@ export default async function CustomerIntelligenceOverviewPage({ searchParams }:
   return (
     <div className="min-h-screen bg-[#F7F8F6]">
       <Sidebar />
-      <main className="min-h-screen pl-[260px]">
+      <main className="min-h-screen md:pl-[260px]">
         <header className="sticky top-0 z-30 flex h-[76px] items-center border-b border-[#E8EBE6] bg-white px-8">
           <div>
             <p className="text-xs text-gray-400">Workspace / Reports / Customer Intelligence</p>

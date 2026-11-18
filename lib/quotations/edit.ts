@@ -1,6 +1,6 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { prisma, type PrismaTransactionClient } from "@/lib/prisma";
 import { TRANSACTION_OPTIONS } from "@/lib/orders";
 import { dateOnlyStringToUtcDate } from "@/lib/dates";
 import { computeQuotationTotals } from "@/lib/quotations/calculations";
@@ -39,7 +39,7 @@ async function requireDraftQuotation(quotationId: string) {
 }
 
 /** Recomputes and writes Quotation.subtotal/discountTotal/vatTotal/total from its current lines -- called after every line add/update/remove. */
-async function recomputeAndStoreQuotationTotals(tx: Prisma.TransactionClient, quotationId: string): Promise<void> {
+async function recomputeAndStoreQuotationTotals(tx: PrismaTransactionClient, quotationId: string): Promise<void> {
   const lines = await tx.quotationLine.findMany({
     where: { quotationId },
     select: { lineSubtotal: true, discountAmount: true, vatAmount: true, lineTotal: true },

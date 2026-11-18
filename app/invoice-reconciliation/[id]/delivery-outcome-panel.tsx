@@ -291,6 +291,18 @@ export default function DeliveryOutcomePanel({
         <p className="mt-2 text-[11px] text-gray-400">
           Recorded by {record.recordedByName} · {new Date(record.recordedAt).toLocaleString()}
         </p>
+        {/* Part 3: once a delivery outcome exists, this invoice has moved
+            to the dedicated Delivered Orders page (lib/delivered-orders/
+            queries.ts's own definition is exactly "has a recorded
+            InvoiceDeliveryRecord," the same thing `record` being non-null
+            here means) -- forward link using the same invoiceId this
+            panel already fetched against, never a guessed id. */}
+        <Link
+          href={`/delivered-orders/${invoiceId}`}
+          className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-[#173D2E] hover:underline"
+        >
+          <PackageCheck size={13} /> View full lifecycle in Delivered Orders
+        </Link>
         {record.podReference && <p className="mt-2 text-xs text-gray-600">POD reference: {record.podReference}</p>}
         {record.notes && <p className="mt-1 text-xs text-gray-600">Notes: {record.notes}</p>}
         {record.claims.length > 0 && (

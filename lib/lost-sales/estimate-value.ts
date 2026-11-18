@@ -1,5 +1,6 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
+import type { PrismaTransactionClient } from "@/lib/prisma";
 import { multiplyDecimalStrings } from "@/lib/lost-sales/validation";
 
 /**
@@ -41,7 +42,7 @@ export type ResolveEstimatedLostSaleValueParams = {
 };
 
 export async function resolveEstimatedLostSaleValue(
-  tx: Prisma.TransactionClient,
+  tx: PrismaTransactionClient,
   params: ResolveEstimatedLostSaleValueParams
 ): Promise<EstimatedLostSaleValue | null> {
   const orderLine = await tx.orderLine.findUnique({

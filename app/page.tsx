@@ -238,7 +238,7 @@ export default async function Home() {
     <div className="min-h-screen bg-[#F7F8F6]">
       <Sidebar />
 
-      <main className="min-h-screen pl-[260px]">
+      <main className="min-h-screen md:pl-[260px]">
 
         {/* Top navigation */}
         <header className="sticky top-0 z-30 flex h-[76px] items-center justify-between border-b border-[#E8EBE6] bg-white px-8">

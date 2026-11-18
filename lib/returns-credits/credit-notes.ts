@@ -1,6 +1,5 @@
 import "server-only";
-import { prisma } from "@/lib/prisma";
-import { Prisma } from "@prisma/client";
+import { prisma, type PrismaTransactionClient } from "@/lib/prisma";
 import { TRANSACTION_OPTIONS } from "@/lib/orders";
 import { dateOnlyStringToUtcDate } from "@/lib/dates";
 import { parseScaledDecimal } from "@/lib/picking/validation";
@@ -136,7 +135,7 @@ interface CreditNoteMatchSnapshot {
   matchNote: string | null;
 }
 
-async function snapshotCreditNote(tx: Prisma.TransactionClient, creditNoteId: string): Promise<CreditNoteMatchSnapshot | null> {
+async function snapshotCreditNote(tx: PrismaTransactionClient, creditNoteId: string): Promise<CreditNoteMatchSnapshot | null> {
   const note = await tx.creditNote.findUnique({
     where: { id: creditNoteId },
     select: { matchStatus: true, matchMethod: true, claimId: true, matchNote: true },

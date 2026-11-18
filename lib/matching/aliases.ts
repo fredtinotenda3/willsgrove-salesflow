@@ -16,8 +16,7 @@
  * transaction, never as a side effect of simply viewing a suggestion.
  */
 import "server-only";
-import type { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { prisma, type PrismaTransactionClient } from "@/lib/prisma";
 import { normalizeMatchText } from "@/lib/matching/normalize";
 
 export type ProductAliasMatch = { productId: string; aliasId: string };
@@ -84,7 +83,7 @@ export async function lookupCustomerAlias(headerText: string): Promise<CustomerA
  * confidence in whatever it means today.
  */
 export async function recordProductAlias(
-  tx: Prisma.TransactionClient,
+  tx: PrismaTransactionClient,
   params: { rawText: string; productId: string; customerId: string | null; createdById: string; isDemo?: boolean }
 ): Promise<void> {
   const normalizedText = normalizeMatchText(params.rawText);
@@ -120,7 +119,7 @@ export async function recordProductAlias(
 
 /** Same find-or-re-point-or-create behavior as recordProductAlias, for CustomerAlias. */
 export async function recordCustomerAlias(
-  tx: Prisma.TransactionClient,
+  tx: PrismaTransactionClient,
   params: { rawText: string; customerId: string; createdById: string; isDemo?: boolean }
 ): Promise<void> {
   const normalizedText = normalizeMatchText(params.rawText);

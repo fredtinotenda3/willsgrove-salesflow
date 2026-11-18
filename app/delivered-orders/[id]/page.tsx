@@ -4,7 +4,7 @@ import { getCurrentUser } from "@/lib/auth/current-user";
 import { getDeliveredOrderDetail } from "@/lib/delivered-orders/queries";
 import Sidebar from "../../components/sidebar";
 import { PageHeader, SectionCard, EmptyState } from "../../reports/_components/ui";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, ArrowUpRight } from "lucide-react";
 
 /**
  * Management Analytics spec, Part 6: the full lifecycle detail view for
@@ -72,7 +72,7 @@ export default async function DeliveredOrderDetailPage({ params }: { params: Pro
     return (
       <div className="min-h-screen bg-[#F7F8F6]">
         <Sidebar />
-        <main className="min-h-screen pl-[260px] p-8">
+        <main className="min-h-screen md:pl-[260px] p-8">
           <EmptyState message="This invoice has no recorded delivery outcome, or does not exist." />
           <Link href="/delivered-orders" className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-[#173D2E]">
             <ArrowLeft size={14} /> Back to Delivered Orders
@@ -87,10 +87,17 @@ export default async function DeliveredOrderDetailPage({ params }: { params: Pro
   return (
     <div className="min-h-screen bg-[#F7F8F6]">
       <Sidebar />
-      <main className="min-h-screen pl-[260px]">
+      <main className="min-h-screen md:pl-[260px]">
         <header className="sticky top-0 z-30 flex h-[76px] items-center border-b border-[#E8EBE6] bg-white px-8">
           <div>
-            <p className="text-xs text-gray-400">Workspace / Operations / Delivered Orders / {invoice.sapDocNum}</p>
+            {/* Part 3: breadcrumbs as real navigation, not plain text. */}
+            <nav aria-label="Breadcrumb" className="text-xs text-gray-400">
+              <Link href="/" className="hover:text-[#173D2E] hover:underline">Workspace</Link>
+              {" / "}
+              <Link href="/delivered-orders" className="hover:text-[#173D2E] hover:underline">Delivered Orders</Link>
+              {" / "}
+              <span className="text-gray-500">{invoice.sapDocNum}</span>
+            </nav>
             <h2 className="mt-1 text-lg font-bold text-[#17251E]">Invoice {invoice.sapDocNum}</h2>
           </div>
         </header>
@@ -111,6 +118,18 @@ export default async function DeliveredOrderDetailPage({ params }: { params: Pro
           <SectionCard title="A. Original purchase order" description="As received from the customer, before any approval or fulfilment">
             {purchaseOrder ? (
               <div className="space-y-5">
+                {/* Part 3: forward/backward link to the order's own full
+                    detail page (lines, documents, status history, SAP
+                    handover) -- this section only summarizes it. Real id
+                    from getDeliveredOrderDetail, never guessed. */}
+                {purchaseOrder.orderId && (
+                  <Link
+                    href={`/orders/${purchaseOrder.orderId}`}
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#173D2E] hover:underline"
+                  >
+                    View full order detail <ArrowUpRight size={13} />
+                  </Link>
+                )}
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                   <Field label="Customer" value={purchaseOrder.customerName} />
                   <Field label="SAP customer code" value={purchaseOrder.customerSapCode} />
@@ -205,6 +224,16 @@ export default async function DeliveredOrderDetailPage({ params }: { params: Pro
 
           {/* (C) Invoice */}
           <SectionCard title="C. Invoice" description="The SAP invoice this order was billed against. SalesFlow delivery status is tracked separately from SAP's own reconciliation/accounting status, below.">
+            {/* Part 3: the invoice reconciliation record behind this
+                delivered order -- `id` here is the SAP invoice id the
+                route itself was loaded with (getDeliveredOrderDetail is
+                keyed by it), so this is the same id, never a guess. */}
+            <Link
+              href={`/invoice-reconciliation/${id}`}
+              className="mb-4 inline-flex items-center gap-1.5 text-xs font-semibold text-[#173D2E] hover:underline"
+            >
+              View invoice reconciliation record <ArrowUpRight size={13} />
+            </Link>
             <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
               <Field label="Invoice number" value={invoice.sapDocNum} />
               <Field label="Invoice date" value={formatDate(invoice.invoiceDate)} />
@@ -337,7 +366,11 @@ export default async function DeliveredOrderDetailPage({ params }: { params: Pro
                   <div key={claim.id} className="rounded-lg border border-[#E7ECE7] p-4">
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-[#17251E]">{claim.claimReference}</span>
+                        {/* Part 3: real link to this claim's own full
+                            record (resolution history, attachments). */}
+                        <Link href={`/invoice-claims/${claim.id}`} className="text-sm font-semibold text-[#173D2E] hover:underline">
+                          {claim.claimReference}
+                        </Link>
                         <span className="rounded-full bg-[#F2F6F1] px-2 py-0.5 text-[10px] font-semibold text-[#496A42]">{claim.status}</span>
                       </div>
                       <span className="text-xs text-[#849087]">

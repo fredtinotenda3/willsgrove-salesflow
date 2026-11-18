@@ -34,18 +34,75 @@ import {
   MessageSquare,
   Send,
   PackageCheck,
+  Menu,
+  X,
 } from "lucide-react";
 import NotificationBell from "./notification-bell";
 
+/**
+ * Workflow/Navigation/Performance round, Part 4: professional sidebar
+ * and site-wide navigation.
+ *
+ * Section layout follows the spec's own suggested grouping (Overview /
+ * Sales Operations / Fulfilment / After-Sales / Reports & Intelligence /
+ * Administration), adapted to what this codebase actually has -- per the
+ * spec's own instruction to "only include entries that actually exist":
+ *
+ * - "Ready for Invoice" is a STATUS filter on the Orders list
+ *   (lib/order-queries.ts's `status` param), not a separate route, so it
+ *   has no entry of its own -- it's reached via Orders' own tabs.
+ * - "Users and Permissions," "Personnel," and "Vehicles" (the spec's
+ *   suggested Administration items) are tabs inside the single /settings
+ *   page (app/settings/page.tsx's `SettingsSection` union), not separate
+ *   routes -- adding fake top-level links for them would point at
+ *   nothing real, so the existing single "Settings" entry (kept in its
+ *   own persistent bottom section below, unchanged) already covers this
+ *   group; no duplicate link is added here.
+ * - "Reports & Intelligence" is deliberately kept as ONE entry (Reports)
+ *   rather than six (Management/Operational/Sales Performance/Customer
+ *   Intelligence/Product Intelligence/Decision Intelligence): /reports
+ *   is already a hub page that links to every one of those, with its own
+ *   role-based gating per card (app/reports/page.tsx's
+ *   `canSeeManagementReports`). Splitting it into six sidebar entries
+ *   would duplicate that gating in a second place and add visual
+ *   complexity the spec explicitly asks to avoid.
+ * - /deliveries/history ("Delivered History," the older per-dispatch
+ *   physical-delivery view) and /approvals/policies keep their existing
+ *   no-direct-sidebar-entry status -- both are already reachable via an
+ *   in-page link from their parent page (confirmed by a full-codebase
+ *   reachability check), so adding a second, direct path would be
+ *   redundant, not a fix.
+ * - Every entry below maps to a route confirmed to exist under app/ by
+ *   enumerating every page.tsx in the repository; nothing here is
+ *   aspirational.
+ *
+ * `roles` (optional, on individual items only): the small number of
+ * entries whose PAGE ITSELF denies a role server-side today --
+ * /integrations/sap (redirects SALESPERSON to "/") and
+ * /customers/master-import (its own POST API is
+ * SALES_MANAGER/ADMINISTRATOR-only, matching the page's existing
+ * client-side gate). Hiding these from a role that cannot use them
+ * either way closes the spec's "avoid exposing restricted pages to
+ * unauthorized users" gap -- previously every item was shown to every
+ * authenticated role regardless of what the destination page actually
+ * allowed. This is link-visibility only: every real access decision
+ * continues to be enforced server-side exactly as before, so a hidden
+ * link is a UX improvement, never the security boundary itself.
+ */
 const navigation = [
   {
-    title: "WORKSPACE",
+    title: "OVERVIEW",
     items: [
       {
         name: "Dashboard",
         href: "/",
         icon: LayoutDashboard,
       },
+    ],
+  },
+  {
+    title: "SALES OPERATIONS",
+    items: [
       {
         name: "Orders",
         href: "/orders",
@@ -72,31 +129,25 @@ const navigation = [
         href: "/communications/inbox",
         icon: MessageSquare,
       },
-      // Milestone 7 (Quotations Management). Sits alongside Orders/PO
-      // Intake, not under Operations -- a quotation is the pre-order
-      // sales step (spec section 2: "used by sales staff when a customer
-      // requests pricing information before placing an order"), not an
-      // operational/fulfilment concern like the items below it.
+      // Milestone 7 (Quotations Management). A quotation is the
+      // pre-order sales step (spec section 2: "used by sales staff when
+      // a customer requests pricing information before placing an
+      // order") -- sales-side, same as Orders/PO Intake above.
       {
         name: "Quotations",
         href: "/quotations",
         icon: FileText,
       },
-      // Milestone 8 (Validation and Approvals). Cross-module -- sits
-      // alongside Quotations/Orders rather than under Operations, since
-      // it serves every module with an approval workflow (today:
-      // Quotations' pricing/discount exceptions), not one operational
-      // step.
+      // Milestone 8 (Validation and Approvals). Cross-module in principle
+      // (serves every module with an approval workflow), but today that
+      // is only Quotations' pricing/discount exceptions -- kept next to
+      // Quotations rather than invented a new top-level section for a
+      // single consumer.
       {
         name: "Approvals",
         href: "/approvals",
         icon: ShieldCheck,
       },
-    ],
-  },
-  {
-    title: "SALES MANAGEMENT",
-    items: [
       {
         name: "Customers",
         href: "/customers",
@@ -115,7 +166,7 @@ const navigation = [
     ],
   },
   {
-    title: "OPERATIONS",
+    title: "FULFILMENT",
     items: [
       {
         name: "Picking & Fulfilment",
@@ -127,53 +178,41 @@ const navigation = [
         href: "/deliveries",
         icon: Truck,
       },
-      // Milestone 4 (Lost-Sales Management). Unlike /fulfilment and
-      // /deliveries above, there was no pre-existing dead placeholder
-      // link for this -- added fresh.
-      {
-        name: "Lost Sales",
-        href: "/lost-sales",
-        icon: TrendingDown,
-      },
-      // Milestone 5 (SAP Invoice Reconciliation). Same "no pre-existing
-      // dead placeholder link" situation as Lost Sales above.
-      {
-        name: "Invoice Reconciliation",
-        href: "/invoice-reconciliation",
-        icon: Receipt,
-      },
-      // Management Analytics spec, Part 6: a dedicated, permanent history
-      // of every invoice whose delivery outcome has been recorded --
-      // complement to the "Ready for Invoice" queue above, not a
-      // replacement for it (see lib/delivered-orders/queries.ts's own
-      // top comment for how "delivered" is defined identically in both
-      // places).
+      // Management Analytics spec, Part 6 (prior round) / this round's
+      // Part 2: the single, authoritative, permanent home for every
+      // order whose invoice has a recorded delivery outcome -- see
+      // lib/order-queries.ts's EXCLUDE_DELIVERED_ORDERS and
+      // lib/delivered-orders/queries.ts for how the two stay consistent.
       {
         name: "Delivered Orders",
         href: "/delivered-orders",
         icon: PackageCheck,
       },
-      // Milestone 6A (Invoice Claims Management). Same "no pre-existing
-      // dead placeholder link" situation as Lost Sales/Invoice
-      // Reconciliation above.
+    ],
+  },
+  {
+    title: "AFTER-SALES",
+    items: [
+      {
+        name: "Invoice Reconciliation",
+        href: "/invoice-reconciliation",
+        icon: Receipt,
+      },
       {
         name: "Invoice Claims",
         href: "/invoice-claims",
         icon: FileWarning,
       },
-      // Milestone 6B (Returns & Credit Notes). Same "no pre-existing dead
-      // placeholder link" situation as Lost Sales/Invoice Reconciliation/
-      // Invoice Claims above.
       {
         name: "Returns & Credits",
         href: "/returns-credits",
         icon: Undo2,
       },
-      // Milestone 10 (Communication Channels & Fulfilment). The outbound
-      // message log (quotation/order/dispatch/delivery notifications) --
-      // same "no pre-existing dead placeholder link" situation as Lost
-      // Sales/Invoice Reconciliation/Invoice Claims/Returns & Credits
-      // above.
+      {
+        name: "Lost Sales",
+        href: "/lost-sales",
+        icon: TrendingDown,
+      },
       {
         name: "Communications",
         href: "/communications",
@@ -182,7 +221,7 @@ const navigation = [
     ],
   },
   {
-    title: "INSIGHTS",
+    title: "REPORTS & INTELLIGENCE",
     items: [
       {
         name: "Reports",
@@ -197,7 +236,7 @@ const navigation = [
     ],
   },
   {
-    title: "SAP MASTER DATA",
+    title: "ADMINISTRATION",
     items: [
       {
         name: "Tax Codes Import",
@@ -214,20 +253,24 @@ const navigation = [
         href: "/price-lists/import",
         icon: Tags,
       },
+      // The underlying import API is SALES_MANAGER/ADMINISTRATOR-only
+      // (app/api/customers/master-import/route.ts), matching this page's
+      // own existing client-side role gate -- hidden from SALESPERSON
+      // here too, see this file's module comment.
       {
         name: "Customer Master Import",
         href: "/customers/master-import",
         icon: Building2,
+        roles: ["SALES_MANAGER", "ADMINISTRATOR"],
       },
-      // Milestone 9 (SAP Business One Integration). The connection/sync
-      // dashboard, not another CSV import -- sits here anyway since
-      // every existing item in this section is already "something to do
-      // with getting SAP master data into SalesFlow," and this is the
-      // same thing done automatically instead of by hand.
+      // The page itself redirects SALESPERSON to "/"
+      // (app/integrations/sap/page.tsx) -- hidden here too, see this
+      // file's module comment.
       {
         name: "SAP Integration",
         href: "/integrations/sap",
         icon: Plug,
+        roles: ["SALES_MANAGER", "ADMINISTRATOR"],
       },
     ],
   },
@@ -275,6 +318,38 @@ export default function Sidebar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
 
+  // Part 4: mobile behavior. `mobileNavOpen` is the off-canvas drawer's
+  // open/closed state (<md viewports only -- at md and above the aside
+  // is always visible via the "md:translate-x-0" class below, regardless
+  // of this state). `isDesktop` mirrors the same "md" breakpoint in JS
+  // (not just CSS) so the drawer can be made properly inert -- not just
+  // visually hidden -- for keyboard/screen-reader users on narrow
+  // viewports when it's closed; without this, a closed drawer would
+  // still be in the tab order, a real accessibility gap, not merely a
+  // cosmetic one.
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(min-width: 768px)");
+    const updateIsDesktop = () => setIsDesktop(mediaQuery.matches);
+    updateIsDesktop();
+    mediaQuery.addEventListener("change", updateIsDesktop);
+    return () => mediaQuery.removeEventListener("change", updateIsDesktop);
+  }, []);
+
+  // Close the mobile drawer on every navigation -- without this, following
+  // a link would leave the drawer open (and, on narrow viewports, covering
+  // the whole page) on the destination route. Adjusted during render
+  // (React's documented pattern for resetting state when a value changes)
+  // rather than in an effect, which would call setState synchronously on
+  // mount/update and trigger an extra render pass for no benefit here.
+  const [lastPathname, setLastPathname] = useState(pathname);
+  if (pathname !== lastPathname) {
+    setLastPathname(pathname);
+    setMobileNavOpen(false);
+  }
+
   useEffect(() => {
     let cancelled = false;
 
@@ -296,6 +371,8 @@ export default function Sidebar() {
     };
   }, [pathname]);
 
+  const drawerVisible = isDesktop || mobileNavOpen;
+
   async function handleLogout() {
     setLoggingOut(true);
     try {
@@ -307,7 +384,42 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="fixed left-0 top-0 z-40 flex h-screen w-65 flex-col border-r border-white/10 bg-[#10271F] text-white">
+    <>
+
+      {/* Part 4: mobile nav toggle. A floating, always-reachable button
+          rather than a second fixed header bar -- a header bar would need
+          every page's own top padding adjusted too (the same inconsistency
+          already fixed for the sidebar's left offset above), while a
+          floating button needs no changes outside this component. Hidden
+          at md and above, where the sidebar itself is always visible. */}
+      <button
+        type="button"
+        onClick={() => setMobileNavOpen((open) => !open)}
+        aria-label={mobileNavOpen ? "Close navigation menu" : "Open navigation menu"}
+        aria-expanded={mobileNavOpen}
+        aria-controls="app-sidebar"
+        className="fixed left-4 top-4 z-50 flex h-11 w-11 items-center justify-center rounded-xl bg-[#10271F] text-white shadow-lg ring-1 ring-white/10 transition hover:bg-[#15362A] md:hidden"
+      >
+        {mobileNavOpen ? <X size={20} /> : <Menu size={20} />}
+      </button>
+
+      {/* Backdrop, mobile only, closes the drawer on outside click. */}
+      {mobileNavOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          onClick={() => setMobileNavOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      <aside
+        id="app-sidebar"
+        aria-hidden={!drawerVisible}
+        inert={!drawerVisible}
+        className={`fixed left-0 top-0 z-40 flex h-screen w-65 flex-col border-r border-white/10 bg-[#10271F] text-white transition-transform duration-200 md:translate-x-0 ${
+          mobileNavOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
 
       {/* Brand */}
       <div className="flex h-19 items-center gap-3 border-b border-white/10 px-6">
@@ -360,7 +472,19 @@ export default function Sidebar() {
       {/* Navigation */}
       <nav className="flex-1 space-y-7 overflow-y-auto px-4 py-7">
 
-        {navigation.map((section) => (
+        {navigation.map((section) => {
+          // An item with a `roles` allowlist (see this file's module
+          // comment) is hidden from anyone not in it -- and, while the
+          // session is still loading (user === null), hidden by default
+          // rather than shown-then-possibly-retracted, consistent with
+          // least-privilege: a restricted link should never flash into
+          // view before the role that would hide it is actually known.
+          const visibleItems = section.items.filter(
+            (item) => !("roles" in item) || (user !== null && (item.roles as readonly string[]).includes(user.role)),
+          );
+          if (visibleItems.length === 0) return null;
+
+          return (
           <div key={section.title}>
 
             <p className="mb-3 px-3 text-[10px] font-bold tracking-[0.14em] text-white/35">
@@ -369,7 +493,7 @@ export default function Sidebar() {
 
             <div className="space-y-1">
 
-              {section.items.map((item) => {
+              {visibleItems.map((item) => {
                 const Icon = item.icon;
                 const active = isActivePath(pathname, item.href);
 
@@ -399,7 +523,8 @@ export default function Sidebar() {
             </div>
 
           </div>
-        ))}
+          );
+        })}
 
       </nav>
 
@@ -465,6 +590,8 @@ export default function Sidebar() {
 
       </div>
 
-    </aside>
+      </aside>
+
+    </>
   );
 }

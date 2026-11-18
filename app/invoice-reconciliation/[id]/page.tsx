@@ -52,10 +52,17 @@ export default async function InvoiceDetailPage({ params }: RouteParams) {
     <div className="min-h-screen bg-[#F7F8F6]">
       <Sidebar />
 
-      <main className="min-h-screen pl-[260px]">
+      <main className="min-h-screen md:pl-[260px]">
         <header className="sticky top-0 z-30 flex h-[76px] items-center justify-between border-b border-[#E8EBE6] bg-white px-8">
           <div>
-            <p className="text-xs text-gray-400">Workspace / Operations / Invoice Reconciliation / {invoice.sapDocNum}</p>
+            {/* Part 3: breadcrumbs as real navigation, not plain text. */}
+            <nav aria-label="Breadcrumb" className="text-xs text-gray-400">
+              <Link href="/" className="hover:text-[#173D2E] hover:underline">Workspace</Link>
+              {" / "}
+              <Link href="/invoice-reconciliation" className="hover:text-[#173D2E] hover:underline">Invoice Reconciliation</Link>
+              {" / "}
+              <span className="text-gray-500">{invoice.sapDocNum}</span>
+            </nav>
             <h2 className="mt-1 text-lg font-bold text-[#17251E]">SAP Invoice {invoice.sapDocNum}</h2>
           </div>
           <span

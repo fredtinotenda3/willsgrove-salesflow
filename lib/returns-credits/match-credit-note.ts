@@ -1,5 +1,6 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
+import type { PrismaTransactionClient } from "@/lib/prisma";
 import { matchCreditNoteToClaim, type MatchCandidateClaim } from "@/lib/returns-credits/matching";
 import { recomputeClaimStatusAfterActuals } from "@/lib/returns-credits/apply-status-recompute";
 import type { ClaimStatus, ResolutionDecision } from "@/lib/invoice-claims/validation";
@@ -14,7 +15,7 @@ import type { ClaimStatus, ResolutionDecision } from "@/lib/invoice-claims/valid
  * reconciliation/match-invoice.ts's own gather-then-match-then-write shape.
  */
 
-async function gatherCandidateClaims(tx: Prisma.TransactionClient, sapInvoiceId: string): Promise<MatchCandidateClaim[]> {
+async function gatherCandidateClaims(tx: PrismaTransactionClient, sapInvoiceId: string): Promise<MatchCandidateClaim[]> {
   const claims = await tx.invoiceClaim.findMany({
     where: { sapInvoiceId, status: { in: ["APPROVED", "PARTIALLY_RESOLVED"] } },
     select: {
@@ -60,7 +61,7 @@ export interface AutoMatchCreditNoteResult {
  * than one qualifying candidate -- never a best-effort guess.
  */
 export async function runAutoMatchForCreditNote(
-  tx: Prisma.TransactionClient,
+  tx: PrismaTransactionClient,
   creditNoteId: string,
   actorId: string
 ): Promise<AutoMatchCreditNoteResult> {

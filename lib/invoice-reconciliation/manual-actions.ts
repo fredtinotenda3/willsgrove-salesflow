@@ -1,6 +1,5 @@
 import "server-only";
-import { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { prisma, type PrismaTransactionClient } from "@/lib/prisma";
 import { recomputeInvoiceHeaderStatus, runAutoMatchForInvoice } from "@/lib/invoice-reconciliation/match-invoice";
 
 /**
@@ -36,7 +35,7 @@ interface LineMatchSnapshot {
   matchNote: string | null;
 }
 
-async function snapshotLine(tx: Prisma.TransactionClient, lineId: string): Promise<LineMatchSnapshot | null> {
+async function snapshotLine(tx: PrismaTransactionClient, lineId: string): Promise<LineMatchSnapshot | null> {
   const line = await tx.sapInvoiceLine.findUnique({
     where: { id: lineId },
     select: { matchStatus: true, matchMethod: true, matchedOrderId: true, matchedOrderLineId: true, matchNote: true },

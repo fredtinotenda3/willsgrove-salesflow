@@ -1,5 +1,6 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
+import type { PrismaTransactionClient } from "@/lib/prisma";
 import { matchInvoiceLineToOrder, type MatchCandidateOrder } from "@/lib/invoice-reconciliation/matching";
 import {
   computeOrderLineReconciliation,
@@ -22,7 +23,7 @@ import { parseScaledDecimal } from "@/lib/picking/validation";
 const ELIGIBLE_ORDER_STATUSES = ["READY_TO_INVOICE"] as const;
 
 async function gatherCandidateOrders(
-  tx: Prisma.TransactionClient,
+  tx: PrismaTransactionClient,
   customerId: string,
   orderReference: string | null
 ): Promise<MatchCandidateOrder[]> {
@@ -115,7 +116,7 @@ export interface AutoMatchInvoiceSummary {
  * matchMethod: "AUTOMATIC" distinguishing it from a human's own choice.
  */
 export async function runAutoMatchForInvoice(
-  tx: Prisma.TransactionClient,
+  tx: PrismaTransactionClient,
   sapInvoiceId: string,
   actorId: string
 ): Promise<AutoMatchInvoiceSummary> {
@@ -188,7 +189,7 @@ function formatNonNegativeScaled(scaled: bigint): string {
 
 /** The order line's authorized quantity, read live from its order's most
  * recently AUTHORIZED PickingSession -- never a stored/cached number. */
-async function getAuthorizedQuantity(tx: Prisma.TransactionClient, orderLineId: string): Promise<string | null> {
+async function getAuthorizedQuantity(tx: PrismaTransactionClient, orderLineId: string): Promise<string | null> {
   const line = await tx.pickingLine.findFirst({
     where: { orderLineId, pickingSession: { status: "AUTHORIZED" } },
     orderBy: { pickingSession: { authorizedAt: "desc" } },
@@ -201,7 +202,7 @@ async function getAuthorizedQuantity(tx: Prisma.TransactionClient, orderLineId: 
  * every matched, non-cancelled SapInvoiceLine -- never a stored/cached
  * number (same "derive, don't store a second truth" choice throughout
  * this milestone). */
-async function getInvoicedQuantity(tx: Prisma.TransactionClient, orderLineId: string): Promise<string> {
+async function getInvoicedQuantity(tx: PrismaTransactionClient, orderLineId: string): Promise<string> {
   const sum = await tx.sapInvoiceLine.aggregate({
     where: {
       matchedOrderLineId: orderLineId,
@@ -223,7 +224,7 @@ async function getInvoicedQuantity(tx: Prisma.TransactionClient, orderLineId: st
  * change (lib/invoice-reconciliation/manual-actions.ts) -- so the stored
  * status never goes stale relative to the lines it summarizes.
  */
-export async function recomputeInvoiceHeaderStatus(tx: Prisma.TransactionClient, sapInvoiceId: string): Promise<void> {
+export async function recomputeInvoiceHeaderStatus(tx: PrismaTransactionClient, sapInvoiceId: string): Promise<void> {
   const invoice = await tx.sapInvoice.findUniqueOrThrow({
     where: { id: sapInvoiceId },
     select: {

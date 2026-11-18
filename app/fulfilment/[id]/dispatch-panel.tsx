@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Loader2, Truck, PackageCheck, XCircle, Send, RotateCcw } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { CLAIM_LINE_REASON_CATEGORIES, CLAIM_LINE_REASON_CATEGORY_LABELS, type ClaimLineReasonCategory } from "@/lib/invoice-claims/validation";
 
 /**
  * Milestone 10 (Communication Channels & Fulfilment). The dispatch/
@@ -12,6 +14,23 @@ import { Loader2, Truck, PackageCheck, XCircle, Send, RotateCcw } from "lucide-r
  * READY_TO_INVOICE) -- see dispatch.ts's own eligibility check, which
  * this panel mirrors in its own empty state rather than hide entirely,
  * so staff get an honest reason rather than a missing section.
+ *
+ * Workflow/Navigation/Performance round, Part 1: the per-line rejection
+ * reason below (submitted to DeliveryLine.rejectionReason, a plain
+ * String? column -- see prisma/schema.prisma's own comment on why it
+ * was never a closed enum) is now entered through this same shadcn
+ * Select, offering ONLY the 8 standardised reasons from
+ * lib/invoice-claims/validation.ts's CLAIM_LINE_REASON_CATEGORIES -- the
+ * exact same single source of truth Invoice Claims and the Delivered
+ * Orders history / Lost Sales analytics already use, never a second,
+ * conflicting list. The value stored is the human-readable LABEL text
+ * itself (e.g. "Price Claim"), not the enum key -- DeliveryLine.
+ * rejectionReason is, and remains, a free-text column (no schema
+ * change), so every existing reader of it (this panel's own dispatch
+ * history, app/delivered-orders/[id]/page.tsx's physical-delivery
+ * section) continues to display it verbatim with no new label lookup,
+ * and every pre-existing free-text historical value (e.g. "damaged in
+ * transit") is left exactly as recorded, never remapped or discarded.
  */
 
 type FulfilmentLine = {
@@ -46,10 +65,27 @@ type PersonnelOption = { id: string; name: string; role: string; status: string 
 type VehicleOption = { id: string; registrationNumber: string; status: string };
 
 type DispatchDetailLine = { id: string; orderLineId: string; lineNumber: number; originalProductDescription: string; dispatchedQuantity: string };
+/**
+ * Workflow/Navigation/Performance round, Part 1: `delivery` was already
+ * returned by GET /api/orders/[id]/dispatch/[dispatchId]
+ * (lib/fulfilment/queries.ts's DispatchRecordDetail) but this client
+ * type previously dropped it on the floor, so an already-recorded
+ * delivery's per-line accepted/rejected quantities and saved rejection
+ * reason had nowhere to display in this panel. Typed here now purely
+ * to render the read-only view below -- no new API, no new query.
+ */
+type DispatchDeliveryDetail = {
+  outcome: string;
+  recordedAt: string;
+  recipientName: string | null;
+  notes: string | null;
+  lines: { dispatchLineId: string; acceptedQuantity: string; rejectedQuantity: string; rejectionReason: string | null }[];
+};
 type DispatchDetail = {
   id: string;
   status: string;
   lines: DispatchDetailLine[];
+  delivery: DispatchDeliveryDetail | null;
 };
 
 async function readJson(response: Response): Promise<Record<string, unknown>> {
@@ -565,6 +601,15 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                           <PackageCheck size={12} /> Record delivery
                         </button>
                       )}
+                      {dispatch.deliveryOutcome && (
+                        <button
+                          type="button"
+                          onClick={() => void openDeliveryForm(dispatch.id)}
+                          className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-[11px] font-semibold text-gray-600 transition hover:bg-gray-50"
+                        >
+                          <PackageCheck size={12} /> View delivery detail
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -572,6 +617,48 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                     <div className="mt-4 rounded-lg border border-gray-100 bg-gray-50/60 p-4">
                       {!deliveryDetail ? (
                         <Loader2 size={16} className="animate-spin text-gray-400" />
+                      ) : deliveryDetail.delivery ? (
+                        /* Workflow/Navigation/Performance round, Part 1: read-only view of an
+                           ALREADY-recorded delivery -- the saved reason (and every other
+                           field) displayed exactly as it was recorded, never re-editable
+                           here (recordDelivery is a one-time action; see lib/fulfilment/
+                           delivery.ts). */
+                        <div className="space-y-2 text-xs">
+                          <p className="font-semibold text-gray-700">
+                            Recorded {formatDateTime(deliveryDetail.delivery.recordedAt)}
+                            {deliveryDetail.delivery.recipientName ? ` · received by ${deliveryDetail.delivery.recipientName}` : ""}
+                          </p>
+                          <div className="divide-y divide-gray-100 rounded-lg border border-gray-100 bg-white">
+                            {deliveryDetail.delivery.lines.map((deliveryLine) => {
+                              const line = deliveryDetail.lines.find((l) => l.id === deliveryLine.dispatchLineId);
+                              const rejected = Number(deliveryLine.rejectedQuantity);
+                              return (
+                                <div key={deliveryLine.dispatchLineId} className="flex flex-wrap items-center gap-2 p-2.5">
+                                  <span className="w-56 font-medium text-gray-700">
+                                    {line ? `#${line.lineNumber} ${line.originalProductDescription}` : "—"}
+                                  </span>
+                                  <span className="text-gray-500">Accepted: {deliveryLine.acceptedQuantity}</span>
+                                  <span className={rejected > 0 ? "font-semibold text-amber-700" : "text-gray-500"}>
+                                    Rejected: {deliveryLine.rejectedQuantity}
+                                  </span>
+                                  {rejected > 0 && (
+                                    <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+                                      {deliveryLine.rejectionReason ?? "Not Available"}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {deliveryDetail.delivery.notes && <p className="text-gray-500">Notes: {deliveryDetail.delivery.notes}</p>}
+                          <button
+                            type="button"
+                            onClick={() => setDeliveryFormFor(null)}
+                            className="rounded-lg border border-gray-200 px-3 py-1.5 text-[11px] font-semibold text-gray-600 transition hover:bg-gray-50"
+                          >
+                            Close
+                          </button>
+                        </div>
                       ) : (
                         <div className="space-y-3">
                           {deliveryDetail.lines.map((line) => {
@@ -605,13 +692,23 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                                     className="ml-1 w-20 rounded-lg border border-gray-200 px-2 py-1 text-xs"
                                   />
                                 </label>
-                                <input
-                                  type="text"
-                                  value={input.reason}
-                                  onChange={(e) => setDeliveryInputs((prev) => ({ ...prev, [line.id]: { ...input, reason: e.target.value } }))}
-                                  placeholder="Rejection reason (if any)"
-                                  className="w-48 rounded-lg border border-gray-200 px-2 py-1 text-xs"
-                                />
+                                <Select
+                                  value={input.reason || undefined}
+                                  onValueChange={(value: string) =>
+                                    setDeliveryInputs((prev) => ({ ...prev, [line.id]: { ...input, reason: value } }))
+                                  }
+                                >
+                                  <SelectTrigger size="sm" className="h-auto w-48 rounded-lg border-gray-200 px-2 py-1 text-xs">
+                                    <SelectValue placeholder="Select claim reason" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {CLAIM_LINE_REASON_CATEGORIES.map((category: ClaimLineReasonCategory) => (
+                                      <SelectItem key={category} value={CLAIM_LINE_REASON_CATEGORY_LABELS[category]}>
+                                        {CLAIM_LINE_REASON_CATEGORY_LABELS[category]}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
                               </div>
                             );
                           })}

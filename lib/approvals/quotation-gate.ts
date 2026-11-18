@@ -1,6 +1,6 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { prisma, type PrismaTransactionClient } from "@/lib/prisma";
 import { findActivePolicies } from "@/lib/approvals/policy-queries";
 import { createApprovalRequest, type MutationFailure } from "@/lib/approvals/requests";
 import { evaluateQuotationDiscountPolicies, snapshotsMatch, type QuotationApprovalSnapshot } from "@/lib/approvals/validation";
@@ -24,7 +24,7 @@ export type QuotationGateResult = { ok: true } | (MutationFailure & { requestId?
  * lock's whole purpose (serializing every read-decide-write sequence
  * against this exact quotation).
  */
-async function buildSnapshot(tx: Prisma.TransactionClient, quotationId: string): Promise<QuotationApprovalSnapshot> {
+async function buildSnapshot(tx: PrismaTransactionClient, quotationId: string): Promise<QuotationApprovalSnapshot> {
   const quotation = await tx.quotation.findUniqueOrThrow({
     where: { id: quotationId },
     select: {
@@ -171,7 +171,7 @@ export async function checkAndRequireQuotationApproval(quotationId: string, acto
  * invalidation requirement, applied as soon as it's true rather than
  * waiting for the next issue attempt to discover it).
  */
-export async function invalidateStaleApprovalRequests(tx: Prisma.TransactionClient, quotationId: string): Promise<void> {
+export async function invalidateStaleApprovalRequests(tx: PrismaTransactionClient, quotationId: string): Promise<void> {
   const live = await tx.approvalRequest.findMany({
     where: { quotationId, actionType: "QUOTATION_DISCOUNT_EXCEEDS_THRESHOLD", status: { in: ["PENDING", "APPROVED"] } },
     select: { id: true, status: true, submittedValues: true },

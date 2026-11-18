@@ -638,7 +638,7 @@ export default function NewOrderPage() {
     return (
       <div className="min-h-screen bg-[#F7F8F6]">
         <Sidebar />
-        <main className="flex min-h-screen items-center justify-center pl-[260px]">
+        <main className="flex min-h-screen items-center justify-center md:pl-[260px]">
           <div className="w-full max-w-md rounded-xl border border-[#E8EBE6] bg-white p-8 text-center">
             <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-green-50 text-green-600">
               <CheckCircle2 size={28} />
@@ -705,7 +705,7 @@ export default function NewOrderPage() {
     <div className="min-h-screen bg-[#F7F8F6]">
       <Sidebar />
 
-      <main className="min-h-screen pl-[260px]">
+      <main className="min-h-screen md:pl-[260px]">
         <header className="sticky top-0 z-30 flex h-[76px] items-center justify-between border-b border-[#E8EBE6] bg-white px-8">
           <div>
             <p className="text-xs text-gray-400">Workspace / Sales Management / Orders / New</p>

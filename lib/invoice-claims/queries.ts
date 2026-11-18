@@ -1,6 +1,6 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { prisma, type PrismaTransactionClient } from "@/lib/prisma";
 
 /**
  * Milestone 6A. Live-aggregate reads -- never a stored running total. One
@@ -25,7 +25,7 @@ export type AlreadyClaimedQuantity = {
  * without double-counting itself).
  */
 export async function getAlreadyClaimedQuantity(
-  tx: Prisma.TransactionClient,
+  tx: PrismaTransactionClient,
   sapInvoiceLineId: string,
   excludeClaimLineId?: string
 ): Promise<AlreadyClaimedQuantity> {
@@ -46,7 +46,7 @@ export async function getAlreadyClaimedQuantity(
 
 /** Combined "already spoken for" quantity (accepted + rejected), as a decimal string. */
 export async function getAlreadyClaimedTotal(
-  tx: Prisma.TransactionClient,
+  tx: PrismaTransactionClient,
   sapInvoiceLineId: string,
   excludeClaimLineId?: string
 ): Promise<string> {

@@ -1,5 +1,6 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
+import type { PrismaTransactionClient } from "@/lib/prisma";
 import { determineAutoAdvanceTarget } from "@/lib/returns-credits/status-recompute";
 import { applyValidatedClaimStatusChange } from "@/lib/invoice-claims/claim-lifecycle";
 import { validateClaimStatusTransition, type ClaimStatus, type ResolutionDecision } from "@/lib/invoice-claims/validation";
@@ -21,7 +22,7 @@ import { validateClaimStatusTransition, type ClaimStatus, type ResolutionDecisio
  * status" is impossible by construction, not by retry logic.
  */
 export async function recomputeClaimStatusAfterActuals(
-  tx: Prisma.TransactionClient,
+  tx: PrismaTransactionClient,
   claimId: string,
   actorId: string | null
 ): Promise<void> {

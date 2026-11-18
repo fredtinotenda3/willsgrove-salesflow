@@ -4,9 +4,11 @@ import { getCurrentUser } from "@/lib/auth/current-user";
 import { getOrderById } from "@/lib/order-queries";
 import { isValidId } from "@/lib/http";
 import Sidebar from "../../components/sidebar";
+import OrderLifecycleStepper from "../../components/order-lifecycle-stepper";
 import {
   ORDER_STATUS_LABELS,
   getEffectiveOrderStatus,
+  getOrderLifecycleSteps,
   VERIFICATION_STATUS_LABELS,
   VERIFICATION_STATUS_STYLES,
   DOCUMENT_TYPE_LABELS,
@@ -21,6 +23,9 @@ import {
   type VerificationStatusValue,
   type DocumentTypeValue,
 } from "@/lib/order-display";
+import { INVOICE_RECONCILIATION_STATUS_LABELS, INVOICE_RECONCILIATION_STATUS_STYLES } from "@/lib/invoice-reconciliation/display";
+import { CLAIM_STATUS_LABELS, CLAIM_STATUS_STYLES } from "@/lib/invoice-claims/display";
+import { UNFULFILLED_DEMAND_STATUS_LABELS, UNFULFILLED_DEMAND_STATUS_STYLES } from "@/lib/lost-sales/display";
 
 import {
   ArrowLeft,
@@ -35,6 +40,12 @@ import {
   AlertTriangle,
   RotateCcw,
   Printer,
+  ClipboardList,
+  Receipt,
+  PackageCheck,
+  FileWarning,
+  TrendingDown,
+  ArrowUpRight,
 } from "lucide-react";
 import HandoverPanel from "./handover-panel";
 import SapIntegrationPanel from "./sap-integration-panel";
@@ -88,15 +99,32 @@ export default async function OrderDetailPage({ params }: RouteParams) {
   // user-facing "what state is this order in" label.
   const { label: statusLabel, style: statusStyle } = getEffectiveOrderStatus({ status: order.status, dispatchStatuses: order.dispatchStatuses });
 
+  // Part 3: lifecycle indicator + related-records panel, both derived
+  // from data getOrderById already returns (see that function's own Part
+  // 3 comment) -- no new query, no second definition of "delivered."
+  const lifecycleSteps = getOrderLifecycleSteps({
+    status: order.status,
+    dispatchStatuses: order.dispatchStatuses,
+    hasMatchedInvoice: order.matchedSapInvoices.length > 0,
+    delivered: order.matchedSapInvoices.some((invoice: { delivered: boolean }) => invoice.delivered),
+  });
+
   return (
     <div className="min-h-screen bg-[#F7F8F6]">
       <Sidebar />
 
-      <main className="min-h-screen pl-[260px]">
+      <main className="min-h-screen md:pl-[260px]">
         {/* Header */}
         <header className="sticky top-0 z-30 flex h-[76px] items-center justify-between border-b border-[#E8EBE6] bg-white px-8">
           <div>
-            <p className="text-xs text-gray-400">Workspace / Sales Management / Orders / {order.reference}</p>
+            {/* Part 3: breadcrumbs as real navigation, not plain text. */}
+            <nav aria-label="Breadcrumb" className="text-xs text-gray-400">
+              <Link href="/" className="hover:text-[#173D2E] hover:underline">Workspace</Link>
+              {" / "}
+              <Link href="/orders" className="hover:text-[#173D2E] hover:underline">Orders</Link>
+              {" / "}
+              <span className="text-gray-500">{order.reference}</span>
+            </nav>
             <h2 className="mt-1 text-lg font-bold text-[#17251E]">{order.reference}</h2>
           </div>
 
@@ -170,6 +198,15 @@ export default async function OrderDetailPage({ params }: RouteParams) {
               </div>
             </div>
           </section>
+
+          {/* Part 3: lifecycle/progress indicator. Omitted for DRAFT/
+              CANCELLED/REJECTED -- see getOrderLifecycleSteps's own
+              comment for why a linear stepper doesn't fit those. */}
+          {lifecycleSteps && (
+            <section className="rounded-xl border border-[#E8EBE6] bg-white p-5">
+              <OrderLifecycleStepper steps={lifecycleSteps} />
+            </section>
+          )}
 
           {/* Unbuilt-workflow notice -- honest, not a fake interactive panel */}
           <section className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
@@ -491,6 +528,100 @@ export default async function OrderDetailPage({ params }: RouteParams) {
 
               {/* Milestone 9 (SAP Business One Integration): sales-order submission status, self-fetched -- see that panel's own module comment. */}
               <SapIntegrationPanel orderId={order.id} canSubmit={user.role === "ADMINISTRATOR" || user.role === "SALES_MANAGER"} />
+
+              {/* Part 3: forward navigation into every stage of this
+                  order's real lifecycle that actually has a record --
+                  every link below is a REAL id already returned by
+                  getOrderById (lib/order-queries.ts), never guessed. */}
+              {(lifecycleSteps || order.matchedSapInvoices.length > 0 || order.invoiceClaims.length > 0 || order.unfulfilledDemands.length > 0) && (
+                <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
+                  <h2 className="text-[15px] font-bold text-[#17251E]">Related Records</h2>
+                  <div className="mt-4 space-y-2">
+                    {lifecycleSteps && (
+                      <Link
+                        href={`/fulfilment/${order.id}`}
+                        className="flex items-center justify-between rounded-lg border border-gray-100 px-3 py-2.5 text-xs font-medium text-gray-700 transition hover:border-gray-200 hover:bg-gray-50"
+                      >
+                        <span className="flex items-center gap-2">
+                          <ClipboardList size={14} className="text-gray-400" />
+                          Picking &amp; Fulfilment
+                        </span>
+                        <ArrowUpRight size={13} className="text-gray-400" />
+                      </Link>
+                    )}
+
+                    {order.matchedSapInvoices.map((invoice: { id: string; sapDocNum: string; reconciliationStatus: string; delivered: boolean; deliveryOutcome: string | null }) => (
+                      <div key={invoice.id} className="space-y-2">
+                        <Link
+                          href={`/invoice-reconciliation/${invoice.id}`}
+                          className="flex items-center justify-between rounded-lg border border-gray-100 px-3 py-2.5 text-xs font-medium text-gray-700 transition hover:border-gray-200 hover:bg-gray-50"
+                        >
+                          <span className="flex items-center gap-2">
+                            <Receipt size={14} className="text-gray-400" />
+                            Invoice {invoice.sapDocNum}
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${INVOICE_RECONCILIATION_STATUS_STYLES[invoice.reconciliationStatus] ?? "bg-gray-100 text-gray-500"}`}>
+                              {INVOICE_RECONCILIATION_STATUS_LABELS[invoice.reconciliationStatus] ?? invoice.reconciliationStatus}
+                            </span>
+                          </span>
+                          <ArrowUpRight size={13} className="text-gray-400" />
+                        </Link>
+
+                        {invoice.delivered && (
+                          <Link
+                            href={`/delivered-orders/${invoice.id}`}
+                            className="flex items-center justify-between rounded-lg border border-gray-100 px-3 py-2.5 text-xs font-medium text-gray-700 transition hover:border-gray-200 hover:bg-gray-50"
+                          >
+                            <span className="flex items-center gap-2">
+                              <PackageCheck size={14} className="text-gray-400" />
+                              Delivered Orders record
+                              {invoice.deliveryOutcome && (
+                                <span className="rounded-full bg-teal-50 px-2 py-0.5 text-[10px] font-semibold text-teal-700">
+                                  {invoice.deliveryOutcome === "WITH_CLAIM" ? "With Claim" : "No Claim"}
+                                </span>
+                              )}
+                            </span>
+                            <ArrowUpRight size={13} className="text-gray-400" />
+                          </Link>
+                        )}
+                      </div>
+                    ))}
+
+                    {order.invoiceClaims.map((claim: { id: string; claimReference: string; status: string }) => (
+                      <Link
+                        key={claim.id}
+                        href={`/invoice-claims/${claim.id}`}
+                        className="flex items-center justify-between rounded-lg border border-gray-100 px-3 py-2.5 text-xs font-medium text-gray-700 transition hover:border-gray-200 hover:bg-gray-50"
+                      >
+                        <span className="flex items-center gap-2">
+                          <FileWarning size={14} className="text-gray-400" />
+                          Claim {claim.claimReference}
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${CLAIM_STATUS_STYLES[claim.status] ?? "bg-gray-100 text-gray-500"}`}>
+                            {CLAIM_STATUS_LABELS[claim.status] ?? claim.status}
+                          </span>
+                        </span>
+                        <ArrowUpRight size={13} className="text-gray-400" />
+                      </Link>
+                    ))}
+
+                    {order.unfulfilledDemands.map((demand: { id: string; status: string }) => (
+                      <Link
+                        key={demand.id}
+                        href={`/lost-sales/${demand.id}`}
+                        className="flex items-center justify-between rounded-lg border border-gray-100 px-3 py-2.5 text-xs font-medium text-gray-700 transition hover:border-gray-200 hover:bg-gray-50"
+                      >
+                        <span className="flex items-center gap-2">
+                          <TrendingDown size={14} className="text-gray-400" />
+                          Lost Sale record
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${UNFULFILLED_DEMAND_STATUS_STYLES[demand.status] ?? "bg-gray-100 text-gray-500"}`}>
+                            {UNFULFILLED_DEMAND_STATUS_LABELS[demand.status] ?? demand.status}
+                          </span>
+                        </span>
+                        <ArrowUpRight size={13} className="text-gray-400" />
+                      </Link>
+                    ))}
+                  </div>
+                </section>
+              )}
 
               {/* Internal notes */}
               {order.internalNotes && (

@@ -118,6 +118,85 @@ export function getEffectiveOrderStatus({ status, dispatchStatuses }: EffectiveO
   return { label: "Departed", style: "bg-orange-50 text-orange-700" };
 }
 
+/**
+ * Workflow/Navigation/Performance round, Part 3: "a consistent
+ * lifecycle/progress indicator on relevant detail pages."
+ *
+ * Returns the ordered stage list for the one real order lifecycle this
+ * codebase actually implements: Received -> Verification -> Approval ->
+ * Picking -> Ready for Invoice -> Invoiced -> Dispatched -> Delivered.
+ * (Lost Sales is a branch off Picking, not a stage every order passes
+ * through, so it is surfaced separately as a related record rather than
+ * as a step here -- same reason Claims/Returns/Credit Notes are related
+ * records on the invoice/delivered-order side, not lifecycle steps:
+ * neither happens to every order, and both can recur.)
+ *
+ * This NEVER introduces a second stored status. Steps 0-4 read straight
+ * off the real, already-stored `status` (the only thing CustomerOrder.
+ * status can express, since it freezes at READY_TO_INVOICE -- see this
+ * file's own module comment and prisma/schema.prisma's OrderStatus
+ * comment). Steps 5-7 read the three independent signals that are the
+ * only way to know what happened AFTER that freeze: whether an SAP
+ * invoice has been matched, whether any dispatch has left (or
+ * delivered), and whether that invoice's own delivery outcome has been
+ * recorded -- exactly the same signals getEffectiveOrderStatus above and
+ * lib/delivered-orders/queries.ts already use, never a new definition.
+ *
+ * Returns null for DRAFT/CANCELLED/REJECTED: these don't progress
+ * through the lifecycle at all (DRAFT is never actually produced by
+ * lib/orders.ts; CANCELLED/REJECTED are terminal exits), so a linear
+ * stepper would misrepresent them -- the existing status badge already
+ * communicates these clearly on its own.
+ */
+export type OrderLifecycleStepState = "done" | "current" | "upcoming";
+export type OrderLifecycleStep = { key: string; label: string; state: OrderLifecycleStepState };
+
+export type OrderLifecycleInput = {
+  status: OrderStatusValue | string;
+  dispatchStatuses: string[];
+  hasMatchedInvoice: boolean;
+  delivered: boolean;
+};
+
+const LIFECYCLE_STAGE_LABELS = [
+  "Received",
+  "Verification",
+  "Approval",
+  "Picking",
+  "Ready for Invoice",
+  "Invoiced",
+  "Dispatched",
+  "Delivered",
+] as const;
+
+export function getOrderLifecycleSteps(input: OrderLifecycleInput): OrderLifecycleStep[] | null {
+  const { status, dispatchStatuses, hasMatchedInvoice, delivered } = input;
+
+  if (status === "DRAFT" || status === "CANCELLED" || status === "REJECTED") {
+    return null;
+  }
+
+  const statusStageIndex: Record<string, number> = {
+    RECEIVED: 0,
+    PENDING_VERIFICATION: 1,
+    READY_FOR_APPROVAL: 2,
+    APPROVED: 2,
+    PICKING: 3,
+    READY_TO_INVOICE: 4,
+  };
+
+  let stageIndex = statusStageIndex[status] ?? 0;
+  if (hasMatchedInvoice) stageIndex = Math.max(stageIndex, 5);
+  if (dispatchStatuses.some((s) => s === "DEPARTED" || s === "DELIVERED")) stageIndex = Math.max(stageIndex, 6);
+  if (delivered) stageIndex = Math.max(stageIndex, 7);
+
+  return LIFECYCLE_STAGE_LABELS.map((label, index) => ({
+    key: label,
+    label,
+    state: index < stageIndex ? "done" : index === stageIndex ? "current" : "upcoming",
+  }));
+}
+
 export const ORDER_SOURCES = ["EMAIL", "WHATSAPP", "MANUAL"] as const;
 export type OrderSourceValue = (typeof ORDER_SOURCES)[number];
 

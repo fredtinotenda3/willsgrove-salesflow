@@ -1,5 +1,6 @@
 import "server-only";
-import type { Prisma, NotificationType, UserRole } from "@prisma/client";
+import type { NotificationType, UserRole } from "@prisma/client";
+import type { PrismaTransactionClient } from "@/lib/prisma";
 
 /**
  * Milestone 8 (Validation and Approvals). Minimal internal notification
@@ -20,7 +21,7 @@ export type CreateNotificationInput = {
   link?: string | null;
 };
 
-export async function createNotification(tx: Prisma.TransactionClient, input: CreateNotificationInput): Promise<void> {
+export async function createNotification(tx: PrismaTransactionClient, input: CreateNotificationInput): Promise<void> {
   await tx.notification.create({
     data: {
       userId: input.userId,
@@ -41,7 +42,7 @@ export async function createNotification(tx: Prisma.TransactionClient, input: Cr
  * assignment feature (see PROGRESS.md's Milestone 8 section).
  */
 export async function createNotificationForRoles(
-  tx: Prisma.TransactionClient,
+  tx: PrismaTransactionClient,
   roles: readonly UserRole[],
   input: Omit<CreateNotificationInput, "userId">
 ): Promise<void> {
