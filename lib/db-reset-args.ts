@@ -1,14 +1,28 @@
 /**
  * Pure argument-parsing and confirmation-guard logic for
- * scripts/reset-operational-data.ts, split out into its own module so the
- * safety gates (confirm phrase, backup-reference presence, the fresh-total
- * row-count match) have real unit coverage without needing a database --
- * matching this project's established pure/impure module split (the
- * database-touching parts -- validating the actor against the User table,
- * counting rows, running the transaction -- stay in the script itself).
+ * scripts/reset-operational-data.ts and
+ * scripts/reset-to-user-and-product.ts, split out into its own module so
+ * the safety gates (confirm phrase, backup-reference presence, the
+ * fresh-total row-count match) have real unit coverage without needing a
+ * database -- matching this project's established pure/impure module
+ * split (the database-touching parts -- validating the actor against the
+ * User table, counting rows, running the transaction -- stay in each
+ * script itself).
  */
 
 export const CONFIRM_PHRASE = "RESET OPERATIONAL DATA FOR WILLSGROVE SALESFLOW";
+
+// scripts/reset-to-user-and-product.ts's own, deliberately different and
+// more explicit phrase -- it wipes far more than "operational data" (all
+// of Customer, Personnel, Vehicle, TaxCode, PriceList/PriceListEntry,
+// Session, ApprovalPolicy, IntegrationConnection, and AuditEvent too, on
+// top of everything CONFIRM_PHRASE's script already wipes), so reusing the
+// same phrase risks an operator typing it out of habit without registering
+// the larger blast radius. checkRealRunGuards() below takes the expected
+// phrase as a parameter (defaulting to CONFIRM_PHRASE) specifically so
+// each script can require its own.
+export const FULL_RESET_CONFIRM_PHRASE =
+  "RESET TO USER AND PRODUCT DATA ONLY FOR WILLSGROVE SALESFLOW";
 
 export interface ParsedResetArgs {
   actor?: string;
@@ -67,17 +81,38 @@ export type RealRunGuardResult =
  * or copy-pasted command from an earlier moment or a different environment
  * is refused rather than silently deleting a different amount of data than
  * the operator actually reviewed.
+ *
+ * `expectedPhrase` defaults to CONFIRM_PHRASE so
+ * scripts/reset-operational-data.ts's existing call sites (and tests) are
+ * unaffected; scripts/reset-to-user-and-product.ts passes
+ * FULL_RESET_CONFIRM_PHRASE explicitly, since it is a materially larger
+ * reset and must require its own, more explicit phrase.
+ *
+ * `requireBackupReference` defaults to true, so
+ * scripts/reset-operational-data.ts's existing call site is unaffected.
+ * scripts/reset-to-user-and-product.ts passes false: its operator has
+ * stated there is no pre-existing data in the affected tables worth
+ * backing up, so a mandatory, non-empty --backup-reference would be pure
+ * friction with no accountability upside in that case. When false, a
+ * --backup-reference the operator chooses to supply anyway is still
+ * accepted and still recorded verbatim in the terminal AuditEvent -- this
+ * flag only removes the requirement, never the option.
  */
-export function checkRealRunGuards(args: ParsedResetArgs, freshTotal: number): RealRunGuardResult {
-  if (!args.backupReference || args.backupReference.trim().length === 0) {
+export function checkRealRunGuards(
+  args: ParsedResetArgs,
+  freshTotal: number,
+  expectedPhrase: string = CONFIRM_PHRASE,
+  requireBackupReference: boolean = true,
+): RealRunGuardResult {
+  if (requireBackupReference && (!args.backupReference || args.backupReference.trim().length === 0)) {
     return {
       ok: false,
       message:
         '--backup-reference="<description of what backup was taken and when>" is required and must be non-empty.',
     };
   }
-  if (args.confirm !== CONFIRM_PHRASE) {
-    return { ok: false, message: `--confirm must be exactly: ${CONFIRM_PHRASE}` };
+  if (args.confirm !== expectedPhrase) {
+    return { ok: false, message: `--confirm must be exactly: ${expectedPhrase}` };
   }
   if (args.confirmTotalRows === undefined || Number.isNaN(args.confirmTotalRows)) {
     return { ok: false, message: "--confirm-total-rows=<N> is required and must be a non-negative integer." };

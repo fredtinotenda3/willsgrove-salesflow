@@ -1,22 +1,25 @@
 import { describe, expect, it } from "vitest";
 import {
   CONFIRM_PHRASE,
+  FULL_RESET_CONFIRM_PHRASE,
   checkRealRunGuards,
   parseResetArgs,
   totalOfCounts,
 } from "@/lib/db-reset-args";
 
 /**
- * Task 177 (Data-cleanup dependency map + safe reset script). Covers the
- * pure argument-parsing and confirmation-guard logic that
- * scripts/reset-operational-data.ts relies on to stay admin-gated,
+ * Task 177 (Data-cleanup dependency map + safe reset script), extended for
+ * the full reset-to-User-and-Product tool. Covers the pure
+ * argument-parsing and confirmation-guard logic that
+ * scripts/reset-operational-data.ts and
+ * scripts/reset-to-user-and-product.ts rely on to stay admin-gated,
  * backup-required, confirmation-required, and guarded against a stale or
  * copy-pasted invocation -- all without touching a database. The
- * database-dependent parts of that script (validating the actor against
+ * database-dependent parts of those scripts (validating the actor against
  * the User table, counting rows, running the transaction) are not
- * unit-testable in this sandbox (no live Prisma client -- see
- * FINAL-IMPLEMENTATION-REPORT.md) and are instead covered by careful
- * manual FK-order verification, documented in DATABASE-CLEANUP-PLAN.md.
+ * unit-testable in this sandbox (no live Prisma client) and are instead
+ * covered by careful manual FK-order verification documented in
+ * lib/db-reset-operations.ts's doc comments.
  */
 describe("parseResetArgs", () => {
   it("parses --dry-run as a boolean flag with no value", () => {
@@ -149,5 +152,92 @@ describe("checkRealRunGuards", () => {
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toMatch(/backup-reference/);
+  });
+
+  describe("expectedPhrase parameter (scripts/reset-to-user-and-product.ts)", () => {
+    it("defaults to CONFIRM_PHRASE when no third argument is given, so reset-operational-data.ts's existing call site is unaffected", () => {
+      const result = checkRealRunGuards(validArgs(), 10);
+      expect(result.ok).toBe(true);
+    });
+
+    it("rejects CONFIRM_PHRASE when FULL_RESET_CONFIRM_PHRASE is explicitly required", () => {
+      const result = checkRealRunGuards({ ...validArgs(), confirm: CONFIRM_PHRASE }, 10, FULL_RESET_CONFIRM_PHRASE);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.message).toMatch(/--confirm must be exactly/);
+        expect(result.message).toMatch(FULL_RESET_CONFIRM_PHRASE);
+      }
+    });
+
+    it("accepts FULL_RESET_CONFIRM_PHRASE when it is explicitly required and supplied", () => {
+      const result = checkRealRunGuards(
+        { ...validArgs(), confirm: FULL_RESET_CONFIRM_PHRASE },
+        10,
+        FULL_RESET_CONFIRM_PHRASE,
+      );
+      expect(result.ok).toBe(true);
+    });
+
+    it("interpolates whichever phrase was expected into the error message, not always CONFIRM_PHRASE", () => {
+      const result = checkRealRunGuards({ ...validArgs(), confirm: "wrong" }, 10, FULL_RESET_CONFIRM_PHRASE);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.message).toBe(`--confirm must be exactly: ${FULL_RESET_CONFIRM_PHRASE}`);
+      }
+    });
+
+    it("confirms the two phrases are distinct strings (guards against an accidental alias)", () => {
+      expect(FULL_RESET_CONFIRM_PHRASE).not.toBe(CONFIRM_PHRASE);
+    });
+  });
+
+  describe("requireBackupReference parameter (scripts/reset-to-user-and-product.ts)", () => {
+    it("defaults to true when no fourth argument is given, so reset-operational-data.ts's existing call site is unaffected", () => {
+      const args = validArgs();
+      delete (args as { backupReference?: string }).backupReference;
+      const result = checkRealRunGuards(args, 10);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.message).toMatch(/backup-reference/);
+    });
+
+    it("skips the backup-reference gate entirely when explicitly set to false, even with no backupReference given", () => {
+      const args = { ...validArgs(), confirm: FULL_RESET_CONFIRM_PHRASE };
+      delete (args as { backupReference?: string }).backupReference;
+      const result = checkRealRunGuards(args, 10, FULL_RESET_CONFIRM_PHRASE, false);
+      expect(result.ok).toBe(true);
+    });
+
+    it("still accepts a supplied backup-reference when the gate is off -- the flag removes the requirement, not the option", () => {
+      const result = checkRealRunGuards(
+        { ...validArgs(), confirm: FULL_RESET_CONFIRM_PHRASE, backupReference: "snapshot taken anyway" },
+        10,
+        FULL_RESET_CONFIRM_PHRASE,
+        false,
+      );
+      expect(result.ok).toBe(true);
+    });
+
+    it("still enforces the confirm-phrase and fresh-total gates when the backup gate is off", () => {
+      const withoutBackup = () => {
+        const a = validArgs();
+        delete (a as { backupReference?: string }).backupReference;
+        return a;
+      };
+      const wrongPhrase = checkRealRunGuards(
+        { ...withoutBackup(), confirm: "wrong" },
+        10,
+        FULL_RESET_CONFIRM_PHRASE,
+        false,
+      );
+      expect(wrongPhrase.ok).toBe(false);
+
+      const staleTotal = checkRealRunGuards(
+        { ...withoutBackup(), confirm: FULL_RESET_CONFIRM_PHRASE, confirmTotalRows: 10 },
+        11,
+        FULL_RESET_CONFIRM_PHRASE,
+        false,
+      );
+      expect(staleTotal.ok).toBe(false);
+    });
   });
 });
