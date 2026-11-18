@@ -12,7 +12,15 @@ import { ArrowLeft } from "lucide-react";
  * Durations, exactly as specified. Every field below is read straight
  * from lib/delivered-orders/queries.ts's getDeliveredOrderDetail; no
  * value is computed or guessed in this file.
+ *
+ * Cache Components (next.config.ts: cacheComponents: true) can't
+ * prerender this page's request-time auth + DB read into a static
+ * shell -- same "instant = false" escape hatch every other
+ * authenticated page in this codebase already uses (see app/page.tsx's
+ * own comment, and app/delivered-orders/page.tsx, this page's own list
+ * view, right next to it).
  */
+export const instant = false;
 
 function formatDuration(ms: number | null): string {
   if (ms === null) return "Not Available";
