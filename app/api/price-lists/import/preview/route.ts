@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { requireUserOrResponse } from "@/lib/auth/current-user";
 import { parseSapPriceListCsv } from "@/lib/sap-price-list-csv";
-import { planPriceListImport, readPriceListCsvUpload } from "@/lib/price-list-import";
+import { parseSapPriceListXlsxBuffer } from "@/lib/sap-price-list-xlsx";
+import { planPriceListImport, readPriceListFileUpload } from "@/lib/price-list-import";
 
 const SAMPLE_LIMIT = 20;
 const ERROR_LIMIT = 100;
@@ -12,19 +13,27 @@ export async function POST(request: NextRequest) {
 
   try {
     const formData = await request.formData();
-    const upload = await readPriceListCsvUpload(formData);
+    const upload = await readPriceListFileUpload(formData);
 
     if (!upload.ok) {
       return Response.json({ success: false, message: upload.message }, { status: upload.status });
     }
 
-    const parsed = parseSapPriceListCsv(upload.csvText);
+    // Both parsers return the same {success, rows, errors, totalRows}
+    // shape (lib/sap-price-list-xlsx.ts's PriceListXlsxParseResult is a
+    // superset -- `sheets`/`skippedBlankPriceCount` are extra, ignored by
+    // everything below that only destructures the shared fields), so the
+    // rest of this route doesn't need to know which format was uploaded.
+    const parsed = upload.kind === "csv" ? parseSapPriceListCsv(upload.csvText) : await parseSapPriceListXlsxBuffer(upload.buffer);
 
     if (!parsed.success) {
       return Response.json(
         {
           success: false,
-          message: "The price-list CSV file contains validation errors.",
+          message:
+            upload.kind === "csv"
+              ? "The price-list CSV file contains validation errors."
+              : "The price-list Excel file contains validation errors.",
           fileName: upload.fileName,
           totalRows: parsed.totalRows,
           validRows: parsed.rows.length,
@@ -41,7 +50,7 @@ export async function POST(request: NextRequest) {
     return Response.json(
       {
         success: true,
-        message: "Price-list CSV validated successfully.",
+        message: upload.kind === "csv" ? "Price-list CSV validated successfully." : "Price-list Excel file validated successfully.",
         fileName: upload.fileName,
         summary: {
           totalRows: parsed.totalRows,

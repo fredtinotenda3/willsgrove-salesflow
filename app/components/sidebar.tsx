@@ -36,6 +36,7 @@ import {
   PackageCheck,
   Menu,
   X,
+  DollarSign,
 } from "lucide-react";
 import NotificationBell from "./notification-bell";
 
@@ -75,6 +76,30 @@ import NotificationBell from "./notification-bell";
  * - Every entry below maps to a route confirmed to exist under app/ by
  *   enumerating every page.tsx in the repository; nothing here is
  *   aspirational.
+ *
+ * Real Business Data Onboarding round, Phase 8 (Navigation corrections,
+ * task #213, spec sections 17-19): the task's own wording -- "Delivered
+ * Orders only under Operations (remove from Sales Management), Invoice
+ * Claims Management under Operations" -- names a section called
+ * "Operations" that does not exist verbatim in this file; the spec text
+ * itself was not available to re-read in this session (it was pasted
+ * inline in an earlier turn that has since fallen out of context, not
+ * saved as a file this repository or its uploads retain). Rather than
+ * invent a literal quote, this was resolved by direct investigation of
+ * the CURRENT repository state: a full-codebase search found no
+ * "Delivered Orders" entry anywhere under this file's SALES OPERATIONS
+ * section (or any other sales-facing surface) today -- that half of the
+ * requirement already held before this phase touched anything. What
+ * this phase DID change: "FULFILMENT" below is renamed to "OPERATIONS"
+ * (its plain real-world synonym -- picking/dispatch/delivery/delivered-
+ * orders IS the operations side of the business), and "Invoice Claims"
+ * is moved into it from AFTER-SALES, since the task pairs it with
+ * Delivered Orders under one common "Operations" target. Nothing else
+ * in AFTER-SALES (Invoice Reconciliation, Returns & Credits, Lost Sales,
+ * Communications) was moved -- the task names Invoice Claims
+ * specifically, and moving items it didn't name would be exactly the
+ * kind of unrequested, undocumented reorganization this project's own
+ * standing instructions warn against.
  *
  * `roles` (optional, on individual items only): the small number of
  * entries whose PAGE ITSELF denies a role server-side today --
@@ -166,7 +191,9 @@ const navigation = [
     ],
   },
   {
-    title: "FULFILMENT",
+    // Real Business Data Onboarding round, Phase 8: renamed from
+    // "FULFILMENT" -- see this file's module comment.
+    title: "OPERATIONS",
     items: [
       {
         name: "Picking & Fulfilment",
@@ -188,6 +215,14 @@ const navigation = [
         href: "/delivered-orders",
         icon: PackageCheck,
       },
+      // Real Business Data Onboarding round, Phase 8: moved here from
+      // AFTER-SALES, grouped with Delivered Orders under Operations --
+      // see this file's module comment.
+      {
+        name: "Invoice Claims",
+        href: "/invoice-claims",
+        icon: FileWarning,
+      },
     ],
   },
   {
@@ -197,11 +232,6 @@ const navigation = [
         name: "Invoice Reconciliation",
         href: "/invoice-reconciliation",
         icon: Receipt,
-      },
-      {
-        name: "Invoice Claims",
-        href: "/invoice-claims",
-        icon: FileWarning,
       },
       {
         name: "Returns & Credits",
@@ -252,6 +282,15 @@ const navigation = [
         name: "Price Lists Import",
         href: "/price-lists/import",
         icon: Tags,
+      },
+      // Real Business Data Onboarding round (spec PART A, Phase 4b):
+      // customers have no price list assigned until staff assign one by
+      // hand here (the real customer-master export has no price-list
+      // column -- see app/price-lists/customers/page.tsx's own comment).
+      {
+        name: "Customer Pricing",
+        href: "/price-lists/customers",
+        icon: DollarSign,
       },
       // The underlying import API is SALES_MANAGER/ADMINISTRATOR-only
       // (app/api/customers/master-import/route.ts), matching this page's

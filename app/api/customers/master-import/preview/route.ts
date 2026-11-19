@@ -48,11 +48,30 @@ export async function POST(request: NextRequest) {
 
     const plan = await planCustomerMasterImport(parsed.rows);
 
+    // Real Business Data Onboarding round: tell the operator which header
+    // layout was actually detected, and -- for LEAN -- which real columns
+    // in their source file have no home in the Customer schema and are
+    // therefore NOT being written anywhere, so that fact is visible
+    // before they confirm, never silently dropped. See
+    // lib/sap-customer-master-csv.ts's module comment for the full story.
+    const layoutNote =
+      parsed.layout === "LEAN"
+        ? `This file uses the Business Partner list layout (BP Code / BP Name only). ` +
+          `TIN, VAT, currency, price list, payment terms, branch/store, credit limit, ` +
+          `address and contact columns are not present in this file and will be left blank.` +
+          (parsed.unmappedInformationalColumns && parsed.unmappedInformationalColumns.length > 0
+            ? ` The following columns ARE present in the source file but have no field on the ` +
+              `Customer record yet, so they are not being imported: ${parsed.unmappedInformationalColumns.join(", ")}.`
+            : "")
+        : null;
+
     return Response.json(
       {
         success: true,
         message: "Customer-master CSV validated successfully.",
         fileName: upload.fileName,
+        layout: parsed.layout,
+        layoutNote,
         summary: {
           totalRows: parsed.totalRows,
           validRows: parsed.rows.length,

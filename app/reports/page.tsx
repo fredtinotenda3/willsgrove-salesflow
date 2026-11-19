@@ -97,7 +97,7 @@ export default async function ReportsHubPage() {
     currency: null,
     lostSalesReason: null,
     unfulfilledDemandStatus: null,
-    customerDecisionType: null,
+    lostSaleSource: null,
     includeDemo: false,
     productCategory: null,
     productSearch: null,

@@ -131,7 +131,7 @@ export default function PriceListImportPage() {
 
       if (response.status === 422 && body && Array.isArray(body.errors)) {
         setErrorReport({
-          message: body.message ?? "The CSV file contains validation errors.",
+          message: body.message ?? "The file contains validation errors.",
           errors: body.errors,
           errorCount: body.errorCount ?? body.errors.length,
           errorsTruncated: Boolean(body.errorsTruncated),
@@ -213,9 +213,11 @@ export default function PriceListImportPage() {
           <div className="mb-7">
             <h2 className="text-2xl font-semibold tracking-tight">Import price lists</h2>
             <p className="mt-1 text-sm text-[#7D8981]">
-              One row per item per list, with a validity date range -- prices are kept as history, not
-              overwritten, so a price change is a new row with a new VALID_FROM rather than an edit.
-              Column layout: <code className="rounded bg-[#EEF1ED] px-1 py-0.5 text-xs">docs/sap-exports/price-lists.csv.md</code>.
+              One row per item per list -- prices are kept as history, not overwritten, so a price change is a
+              new row rather than an edit. Accepts either the SAP CSV export (column layout:{" "}
+              <code className="rounded bg-[#EEF1ED] px-1 py-0.5 text-xs">docs/sap-exports/price-lists.csv.md</code>) or the
+              multi-sheet SAP Excel export (.xlsx, one worksheet per price list) directly -- no manual
+              conversion needed either way.
             </p>
           </div>
 
@@ -256,12 +258,12 @@ export default function PriceListImportPage() {
                   <label className="flex flex-1 cursor-pointer items-center gap-3 rounded-xl border border-dashed border-[#CFD8D1] px-4 py-4 hover:bg-[#F7F8F6]">
                     <FileSpreadsheet size={20} className="text-[#5E7366]" />
                     <span className="min-w-0 flex-1 truncate text-sm">
-                      {file ? file.name : "Choose a price-list CSV file"}
+                      {file ? file.name : "Choose a price-list CSV or Excel (.xlsx) file"}
                     </span>
                     <input
                       ref={inputRef}
                       type="file"
-                      accept=".csv,text/csv"
+                      accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                       onChange={handleFileChange}
                       disabled={busy}
                       className="hidden"

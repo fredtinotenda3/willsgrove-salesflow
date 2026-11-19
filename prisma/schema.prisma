@@ -247,10 +247,19 @@ model User {
   authorizedPickingSessions PickingSession[] @relation("PickingSessionAuthorizer")
   pickedLines               PickingLine[]    @relation("PickingLinePicker")
 
-  // Milestone 4 (Lost-Sales Management). Same "no dedicated role"
-  // convention as picking: any authenticated user can record a customer
-  // decision; only SALES_MANAGER/ADMINISTRATOR can confirm a lost sale
-  // (enforced at the API route -- see app/api/lost-sales/*).
+  // Milestone 4 (Lost-Sales Management). Real Business Data Onboarding
+  // round (spec PART A): every LostSaleRecord is now created
+  // automatically inside authorizePickingSession's own transaction, with
+  // confirmedById set to whoever authorized the picking session -- there
+  // is no longer a separate human "confirm" action, so no NEW
+  // CustomerDecisionEvent row is ever written by any surviving code path.
+  // The relation/model itself is kept (not dropped) purely to preserve
+  // read access to any decision events a live system recorded before this
+  // round -- dropping CustomerDecisionEvent would be a destructive,
+  // data-losing migration against a real production table, which this
+  // round's binding constraints explicitly forbid ("do not execute a
+  // destructive reset... do not delete existing Neon data"). See
+  // CustomerDecisionType's own comment below for the full rationale.
   recordedDecisionEvents CustomerDecisionEvent[] @relation("DecisionRecorder")
   confirmedLostSales     LostSaleRecord[]        @relation("LostSaleConfirmer")
 
@@ -289,6 +298,15 @@ model User {
   recordedCreditNotes             CreditNote[]            @relation("CreditNoteRecorder")
   matchedCreditNotes              CreditNote[]            @relation("CreditNoteMatcher")
   receivedClaimReturns            ClaimReturn[]           @relation("ClaimReturnReceiver")
+
+  // Real Business Data Onboarding round, Phase 6 (Returned-claim lost
+  // sales). Always the SAME user as receivedClaimReturns above for any
+  // one row (lib/returns-credits/return-lost-sale.ts creates this in the
+  // SAME transaction as the ClaimReturn, with the same actor) -- its own
+  // column/relation exists so this row's provenance reads consistently
+  // with LostSaleRecord.confirmedById in any combined "lost sales by
+  // source" report, not because a different user could ever record it.
+  recordedClaimReturnLostSales ClaimReturnLostSale[] @relation("ClaimReturnLostSaleRecorder")
 
   // Milestone 7 (Quotations Management). No dedicated role for any of
   // these (confirmed by the existing architecture: order creation itself
@@ -443,6 +461,11 @@ model Customer {
   // Milestone 6A (Invoice Claims Management).
   invoiceClaims InvoiceClaim[]
 
+  // Real Business Data Onboarding round, Phase 6 (Returned-claim lost
+  // sales). Denormalized onto this new model for query convenience --
+  // see ClaimReturnLostSale's own comment.
+  claimReturnLostSales ClaimReturnLostSale[]
+
   // Milestone 7 (Quotations Management).
   quotations Quotation[]
 
@@ -568,9 +591,14 @@ model Product {
   aliases                 ProductAlias[]
   matchedByExtractedLines ExtractedOrderLine[]
 
-  // Milestone 4 (Lost-Sales Management).
-  unfulfilledDemands        UnfulfilledDemand[]
-  substituteDecisionEvents  CustomerDecisionEvent[] @relation("SubstituteProductRef")
+  // Milestone 4 (Lost-Sales Management). Real Business Data Onboarding
+  // round (spec PART A): SUBSTITUTE_ACCEPTED (the CustomerDecisionType
+  // outcome this relation's rows represent) can no longer be produced by
+  // any surviving code path -- see CustomerDecisionType's own schema
+  // comment. The relation is kept, not dropped, for the same
+  // data-preservation reason given on User.recordedDecisionEvents above.
+  substituteDecisionEvents CustomerDecisionEvent[] @relation("SubstituteProductRef")
+  unfulfilledDemands       UnfulfilledDemand[]
 
   // Milestone 7 (Quotations Management).
   quotationLines QuotationLine[]
@@ -1462,56 +1490,82 @@ model OrderHandover {
 // ============================================================================
 // Milestone 4 -- Lost-Sales Management.
 //
-// Three concepts this module exists to keep distinct (spec section 3) --
-// never collapsed into one "lost sales" figure:
+// Rewritten for the Real Business Data Onboarding round (spec PART A),
+// which removes the Customer Decision workflow entirely. Two concepts
+// this module exists to keep distinct -- never collapsed into one
+// "lost sales" figure, and never double-counted against each other:
 //
 //   A. Warehouse unavailability  -- already fully captured by Milestone 3A's
-//      PickingLine.unavailableQuantity. A supply shortfall, not yet a
-//      decision or a loss.
-//   B. Customer decision         -- CustomerDecisionEvent (append-only, one
-//      row per decision communicated, never edited/overwritten).
-//   C. Confirmed lost sale       -- LostSaleRecord. Always a separate,
-//      deliberate, explicit action -- NEVER implied automatically by a
-//      cancellation decision alone, and NEVER auto-derived from
-//      unavailableQuantity alone.
+//      PickingLine.unavailableQuantity. A supply shortfall.
+//   B. Confirmed lost sale       -- LostSaleRecord. Created AUTOMATICALLY,
+//      in the exact same transaction as the shortage itself, the moment
+//      unavailableQuantity > 0 -- there is no human decision step, no
+//      "pending" state, and no separate confirm action anymore.
+//
+// (A third, distinct source of lost sales -- a customer's RETURNED
+// invoice-claim quantity -- is handled separately by the Invoice Claims
+// module and is never derived from or blended with the shortage-based
+// figures above; see InvoiceClaimLine's own comment.)
 //
 // UnfulfilledDemand is the hub: one row per PickingLine whose
 // unavailableQuantity > 0 at the moment picking is authorized (created
 // automatically, from inside the existing lib/picking/authorize-picking.ts
 // transaction -- additive only, no new API route needed for creation). A
-// fully-available line creates none at all (test scenario 1).
+// fully-available line creates none at all (test scenario 1). That same
+// transaction ALSO immediately and automatically cancels the full
+// unavailable quantity and confirms it as a lost sale -- see
+// lib/lost-sales/create-unfulfilled-demand.ts.
+//
+// CustomerDecisionType and CustomerDecisionEvent are KEPT in this round,
+// not dropped, even though no surviving code path ever creates a new row
+// of either any more (every call site that did -- lib/lost-sales/
+// record-decision.ts and the UI that drove it -- is deleted). This
+// project's binding delivery constraints for this round are explicit and
+// repeated: "do not execute a destructive reset," "do not delete the
+// existing Neon data," "do not execute a destructive database operation."
+// Dropping a table or an enum this project has no way to confirm is empty
+// in the real target database is exactly that kind of operation -- an
+// `ALTER TYPE ... DROP VALUE`/`DROP TABLE` migration is irreversible and
+// would fail outright (or silently lose rows, depending on how it's
+// written) against any pre-existing CustomerDecisionEvent history. The
+// same reasoning already applied to DecisionSource below applies here,
+// more strongly: when uncertain of a schema change's full blast radius
+// against real, already-onboarded business data, add and stop writing,
+// never drop. See IMPLEMENTATION-REPORT.md for the full rationale and the
+// list of every application-layer file (UI, API routes, library
+// functions) that WAS deleted to remove the workflow from actual use.
 // ============================================================================
 
-// The 7 decision outcomes a salesperson can actually RECORD (spec 4.2's
-// list item 1, "pending customer decision", is deliberately NOT a value
-// here -- it is the absence of any CustomerDecisionEvent, represented by
-// UnfulfilledDemandStatus.PENDING_DECISION, never by an event that would
-// contradict itself by recording "no decision").
-//
-// AWAIT_REMAINING_QUANTITY and SCHEDULE_LATER_SUPPLY are kept as two
-// distinct values (matching the spec's own separate list items 3 and 4)
-// even though both move quantity into the same outstandingQuantity bucket
-// -- they differ in customer commitment/semantics and reporting, not in
-// quantity accounting.
+// Spec 4.4 (historical). Real Business Data Onboarding round (spec PART
+// A): kept in full, not pruned -- see this schema section's own opening
+// comment above for why a type/table that may already hold real
+// production history is never dropped, only stopped-being-written-to.
+// No surviving production code path ever creates a CustomerDecisionEvent
+// of any decisionType any more (lib/lost-sales/record-decision.ts, the
+// only writer, is deleted).
 enum CustomerDecisionType {
-  ACCEPT_PARTIAL_CANCEL_REMAINDER // outcome 2: accept what was found, cancel the rest
-  AWAIT_REMAINING_QUANTITY // outcome 3: customer agrees to wait, no firm commitment
-  SCHEDULE_LATER_SUPPLY // outcome 4: remaining quantity committed to be supplied later
-  SUBSTITUTE_ACCEPTED // outcome 5
-  PARTIAL_CANCELLATION // outcome 6: cancel part of the remaining undecided/outstanding quantity
-  ENTIRE_LINE_CANCELLED // outcome 7: cancel the entire remaining quantity on this line
-  ENTIRE_ORDER_CANCELLED // outcome 8: scoped to THIS UnfulfilledDemand only -- deliberately
-  // does not cascade to other order lines or change OrderStatus (see
-  // lib/lost-sales/record-decision.ts's own comment); recording it against
-  // every unresolved UnfulfilledDemand on an order is a salesperson/UI
-  // workflow concern, not something this schema enforces automatically.
+  ACCEPT_PARTIAL_CANCEL_REMAINDER
+  AWAIT_REMAINING_QUANTITY
+  SCHEDULE_LATER_SUPPLY
+  SUBSTITUTE_ACCEPTED
+  PARTIAL_CANCELLATION
+  ENTIRE_LINE_CANCELLED
+  ENTIRE_ORDER_CANCELLED
 }
 
-// Spec 4.2: "Do not assume that a salesperson's entry is automatically
-// proof of a customer's decision. Record the source of the decision."
-// SALESPERSON_JUDGEMENT_UNCONFIRMED exists specifically so that case is a
-// visible, honest, filterable value rather than silently defaulting to
-// looking like a confirmed customer decision.
+// Spec 4.2 (historical): "Do not assume that a salesperson's entry is
+// automatically proof of a customer's decision. Record the source of the
+// decision." Real Business Data Onboarding round: every value below
+// except AUTOMATIC_SYSTEM_RECORDED is now vestigial (no production code
+// path writes them any more -- see lib/lost-sales/validation.ts's module
+// comment) but is KEPT, not pruned, since DecisionSource is a general
+// "how was this sourced" taxonomy still read by
+// lib/reporting/sales-performance.ts's breakdown, and removing values a
+// report still enumerates would be an unrelated, unrequested schema
+// change with its own ripple effects this round does not need to take on.
+// AUTOMATIC_SYSTEM_RECORDED is the ONLY value any production code writes
+// today -- every LostSaleRecord this module creates uses it, since no
+// human ever decides a shortage is lost anymore.
 enum DecisionSource {
   CUSTOMER_PHONE_CALL
   CUSTOMER_EMAIL
@@ -1520,22 +1574,39 @@ enum DecisionSource {
   CUSTOMER_PORTAL_OR_SYSTEM
   SALESPERSON_JUDGEMENT_UNCONFIRMED
   OTHER
+  AUTOMATIC_SYSTEM_RECORDED
 }
 
-// Priority-ordered derived status (lib/lost-sales/validation.ts's
-// deriveUnfulfilledDemandStatus()), stored (not computed on read) so it is
-// directly filterable/indexable for the UI (spec section 6's "make it easy
-// to identify...") and for reporting (section 7). Recomputed and persisted
-// every time a decision event or lost-sale record changes this row's
-// quantity buckets -- never hand-set.
+// Real Business Data Onboarding round (spec PART A): every value below
+// EXCEPT CONFIRMED_LOST and SUPERSEDED is now structurally unreachable
+// going forward -- UnfulfilledDemand is only ever created with
+// unavailableQuantity > 0 (test scenario 1: a fully-available line
+// creates no row at all) and is immediately, fully cancelled and fully
+// confirmed lost in the SAME write (lib/lost-sales/create-unfulfilled-
+// demand.ts), so no new row can ever be PENDING_DECISION/AWAITING_SUPPLY/
+// PARTIALLY_CANCELLED/FULLY_CANCELLED/RESOLVED any more. All five are
+// KEPT, not dropped -- see this schema section's own opening comment:
+// narrowing this enum (`ALTER TYPE ... DROP VALUE`, which Postgres can
+// only implement by recreating the type and re-casting every existing
+// row) is exactly the kind of destructive, data-loss-risking migration
+// this round's binding constraints forbid, and this project has no way
+// to confirm the real target database holds zero rows in any of those
+// five states. default @default(CONFIRMED_LOST) below governs every NEW
+// row; it does not and cannot retroactively change any existing one.
 //
-// Priority order (first match wins -- zero overlap by construction):
-//   1. PENDING_DECISION      -- any undecided remainder > 0
-//   2. AWAITING_SUPPLY       -- fully decided, outstandingQuantity > 0
-//   3. PARTIALLY_CANCELLED   -- fully decided, no outstanding, 0 < cancelled < unavailable
-//   4. FULLY_CANCELLED       -- cancelled == unavailable, not yet all confirmed lost
-//   5. CONFIRMED_LOST        -- confirmedLost == cancelled == unavailable
-//   6. RESOLVED              -- fully decided via substitution only, nothing outstanding/cancelled
+//   1. CONFIRMED_LOST -- the normal, permanent, fully-automatic outcome
+//      for every demand created from this point forward: the full
+//      unavailableQuantity was immediately cancelled AND confirmed lost
+//      in the same transaction that created this row.
+//   2. SUPERSEDED      -- see below; unchanged from the prior design.
+//   3-7. PENDING_DECISION/AWAITING_SUPPLY/PARTIALLY_CANCELLED/
+//      FULLY_CANCELLED/RESOLVED -- historical only; may still appear on
+//      rows created before this round. No report or filter needs to
+//      surface these as live, actionable states (spec section 19: "No
+//      order is waiting for a customer decision" describes the current,
+//      going-forward state of the system, not a mandate to make
+//      historical rows unrepresentable), but nothing stops a query from
+//      reading them for audit/history purposes.
 enum UnfulfilledDemandStatus {
   PENDING_DECISION
   AWAITING_SUPPLY
@@ -1550,8 +1621,8 @@ enum UnfulfilledDemandStatus {
   // re-pick/correction). When that happens, lib/lost-sales/
   // create-unfulfilled-demand.ts marks the ORDER LINE's previous
   // UnfulfilledDemand SUPERSEDED (never deleted, never mutated in place --
-  // its quantity buckets, decision history and any lost-sale confirmations
-  // stay exactly as they were) and links it to whichever row replaces it
+  // its quantity buckets and lost-sale confirmation stay exactly as they
+  // were) and links it to whichever row replaces it
   // (UnfulfilledDemand.supersededByDemandId), or to nothing at all if the
   // correction found the line fully available (the spec's own worked
   // example: "Found corrected to 100: reverse the outstanding estimated
@@ -1602,19 +1673,19 @@ enum LostSaleValueSource {
 // later. The original CustomerOrder/OrderLine/PickingLine are never
 // overwritten by anything in this module (spec section 5).
 //
-// Quantity-bucket invariant (enforced in lib/lost-sales/validation.ts,
-// never trusted to the database alone, re-checked on every write):
-//   outstandingQuantity + cancelledQuantity + substitutedQuantity
-//     + <undecided remainder, not its own column> == unavailableQuantity
-// confirmedLostQuantity is NOT a fifth independent bucket -- it is always
-// a subset of cancelledQuantity (confirmedLostQuantity <= cancelledQuantity),
-// since lib/lost-sales/confirm-lost-sale.ts is allowed to draw a lost-sale
-// confirmation from either already-cancelled quantity or abandoned
-// outstanding quantity (spec test scenario 12, "conversion from outstanding
-// demand to confirmed lost quantity"): it consumes from
-// (cancelledQuantity - confirmedLostQuantity) first, then moves any
-// shortfall out of outstandingQuantity into cancelledQuantity as part of
-// the same transaction, so the subset invariant never breaks.
+// Quantity-bucket invariant, Real Business Data Onboarding round (spec
+// PART A): with no decision step, every demand is written ONCE, at
+// creation, with:
+//   cancelledQuantity == confirmedLostQuantity == unavailableQuantity
+//   outstandingQuantity == substitutedQuantity == 0
+// confirmedLostQuantity is still, as before, always a subset of
+// cancelledQuantity -- it is simply always EQUAL to it now, rather than a
+// partial draw a later manual confirmation could narrow. outstandingQuantity
+// and substitutedQuantity are kept as columns (not dropped) even though no
+// production code path can ever set them away from 0 any more, purely to
+// limit ripple risk to every reporting/analytics query that already reads
+// them -- a future cleanup pass may remove them once those call sites are
+// independently simplified.
 model UnfulfilledDemand {
   id String @id @default(cuid())
 
@@ -1684,10 +1755,21 @@ model UnfulfilledDemand {
   supersededByDemand   UnfulfilledDemand? @relation("DemandSupersession", fields: [supersededByDemandId], references: [id], onDelete: SetNull)
   supersedesDemand     UnfulfilledDemand? @relation("DemandSupersession")
 
-  status UnfulfilledDemandStatus @default(PENDING_DECISION)
+  // Real Business Data Onboarding round (spec PART A): defaults to
+  // CONFIRMED_LOST, not PENDING_DECISION -- every demand created by any
+  // surviving code path is immediately and automatically confirmed lost;
+  // the only other value any NEW row can ever reach is SUPERSEDED,
+  // always set explicitly by create-unfulfilled-demand.ts, never by this
+  // default. PENDING_DECISION and the other historical values remain
+  // valid for pre-existing rows only -- see UnfulfilledDemandStatus's own
+  // comment.
+  status UnfulfilledDemandStatus @default(CONFIRMED_LOST)
 
-  // Spec 4.4. Only ever set by an AWAIT_REMAINING_QUANTITY/
-  // SCHEDULE_LATER_SUPPLY decision event; left null otherwise.
+  // Spec 4.4 (historical). No surviving production code path sets these
+  // any more -- they existed only for the AWAIT_REMAINING_QUANTITY/
+  // SCHEDULE_LATER_SUPPLY decision outcomes this round's automatic
+  // workflow replaces -- kept as columns (not dropped) for the same
+  // data-preservation reason given on CustomerDecisionType above.
   expectedFollowUpDate DateTime? @db.Date
   followUpRemarks      String?
 
@@ -1703,6 +1785,10 @@ model UnfulfilledDemand {
   pickingLine    PickingLine    @relation(fields: [pickingLineId], references: [id], onDelete: Restrict)
   product        Product?       @relation(fields: [productId], references: [id], onDelete: SetNull)
 
+  // Real Business Data Onboarding round (spec PART A): kept, not dropped
+  // -- see CustomerDecisionType's own comment above. No surviving code
+  // path ever appends a new row here; this relation exists purely so any
+  // pre-existing decision history for this demand remains readable.
   decisionEvents  CustomerDecisionEvent[]
   lostSaleRecords LostSaleRecord[]
 
@@ -1714,76 +1800,85 @@ model UnfulfilledDemand {
   @@index([isDemo])
 }
 
-// Append-only -- every decision communicated is its own permanent row,
-// never edited/overwritten (same convention as ExtractionRun/OrderHandover),
-// so the full history survives even when a later decision supersedes an
-// earlier one in effect (e.g. a customer who first agreed to wait later
-// cancels the remainder). quantity is validated at recording time (in
-// lib/lost-sales/record-decision.ts) against whatever undecided amount
-// actually remains on the parent UnfulfilledDemand at that moment --
-// never against a stale client-supplied figure.
-//
-// Substitution is folded into this row rather than a separate table: a
-// substitution is always exactly 1:1 with one SUBSTITUTE_ACCEPTED event,
-// so the handful of substitute-specific fields below are simply nullable,
-// avoiding an extra model/dependency the spec explicitly warns against
-// introducing unnecessarily (section 9).
+// Milestone 4 (Lost-Sales Management), historical. Real Business Data
+// Onboarding round (spec PART A): no surviving production code path ever
+// creates a new row here any more -- lib/lost-sales/record-decision.ts
+// (the only writer) and the UI that drove it are both deleted. The model
+// is kept, not dropped -- see this schema section's own opening comment
+// (above the CustomerDecisionType enum) for the full "never drop a table
+// that may already hold real production history" rationale. Every
+// shortage is now automatically and immediately cancelled and confirmed
+// lost by LostSaleRecord below, with no intervening append-only decision
+// step, since no human decision ever happens for a NEW demand -- but an
+// OLDER demand's decision history, if any exists, stays fully intact and
+// queryable through UnfulfilledDemand.decisionEvents above.
 model CustomerDecisionEvent {
-  id                  String               @id @default(cuid())
-  unfulfilledDemandId String
-  decisionType        CustomerDecisionType
-  source              DecisionSource
+  id                   String @id @default(cuid())
+  unfulfilledDemandId  String
 
-  // Portion of the parent's undecided remainder this event resolves.
-  quantity Decimal @db.Decimal(18, 4)
+  decisionType CustomerDecisionType
+  source       DecisionSource
+  quantity     Decimal              @db.Decimal(18, 4)
 
-  // Populated only when decisionType == SUBSTITUTE_ACCEPTED.
+  // Only populated for a SUBSTITUTE_ACCEPTED event.
   substituteProductId                  String?
   substituteSapItemCodeSnapshot        String?
   substituteProductDescriptionSnapshot String?
 
-  customerContactName String? // who communicated the decision, where available (spec 4.2)
+  customerContactName String?
   reason              String?
   remarks             String?
-  attachmentReference String? // free-text reference to supporting attachment/communication (e.g. an OrderDocument id, email subject/message-id) -- spec 4.2
+  attachmentReference String?
 
-  decidedAt    DateTime @db.Timestamptz(6) // when the customer actually decided -- may predate recordedAt
+  decidedAt DateTime @db.Timestamptz(6)
+
   recordedById String
   recordedAt   DateTime @default(now()) @db.Timestamptz(6)
 
-  unfulfilledDemand UnfulfilledDemand @relation(fields: [unfulfilledDemandId], references: [id], onDelete: Restrict)
-  substituteProduct Product?          @relation("SubstituteProductRef", fields: [substituteProductId], references: [id], onDelete: SetNull)
-  recordedBy        User              @relation("DecisionRecorder", fields: [recordedById], references: [id], onDelete: Restrict)
+  unfulfilledDemand  UnfulfilledDemand @relation(fields: [unfulfilledDemandId], references: [id], onDelete: Restrict)
+  substituteProduct  Product?          @relation("SubstituteProductRef", fields: [substituteProductId], references: [id], onDelete: SetNull)
+  recordedBy         User              @relation("DecisionRecorder", fields: [recordedById], references: [id], onDelete: Restrict)
 
   @@index([unfulfilledDemandId])
   @@index([decisionType])
   @@index([recordedById])
 }
 
-// A genuine, confirmed lost sale -- always its own deliberate action
-// (lib/lost-sales/confirm-lost-sale.ts), role-gated to
-// SALES_MANAGER/ADMINISTRATOR at the API route (same two-tier pattern as
-// Milestone 3A's authorizePickingSession: never automatically implied by a
-// cancellation decision alone, enforced at the route, not duplicated into
-// the lib function itself).
+// A confirmed lost sale -- now created AUTOMATICALLY, in the same
+// transaction as the UnfulfilledDemand it belongs to (see
+// lib/lost-sales/create-unfulfilled-demand.ts), never by a separate human
+// confirm action. confirmedById is set to whoever authorized the picking
+// session that revealed the shortage (the same actor who triggers the
+// whole transaction), not a distinct manager-approval step.
 //
 // All traceability (product/SAP code, customer, original order) is reached
 // through unfulfilledDemand -- not duplicated here, consistent with
 // avoiding disconnected records (spec 4.1) and with this codebase's
 // existing "don't denormalize what a relation already gives you" style.
+//
+// Spec PART A also requires returned invoice-claim quantities to
+// automatically become lost sales, as a source kept distinct from (never
+// blended with, never double-counted against) the shortage-based rows
+// this module creates -- that linkage is implemented in the Invoice
+// Claims module (see its own schema section and
+// IMPLEMENTATION-REPORT.md for exactly how it stays distinguishable).
 model LostSaleRecord {
   id                  String @id @default(cuid())
   unfulfilledDemandId String
 
-  // Drawn from (cancelledQuantity - confirmedLostQuantity) first, then any
-  // shortfall from outstandingQuantity -- see UnfulfilledDemand's own
-  // comment for the exact consumption rule this must satisfy.
+  // Real Business Data Onboarding round: always EQUAL to the parent
+  // UnfulfilledDemand's full cancelledQuantity/confirmedLostQuantity now
+  // -- there is no partial draw from a decision-bucket mix any more (see
+  // UnfulfilledDemand's own quantity-bucket comment).
   quantity Decimal @db.Decimal(18, 4)
 
   reason       LostSaleReason
   reasonDetail String? // required when reason == OTHER (lib/lost-sales/validation.ts)
 
-  decisionSource DecisionSource // spec 4.6's "customer decision source"
+  // Real Business Data Onboarding round: always
+  // AUTOMATIC_SYSTEM_RECORDED for a shortage-based row this module
+  // creates (see DecisionSource's own comment).
+  decisionSource DecisionSource
 
   // Never invented. Both null means "no estimate available" -- displayed
   // as such, never defaulted to 0 or guessed.
@@ -2069,7 +2164,7 @@ model SapInvoiceLine {
 // Fixed, controlled vocabulary (confirmed choice over a DB-configurable
 // list -- see docs/milestones/PROGRESS.md's Milestone 6A section):
 // matches every other controlled vocabulary in this codebase
-// (LostSaleReason, DecisionSource, CustomerDecisionType, ...). "OTHER"
+// (LostSaleReason, DecisionSource, ...). "OTHER"
 // is the explicit escape valve the spec's own list ends with.
 enum InvoiceClaimCategory {
   QUALITY_ISSUE
@@ -2237,6 +2332,12 @@ model InvoiceClaim {
   creditNotes CreditNote[]
   returns     ClaimReturn[]
 
+  // Real Business Data Onboarding round, Phase 6 (Returned-claim lost
+  // sales). Zero, one, or several -- exactly one per returns row that
+  // turned out to be a genuine loss (ClaimReturn.condition !=
+  // GOOD_RESALABLE); see ClaimReturnLostSale's own comment.
+  returnLostSales ClaimReturnLostSale[]
+
   @@index([sapInvoiceId])
   @@index([orderId])
   @@index([customerId])
@@ -2316,6 +2417,12 @@ model InvoiceClaimLine {
   // as a whole (mirroring InvoiceClaimAttachment.claimLineId's own
   // optional-scoping convention).
   returns ClaimReturn[]
+
+  // Real Business Data Onboarding round, Phase 6 (Returned-claim lost
+  // sales). Set only on the rows whose return was scoped to this line
+  // AND turned out to be a genuine loss -- see ClaimReturnLostSale's own
+  // comment.
+  returnLostSales ClaimReturnLostSale[]
 
   // Prevents the same invoice line being listed twice within the SAME
   // claim by mistake -- a genuinely new dispute about an already-claimed
@@ -2629,9 +2736,108 @@ model ClaimReturn {
   creditNote CreditNote?       @relation(fields: [creditNoteId], references: [id], onDelete: Restrict)
   receivedBy User              @relation("ClaimReturnReceiver", fields: [receivedById], references: [id], onDelete: Restrict)
 
+  // Real Business Data Onboarding round, Phase 6 (Returned-claim lost
+  // sales). Set only when this return turned out to be a genuine loss
+  // (condition != GOOD_RESALABLE) -- see ClaimReturnLostSale's own
+  // comment for why that decision is never a second human judgement
+  // call.
+  lostSale ClaimReturnLostSale?
+
   @@index([claimId])
   @@index([claimLineId])
   @@index([creditNoteId])
+  @@index([isDemo])
+}
+
+// Real Business Data Onboarding round, Phase 6 (Returned-claim lost
+// sales). Mirrors Milestone 4/the lost-sales-automation round's own "no
+// human decision, mechanically derived from an already-recorded fact"
+// philosophy (see LostSaleRecord's own comment) -- but for a DIFFERENT
+// originating event: a physical return recorded against an invoice
+// claim (lib/returns-credits/returns.ts's recordClaimReturn()), not a
+// picking-time shortage. ReturnCondition is the concrete, already-
+// recorded signal this reuses (never a new parallel enum) to decide
+// whether a return is a genuine, permanent business loss: GOOD_RESALABLE
+// goods go back into resalable stock (no loss); DAMAGED/EXPIRED/OTHER
+// goods cannot be resold, so the revenue from whatever quantity was
+// actually received back is permanently lost. Created automatically, in
+// the SAME transaction as the ClaimReturn itself
+// (lib/returns-credits/return-lost-sale.ts), never by a separate human
+// "confirm" step -- same precedent as LostSaleRecord's own
+// AUTOMATIC_SYSTEM_RECORDED creation.
+//
+// Deliberately its own table, not a reuse of LostSaleRecord:
+// LostSaleRecord.unfulfilledDemandId is a required FK into a
+// picking-time shortage's full traceability chain (order/orderLine/
+// pickingSession/pickingLine) -- a returned invoice claim has none of
+// that lineage (it happens post-invoice, post-delivery, with no picking
+// session at all), so forcing it through LostSaleRecord would mean
+// either relaxing that column to nullable (diluting what it means on
+// every EXISTING shortage-based row) or fabricating a synthetic
+// UnfulfilledDemand with no real picking facts behind it -- both
+// rejected as conflating two genuinely distinct business events, the
+// same "never conflate distinct concepts" principle this schema already
+// applies to Quotation vs. CustomerOrder and to invoice-level vs.
+// order-line-level status.
+//
+// claimReturnId is a direct, immutable 1:1 FK -- condition/
+// conditionDetail/receivedQuantity are deliberately NOT duplicated here
+// (unlike UnfulfilledDemand's multi-hop denormalization): they are read
+// through the claimReturn relation, since nothing in this codebase ever
+// edits a ClaimReturn after creation, so there is no "second truth" risk
+// to guard against by copying them.
+model ClaimReturnLostSale {
+  id            String @id @default(cuid())
+  claimReturnId String @unique
+
+  // Denormalized traceability (same convenience precedent as
+  // UnfulfilledDemand.customerId/orderId) -- cheap at write time, spares
+  // every reporting/list query an extra join through claimReturn ->
+  // claim.
+  claimId     String
+  claimLineId String?
+  customerId  String
+
+  // Snapshotted display fields, copied verbatim from the claim line's
+  // OWN already-frozen snapshot (never read live for display, same
+  // "snapshot for display, re-read live for math" split InvoiceClaimLine
+  // itself already follows) -- both null when claimLineId is null (a
+  // return scoped to the whole claim, not one line): there is no single
+  // line's product to snapshot in that case.
+  sapItemCodeSnapshot        String?
+  sapItemDescriptionSnapshot String?
+
+  // Never invented (spec 4.6's "do not invent prices," applied here).
+  // Resolved only when claimLineId is set AND that line's own
+  // SapInvoiceLine has a real unitPrice on record -- the REAL invoiced
+  // price, never the customer's own disputedUnitPrice, same rule
+  // computeClaimLineDisputedValue (lib/invoice-claims/financial.ts)
+  // already follows. Both null, never zero, when it cannot be resolved
+  // -- displayed as "no estimate available," never as a $0 loss.
+  estimatedUnitPrice Decimal? @db.Decimal(18, 4)
+  estimatedValue     Decimal? @db.Decimal(18, 4)
+  currencyCode       String? // snapshotted from the claim's own SapInvoice.currencyCode -- a real, already-known fact, not an invented one
+
+  // Always AUTOMATIC_SYSTEM_RECORDED -- no human ever decides this; kept
+  // as its own column (rather than hardcoding it app-side) purely so
+  // this row's provenance reads consistently with LostSaleRecord's own
+  // decisionSource column in any combined "lost sales by source" report.
+  decisionSource DecisionSource @default(AUTOMATIC_SYSTEM_RECORDED)
+
+  recordedById String
+  recordedAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  isDemo Boolean @default(false)
+
+  claimReturn ClaimReturn       @relation(fields: [claimReturnId], references: [id], onDelete: Restrict)
+  claim       InvoiceClaim      @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  claimLine   InvoiceClaimLine? @relation(fields: [claimLineId], references: [id], onDelete: Restrict)
+  customer    Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  recordedBy  User              @relation("ClaimReturnLostSaleRecorder", fields: [recordedById], references: [id], onDelete: Restrict)
+
+  @@index([claimId])
+  @@index([claimLineId])
+  @@index([customerId])
   @@index([isDemo])
 }
 

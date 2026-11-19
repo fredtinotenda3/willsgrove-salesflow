@@ -7,11 +7,12 @@ import { getSalesPipelineReport } from "@/lib/reporting/sales-pipeline";
 import { getFulfilmentIntelligenceReport } from "@/lib/reporting/fulfilment-intelligence";
 import { getFinancialExposureReport } from "@/lib/reporting/financial-exposure";
 import { getCommunicationsMonitoringReport } from "@/lib/reporting/communications-monitoring";
-import { getLostSalesReportSummary } from "@/lib/lost-sales/queries";
+import { getLostSalesReportSummary, getAutomaticLostSalesValue, type LostSalesReportSummary } from "@/lib/lost-sales/queries";
 import { getQuotationDashboardCounts } from "@/lib/quotations/queries";
 import { utcDateToDateOnlyString } from "@/lib/dates";
 import { getEffectiveOrderStatus } from "@/lib/order-display";
 import { sumDecimalStrings, formatScaledDecimal } from "@/lib/fulfilment/decimal";
+import { multiplyDecimalStrings } from "@/lib/lost-sales/validation";
 
 /**
  * Milestone 11 (Operational BI), spec section 9: the 9 named management
@@ -94,6 +95,13 @@ export async function getQuotationsPerformanceReport(filters: ReportFilters) {
   return { allTime: dashboard, period: { dateFrom: pipeline.dateFrom, dateTo: pipeline.dateTo, funnel: pipeline.funnel } };
 }
 
+export type LostSalesManagementReport = LostSalesReportSummary & {
+  /** Follow-up fix: "since now we have prices, the graphs should now have prices too... the quantity should be associated with its price" -- lib/lost-sales/queries.ts's getAutomaticLostSalesValue, the SAME current/non-superseded scope getLostSalesReportSummary's own totalUnavailableQuantity already uses, composed alongside it rather than folded into that established function (see this function's own comment on why it is reused as-is, unmodified). */
+  estimatedValue: string;
+  /** How many of the demands behind totalUnavailableQuantity had no resolvable price and are excluded from estimatedValue above -- never silently dropped from view. */
+  demandsWithoutEstimate: number;
+};
+
 /**
  * Reuses the pre-existing M4 lost-sales summary as-is (spec section 2:
  * reuse, don't re-derive). That function is a whole-business "right now"
@@ -104,9 +112,19 @@ export async function getQuotationsPerformanceReport(filters: ReportFilters) {
  * have no effect on this particular report. Changing that function's
  * signature to accept them is out of scope for this milestone (spec
  * section 15: don't modify an established M0-M10 workflow without need).
+ *
+ * Follow-up fix: composed with getAutomaticLostSalesValue (same reuse
+ * discipline as getInvoiceClaimsExposureManagementReport's own composed
+ * figures above) so this summary's quantity totals gain a price-derived
+ * value alongside them, without touching getLostSalesReportSummary
+ * itself.
  */
-export async function getLostSalesManagementReport(filters: ReportFilters) {
-  return getLostSalesReportSummary({ includeDemo: filters.includeDemo });
+export async function getLostSalesManagementReport(filters: ReportFilters): Promise<LostSalesManagementReport> {
+  const [summary, value] = await Promise.all([
+    getLostSalesReportSummary({ includeDemo: filters.includeDemo }),
+    getAutomaticLostSalesValue({ includeDemo: filters.includeDemo }),
+  ]);
+  return { ...summary, estimatedValue: value.estimatedValue, demandsWithoutEstimate: value.demandsWithoutEstimate };
 }
 
 export async function getInvoiceClaimsExposureManagementReport(filters: ReportFilters) {
@@ -324,6 +342,22 @@ export type PickingShortageRow = {
   requestedQuantity: string;
   foundQuantity: string | null;
   unavailableQuantity: string | null;
+  /**
+   * Follow-up fix: "since now we have prices, the graphs should now have
+   * prices too... the quantity should be associated with its price" --
+   * priced at this specific order line's own OrderLine.approvedUnitPrice
+   * (the actually-agreed price for THIS line, when one was ever set),
+   * the same single real price lib/lost-sales/estimate-value.ts's
+   * resolveEstimatedLostSaleValue already trusts as its first, most
+   * historically-valid source. Deliberately never falls back to
+   * customerUnitPrice (the customer's own, unverified PO figure) --
+   * "never invent/assume a value" applies to an unverified price exactly
+   * as much as to a missing one. null (never a fabricated 0) when this
+   * line was never priced.
+   */
+  requestedValue: string | null;
+  foundValue: string | null;
+  unavailableValue: string | null;
   pickedAt: string | null;
 };
 
@@ -362,7 +396,14 @@ export async function listPickingShortages(filters: ReportFilters, pagination: P
         foundQuantity: true,
         unavailableQuantity: true,
         pickedAt: true,
-        orderLine: { select: { originalProductDescription: true, product: { select: { itemName: true } }, order: { select: { id: true, reference: true, customer: { select: { name: true } } } } } },
+        orderLine: {
+          select: {
+            originalProductDescription: true,
+            approvedUnitPrice: true,
+            product: { select: { itemName: true } },
+            order: { select: { id: true, reference: true, customer: { select: { name: true } } } },
+          },
+        },
       },
       orderBy: { pickedAt: "desc" },
       skip: (pagination.page - 1) * pagination.pageSize,
@@ -370,22 +411,38 @@ export async function listPickingShortages(filters: ReportFilters, pagination: P
     }),
   ]);
   return {
-    rows: rows.map((line) => ({
-      pickingLineId: line.id,
-      orderId: line.orderLine.order.id,
-      orderReference: line.orderLine.order.reference,
-      customerName: line.orderLine.order.customer.name,
-      productDescription: line.orderLine.product?.itemName ?? line.orderLine.originalProductDescription,
-      requestedQuantity: line.requestedQuantity.toString(),
-      foundQuantity: line.foundQuantity?.toString() ?? null,
-      unavailableQuantity: line.unavailableQuantity?.toString() ?? null,
-      pickedAt: line.pickedAt?.toISOString() ?? null,
-    })),
+    rows: rows.map((line) => {
+      const unitPrice = line.orderLine.approvedUnitPrice?.toString() ?? null;
+      const valueOf = (quantity: { toString(): string } | null): string | null =>
+        unitPrice && quantity ? multiplyDecimalStrings(unitPrice, quantity.toString()) : null;
+      return {
+        pickingLineId: line.id,
+        orderId: line.orderLine.order.id,
+        orderReference: line.orderLine.order.reference,
+        customerName: line.orderLine.order.customer.name,
+        productDescription: line.orderLine.product?.itemName ?? line.orderLine.originalProductDescription,
+        requestedQuantity: line.requestedQuantity.toString(),
+        requestedValue: valueOf(line.requestedQuantity),
+        foundQuantity: line.foundQuantity?.toString() ?? null,
+        foundValue: valueOf(line.foundQuantity),
+        unavailableQuantity: line.unavailableQuantity?.toString() ?? null,
+        unavailableValue: valueOf(line.unavailableQuantity),
+        pickedAt: line.pickedAt?.toISOString() ?? null,
+      };
+    }),
     pagination: { ...pagination, totalItems, totalPages: Math.max(1, Math.ceil(totalItems / pagination.pageSize)) },
   };
 }
 
-export type ProductShortageBreakdownRow = { productDescription: string; lineCount: number; totalUnavailableQuantity: string };
+export type ProductShortageBreakdownRow = {
+  productDescription: string;
+  lineCount: number;
+  totalUnavailableQuantity: string;
+  /** Follow-up fix: sum of each contributing line's own unavailableQuantity x that line's OrderLine.approvedUnitPrice -- see PickingShortageRow.unavailableValue's own comment on why no other price is ever substituted. Excludes lines with no approved price (see linesWithoutPrice below) rather than fabricating a zero for them. */
+  totalUnavailableValue: string;
+  /** How many of this product's lineCount had no OrderLine.approvedUnitPrice and are therefore excluded from totalUnavailableValue above -- never silently dropped from view. */
+  linesWithoutPrice: number;
+};
 
 /**
  * Management Analytics spec Part 2: top products by shortage quantity,
@@ -406,19 +463,34 @@ export async function getPickingShortagesBreakdown(filters: ReportFilters): Prom
     where,
     select: {
       unavailableQuantity: true,
-      orderLine: { select: { originalProductDescription: true, product: { select: { itemName: true } } } },
+      orderLine: { select: { originalProductDescription: true, approvedUnitPrice: true, product: { select: { itemName: true } } } },
     },
   });
-  const byProduct = new Map<string, { lineCount: number; quantities: string[] }>();
+  const byProduct = new Map<string, { lineCount: number; quantities: string[]; values: string[]; linesWithoutPrice: number }>();
   for (const row of rows) {
     const label = row.orderLine.product?.itemName ?? row.orderLine.originalProductDescription;
-    const existing = byProduct.get(label) ?? { lineCount: 0, quantities: [] };
+    const existing = byProduct.get(label) ?? { lineCount: 0, quantities: [], values: [], linesWithoutPrice: 0 };
     existing.lineCount += 1;
-    if (row.unavailableQuantity) existing.quantities.push(row.unavailableQuantity.toString());
+    if (row.unavailableQuantity) {
+      existing.quantities.push(row.unavailableQuantity.toString());
+      const unitPrice = row.orderLine.approvedUnitPrice?.toString() ?? null;
+      const value = unitPrice ? multiplyDecimalStrings(unitPrice, row.unavailableQuantity.toString()) : null;
+      if (value !== null) {
+        existing.values.push(value);
+      } else {
+        existing.linesWithoutPrice += 1;
+      }
+    }
     byProduct.set(label, existing);
   }
   const topProducts = [...byProduct.entries()]
-    .map(([productDescription, v]) => ({ productDescription, lineCount: v.lineCount, totalUnavailableQuantity: formatScaledDecimal(sumDecimalStrings(v.quantities)) }))
+    .map(([productDescription, v]) => ({
+      productDescription,
+      lineCount: v.lineCount,
+      totalUnavailableQuantity: formatScaledDecimal(sumDecimalStrings(v.quantities)),
+      totalUnavailableValue: formatScaledDecimal(sumDecimalStrings(v.values)),
+      linesWithoutPrice: v.linesWithoutPrice,
+    }))
     .sort((a, b) => Number.parseFloat(b.totalUnavailableQuantity) - Number.parseFloat(a.totalUnavailableQuantity))
     .slice(0, 10);
   return { topProducts, totalLines: rows.length };
@@ -529,8 +601,11 @@ export const LIST_REPORT_CSV_COLUMNS: Record<string, { key: string; header: stri
     { key: "customerName", header: "Customer" },
     { key: "productDescription", header: "Product" },
     { key: "requestedQuantity", header: "Requested quantity" },
+    { key: "requestedValue", header: "Requested value" },
     { key: "foundQuantity", header: "Found quantity" },
+    { key: "foundValue", header: "Found value" },
     { key: "unavailableQuantity", header: "Unavailable quantity" },
+    { key: "unavailableValue", header: "Unavailable value" },
     { key: "pickedAt", header: "Picked at" },
   ],
   "delivery-exceptions": [

@@ -18,6 +18,7 @@ import {
   Filter,
   AlertTriangle,
   Upload,
+  DollarSign,
 } from "lucide-react";
 import Sidebar from "../components/sidebar";
 
@@ -81,6 +82,9 @@ type CustomerDetail = {
   notes: string | null;
   createdAt: string;
   updatedAt: string;
+  // Real Business Data Onboarding round (spec PART A, Phase 4b).
+  priceListId: string | null;
+  priceList: { id: string; code: string; name: string; currencyCode: string } | null;
   locations: LocationRow[];
   orderCount: number;
 };
@@ -1275,6 +1279,26 @@ export default function CustomersPage() {
                           </div>
                         );
                       })}
+
+                      <div className="flex gap-3">
+                        <DollarSign size={17} className="mt-0.5 text-[#89948D]" />
+                        <div>
+                          <p className="text-xs text-[#89948D]">Price list</p>
+                          <p className="mt-1 text-sm font-medium">
+                            {detail.priceList ? (
+                              `${detail.priceList.code} (${detail.priceList.currencyCode})`
+                            ) : (
+                              <span className="font-normal text-[#A3ACA6]">Not assigned</span>
+                            )}
+                          </p>
+                          <Link
+                            href="/price-lists/customers"
+                            className="mt-1 inline-block text-xs text-[#315C43] hover:underline"
+                          >
+                            {detail.priceList ? "Change price list" : "Assign a price list"}
+                          </Link>
+                        </div>
+                      </div>
 
                       <div>
                         <p className="text-xs text-[#89948D]">Notes</p>

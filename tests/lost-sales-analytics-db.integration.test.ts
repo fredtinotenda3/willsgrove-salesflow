@@ -128,7 +128,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Additional Implementation Requiremen
     currency: null,
     lostSalesReason: null,
     unfulfilledDemandStatus: null,
-    customerDecisionType: null,
+    lostSaleSource: null,
     includeDemo: true,
     productCategory: null,
     productSearch: null,
@@ -179,7 +179,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Additional Implementation Requiremen
     return { orderId: order.id, lineId };
   }
 
-  it("sums a fresh, undecided demand into KPI totals and the composition 'undecided' bucket -- never into outstanding/cancelled/confirmedLost until a decision is actually recorded", async () => {
+  it("Real Business Data Onboarding round (spec PART A): sums a fresh demand into KPI totals and the composition 'confirmedLost' bucket IMMEDIATELY and automatically -- never into 'undecided'/outstanding, since there is no longer a customer-decision step to wait on", async () => {
     if (skipAll) return;
     const { getLostSalesAnalytics } = await import("@/lib/lost-sales/analytics-queries");
 
@@ -193,16 +193,98 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Additional Implementation Requiremen
     const delta = (key: keyof typeof after.kpis) => Number(after.kpis[key]) - Number(before.kpis[key]);
     expect(delta("totalRequestedQuantity")).toBeCloseTo(10, 4);
     expect(delta("totalUnavailableQuantity")).toBeCloseTo(5, 4);
+    expect(delta("totalConfirmedLostQuantity")).toBeCloseTo(5, 4);
+    expect(delta("totalOutstandingQuantity")).toBeCloseTo(0, 4);
 
     const compositionDelta = (key: keyof typeof after.composition) =>
       Number(after.composition[key]) - Number(before.composition[key]);
-    // Freshly authorized, no customer decision recorded yet -- the whole
-    // shortage sits in "undecided," not outstanding/cancelled/confirmedLost.
-    expect(compositionDelta("undecidedQuantity")).toBeCloseTo(5, 4);
+    // Automatically cancelled AND confirmed lost the instant it was
+    // recorded -- the whole shortage lands in confirmedLost, never in
+    // "undecided" or outstanding (there is no decision step left to wait
+    // on; see lib/lost-sales/create-unfulfilled-demand.ts).
+    expect(compositionDelta("confirmedLostQuantity")).toBeCloseTo(5, 4);
+    expect(compositionDelta("undecidedQuantity")).toBeCloseTo(0, 4);
     expect(compositionDelta("outstandingQuantity")).toBeCloseTo(0, 4);
     expect(compositionDelta("cancelledNotConfirmedLostQuantity")).toBeCloseTo(0, 4);
-    expect(compositionDelta("confirmedLostQuantity")).toBeCloseTo(0, 4);
     expect(compositionDelta("totalUnavailableQuantity")).toBeCloseTo(5, 4);
+
+    // The estimated-value KPI and the actually-confirmed-value KPI are
+    // populated by this SAME automatic write (see
+    // create-unfulfilled-demand.ts's module comment) -- both move
+    // together now, rather than the confirmed figure lagging behind a
+    // separate human confirmation step.
+    expect(delta("totalEstimatedLostValue")).toBeCloseTo(delta("totalConfirmedLostValue"), 4);
+  });
+
+  it("Follow-up fix: requestedValue/foundValue price the requested/found quantity at the SAME resolved estimatedUnitPrice as the existing estimatedValue (unavailable) figure -- never an independently-derived price", async () => {
+    if (skipAll) return;
+    const { prisma } = await import("@/lib/prisma");
+    const { generateOrderReference } = await import("@/lib/orders");
+    const { startPickingSession } = await import("@/lib/picking/start-picking");
+    const { recordPickedLine } = await import("@/lib/picking/record-picked-line");
+    const { completePickingSession } = await import("@/lib/picking/complete-picking");
+    const { authorizePickingSession } = await import("@/lib/picking/authorize-picking");
+    const { getLostSalesAnalytics } = await import("@/lib/lost-sales/analytics-queries");
+
+    const filters = baseFilters({ productId: productAId });
+    const before = await getLostSalesAnalytics(filters as never, "month", { page: 1, pageSize: 1 });
+
+    const requestedQuantity = "10.0000";
+    const unavailableQuantity = "4.0000";
+    const foundQuantity = "6.0000";
+    // OrderLine.approvedUnitPrice -- the first, most historically-valid
+    // price resolveEstimatedLostSaleValue tries (see estimate-value.ts's
+    // own module comment) -- set directly here so this test's price is
+    // deterministic and does not depend on whatever price list (if any)
+    // this shared fixture customer happens to have assigned elsewhere.
+    const unitPrice = "7.5000";
+
+    const order = await prisma.customerOrder.create({
+      data: {
+        reference: generateOrderReference(),
+        customerId,
+        createdById: adminId,
+        source: "MANUAL",
+        status: "RECEIVED",
+        currency: "USD",
+        receivedAt: new Date(),
+        isDemo: true,
+        lines: {
+          create: [
+            {
+              lineNumber: 1,
+              originalProductDescription: `Analytics value item ${uniqueSuffix}`,
+              requestedQuantity,
+              requestedUnitCode: "EA",
+              productId: productAId,
+              approvedUnitPrice: unitPrice,
+              isDemo: true,
+            },
+          ],
+        },
+      },
+      select: { id: true, lines: { select: { id: true } } },
+    });
+    createdOrderIds.push(order.id);
+    const lineId = order.lines[0]!.id;
+
+    const started = await startPickingSession(order.id, adminId);
+    if (!started.ok) throw new Error(started.message);
+    await recordPickedLine(started.session.id, lineId, foundQuantity, unavailableQuantity, "Short on stock", adminId);
+    const completed = await completePickingSession(started.session.id, adminId);
+    if (!completed.ok) throw new Error(completed.message);
+    const authorized = await authorizePickingSession(started.session.id, adminId);
+    if (!authorized.ok) throw new Error(authorized.message);
+
+    const after = await getLostSalesAnalytics(filters as never, "month", { page: 1, pageSize: 1 });
+    const delta = (key: keyof typeof after.kpis) => Number(after.kpis[key]) - Number(before.kpis[key]);
+
+    expect(delta("totalRequestedValue")).toBeCloseTo(Number(requestedQuantity) * Number(unitPrice), 2);
+    expect(delta("totalFoundValue")).toBeCloseTo(Number(foundQuantity) * Number(unitPrice), 2);
+    expect(delta("totalEstimatedLostValue")).toBeCloseTo(Number(unavailableQuantity) * Number(unitPrice), 2);
+    // This demand's price WAS resolvable, so it must not be counted among
+    // the "no resolvable price" demands the UI discloses separately.
+    expect(delta("demandsWithoutEstimate")).toBe(0);
   });
 
   it("Additional Implementation Requirements (correction/no-duplicate): the default scope excludes a SUPERSEDED demand's quantity entirely, counting only its replacement", async () => {
@@ -475,11 +557,9 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Additional Implementation Requiremen
     if (topY) expect(Number(topY.unavailableQuantity)).toBeCloseTo(90, 4);
   });
 
-  it("Chart intelligence enhancement: the automatic estimated-lost-value and a later customer-confirmed lost-sale value are two SEPARATE figures, never summed into one blended number", async () => {
+  it("Real Business Data Onboarding round (spec PART A): the automatic estimated-lost-value and the automatically-confirmed lost-sale value are two SEPARATE figures that agree exactly, because both are written from the SAME resolved estimate in the SAME transaction -- never a re-derived or independently-computed number", async () => {
     if (skipAll) return;
     const { prisma } = await import("@/lib/prisma");
-    const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
-    const { confirmLostSale } = await import("@/lib/lost-sales/confirm-lost-sale");
     const { getLostSalesAnalytics } = await import("@/lib/lost-sales/analytics-queries");
 
     const filters = baseFilters({ productId: productAId });
@@ -487,43 +567,24 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Additional Implementation Requiremen
 
     const { orderId } = await createOrderWithKnownShortage("10.0000", "6.0000", `Estimated-vs-confirmed test ${uniqueSuffix}`);
     const demand = await prisma.unfulfilledDemand.findFirstOrThrow({ where: { orderId } });
+    const lostSaleRecord = await prisma.lostSaleRecord.findFirstOrThrow({ where: { unfulfilledDemandId: demand.id } });
+
     const afterCreation = await getLostSalesAnalytics(filters as never, "month", { page: 1, pageSize: 1 });
 
-    // Moves the shortfall into cancelledQuantity first -- confirmLostSale
-    // consumes from there (see that function's own module comment), same
-    // two-step sequence tests/lost-sales-db.integration.test.ts's own
-    // "scenario 15" already exercises.
-    const decision = await recordCustomerDecision(
-      { unfulfilledDemandId: demand.id, decisionType: "PARTIAL_CANCELLATION", source: "CUSTOMER_EMAIL", quantity: "6.0000" },
-      adminId
-    );
-    expect(decision.ok).toBe(true);
-    const confirmed = await confirmLostSale(
-      { unfulfilledDemandId: demand.id, quantity: "6.0000", reason: "PRODUCT_UNAVAILABLE", decisionSource: "CUSTOMER_EMAIL" },
-      adminId
-    );
-    expect(confirmed.ok).toBe(true);
+    // Both totals move together, in the SAME write -- there is no
+    // separate decision/confirm step left to lag behind (see
+    // lib/lost-sales/create-unfulfilled-demand.ts's module comment).
+    const estimatedDelta = Number(afterCreation.kpis.totalEstimatedLostValue) - Number(beforeCreation.kpis.totalEstimatedLostValue);
+    const confirmedDelta = Number(afterCreation.kpis.totalConfirmedLostValue) - Number(beforeCreation.kpis.totalConfirmedLostValue);
+    expect(estimatedDelta).toBeCloseTo(confirmedDelta, 4);
 
-    const afterConfirm = await getLostSalesAnalytics(filters as never, "month", { page: 1, pageSize: 1 });
-
-    // The automatic estimate is set once, at demand-CREATION time, from
-    // UnfulfilledDemand.estimatedValue -- confirming the lost sale must
-    // never change it (it isn't recomputed, overwritten, or touched by
-    // confirmLostSale at all), proving the two figures genuinely come
-    // from two independent sources rather than one being derived from
-    // the other.
-    expect(Number(afterConfirm.kpis.totalEstimatedLostValue)).toBeCloseTo(Number(afterCreation.kpis.totalEstimatedLostValue), 4);
-
-    // The confirmed-value delta matches EXACTLY what confirmLostSale
-    // itself returned for this record (LostSaleRecord.estimatedValue) --
-    // whether that happens to be a resolvable price or null (both are
-    // valid outcomes depending on this fixture product's price data) --
-    // never a re-derived figure and never added into the estimate above.
-    if (confirmed.ok) {
-      const confirmedDelta = Number(afterConfirm.kpis.totalConfirmedLostValue) - Number(beforeCreation.kpis.totalConfirmedLostValue);
-      const expectedConfirmedValue = confirmed.record.estimatedValue === null ? 0 : Number(confirmed.record.estimatedValue);
-      expect(confirmedDelta).toBeCloseTo(expectedConfirmedValue, 4);
-    }
+    // The confirmed-value delta matches EXACTLY what was written onto the
+    // automatically-created LostSaleRecord itself -- whether that happens
+    // to be a resolvable price or null (both are valid outcomes depending
+    // on this fixture product's price data), never a re-derived figure.
+    const expectedConfirmedValue = lostSaleRecord.estimatedValue === null ? 0 : Number(lostSaleRecord.estimatedValue);
+    expect(confirmedDelta).toBeCloseTo(expectedConfirmedValue, 4);
+    expect(lostSaleRecord.decisionSource).toBe("AUTOMATIC_SYSTEM_RECORDED");
   });
 
   it("Chart intelligence enhancement: two products with different units of measure in the same scope are flagged as mixed and never silently combined into one misleading total", async () => {

@@ -87,6 +87,12 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 6B: returns & credit notes
       // scripts/remove-demo-data.ts's own Milestone 6B block, run before
       // the Milestone 6A block it precedes there (ClaimReturn and
       // CreditNote both reference InvoiceClaim).
+      //
+      // Phase 6 (Returned-claim lost sales): ClaimReturnLostSale.
+      // claimReturnId is onDelete: Restrict, so any lost-sale row this
+      // test created must be deleted before its parent ClaimReturn, not
+      // after.
+      await prisma.claimReturnLostSale.deleteMany({ where: { claimReturnId: { in: createdClaimReturnIds } } });
       await prisma.claimReturn.deleteMany({ where: { id: { in: createdClaimReturnIds } } });
       await prisma.creditNote.deleteMany({ where: { id: { in: createdCreditNoteIds } } });
       await prisma.creditNoteImportBatch.deleteMany({ where: { id: { in: createdCreditNoteImportBatchIds } } });
@@ -224,6 +230,71 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 6B: returns & credit notes
 
     const claim = await prisma.invoiceClaim.findUniqueOrThrow({ where: { id: claimId } });
     expect(claim.status).toBe("RESOLVED");
+
+    // Phase 6 (Returned-claim lost sales): DAMAGED is a genuine loss, so
+    // a ClaimReturnLostSale row is created automatically -- but no
+    // claimLineId was supplied above, so the price genuinely cannot be
+    // resolved (never guessed): both estimate fields stay null.
+    const lostSale = await prisma.claimReturnLostSale.findUnique({ where: { claimReturnId: result.id } });
+    expect(lostSale).not.toBeNull();
+    expect(lostSale?.claimLineId).toBeNull();
+    expect(lostSale?.estimatedUnitPrice).toBeNull();
+    expect(lostSale?.estimatedValue).toBeNull();
+    expect(lostSale?.decisionSource).toBe("AUTOMATIC_SYSTEM_RECORDED");
+  });
+
+  it("Phase 6 (Returned-claim lost sales): a return scoped to a specific disputed line resolves its real invoiced unit price and computes an estimated loss", async () => {
+    if (skipAll) return;
+    const { recordClaimReturn } = await import("@/lib/returns-credits/returns");
+    const { prisma } = await import("@/lib/prisma");
+
+    const { invoiceId, lineId } = await createSapInvoice("10.0000", "4.5000");
+    const claimId = await createApprovedClaim(invoiceId, lineId, "PHYSICAL_RETURN_REQUIRED", undefined);
+    const claimLine = await prisma.invoiceClaimLine.findFirstOrThrow({ where: { claimId, sapInvoiceLineId: lineId } });
+
+    // Received quantity (6.0000) deliberately differs from the claim
+    // line's own disputedAmount-based dispute -- the lost-sale estimate
+    // must be driven by what was ACTUALLY received back, not by
+    // whatever the original dispute claimed.
+    const result = await recordClaimReturn(
+      claimId,
+      { claimLineId: claimLine.id, receivedQuantity: "6.0000", condition: "EXPIRED", receivedDate: new Date().toISOString().slice(0, 10) } as never,
+      adminId
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    createdClaimReturnIds.push(result.id);
+
+    const lostSale = await prisma.claimReturnLostSale.findUnique({ where: { claimReturnId: result.id } });
+    expect(lostSale).not.toBeNull();
+    expect(lostSale?.claimLineId).toBe(claimLine.id);
+    expect(lostSale?.estimatedUnitPrice?.toString()).toBe("4.5000");
+    // 6.0000 * 4.5000 = 27.0000, exactly -- real SAP-invoiced price times
+    // the actual returned quantity, rounded to this project's money
+    // scale.
+    expect(lostSale?.estimatedValue?.toString()).toBe("27.0000");
+    expect(lostSale?.currencyCode).toBe("USD");
+  });
+
+  it("Phase 6 (Returned-claim lost sales): a GOOD_RESALABLE return never creates a lost-sale row -- the goods are not a business loss", async () => {
+    if (skipAll) return;
+    const { recordClaimReturn } = await import("@/lib/returns-credits/returns");
+    const { prisma } = await import("@/lib/prisma");
+
+    const { invoiceId, lineId } = await createSapInvoice("10.0000", "5.0000");
+    const claimId = await createApprovedClaim(invoiceId, lineId, "PHYSICAL_RETURN_REQUIRED", undefined);
+
+    const result = await recordClaimReturn(
+      claimId,
+      { receivedQuantity: "10.0000", condition: "GOOD_RESALABLE", receivedDate: new Date().toISOString().slice(0, 10) } as never,
+      adminId
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    createdClaimReturnIds.push(result.id);
+
+    const lostSale = await prisma.claimReturnLostSale.findUnique({ where: { claimReturnId: result.id } });
+    expect(lostSale).toBeNull();
   });
 
   it("FULL_CREDIT_RECOMMENDED: a manually-recorded credit note matching the approved amount auto-resolves the claim, and the financial summary reflects it live", async () => {
@@ -515,5 +586,66 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 6B: returns & credit notes
       adminId
     );
     expect(creditResult.ok).toBe(false);
+  });
+
+  it("Phase 7 (Claims analytics) Source C: getReturnedGoodsLostSalesValue sums estimatedValue across ClaimReturnLostSale rows, by currency, excluding (and counting separately) those with no resolvable price", async () => {
+    if (skipAll) return;
+    const { recordClaimReturn } = await import("@/lib/returns-credits/returns");
+    const { getReturnedGoodsLostSalesValue } = await import("@/lib/returns-credits/lost-sale-analytics");
+    const { prisma } = await import("@/lib/prisma");
+
+    const before = await getReturnedGoodsLostSalesValue({ includeDemo: true });
+
+    // Priced, genuine-loss return: 3.0000 received back, invoice line
+    // unitPrice "6.2500" -> a known, exact estimatedValue of 18.7500
+    // (3.0000 * 6.2500), in USD (createSapInvoice's own fixed currency).
+    const { invoiceId: invoiceId1, lineId: lineId1 } = await createSapInvoice("10.0000", "6.2500");
+    const claimId1 = await createApprovedClaim(invoiceId1, lineId1, "PHYSICAL_RETURN_REQUIRED", undefined);
+    const claimLine1 = await prisma.invoiceClaimLine.findFirstOrThrow({ where: { claimId: claimId1, sapInvoiceLineId: lineId1 } });
+    const result1 = await recordClaimReturn(
+      claimId1,
+      { claimLineId: claimLine1.id, receivedQuantity: "3.0000", condition: "DAMAGED", receivedDate: new Date().toISOString().slice(0, 10) } as never,
+      adminId
+    );
+    expect(result1.ok).toBe(true);
+    if (result1.ok) createdClaimReturnIds.push(result1.id);
+
+    // Unpriced, genuine-loss return (no claimLineId -- same shape as the
+    // PHYSICAL_RETURN_REQUIRED test above): must still count toward
+    // totalLossRecords/recordsWithoutEstimate, but contribute nothing to
+    // any currency's summed estimatedValue.
+    const { invoiceId: invoiceId2, lineId: lineId2 } = await createSapInvoice("5.0000", "9.0000");
+    const claimId2 = await createApprovedClaim(invoiceId2, lineId2, "PHYSICAL_RETURN_REQUIRED", undefined);
+    const result2 = await recordClaimReturn(
+      claimId2,
+      { receivedQuantity: "5.0000", condition: "EXPIRED", receivedDate: new Date().toISOString().slice(0, 10) } as never,
+      adminId
+    );
+    expect(result2.ok).toBe(true);
+    if (result2.ok) createdClaimReturnIds.push(result2.id);
+
+    // GOOD_RESALABLE: must contribute nothing at all -- no row is even
+    // created (see the earlier GOOD_RESALABLE test above).
+    const { invoiceId: invoiceId3, lineId: lineId3 } = await createSapInvoice("4.0000", "2.0000");
+    const claimId3 = await createApprovedClaim(invoiceId3, lineId3, "PHYSICAL_RETURN_REQUIRED", undefined);
+    const result3 = await recordClaimReturn(
+      claimId3,
+      { receivedQuantity: "4.0000", condition: "GOOD_RESALABLE", receivedDate: new Date().toISOString().slice(0, 10) } as never,
+      adminId
+    );
+    expect(result3.ok).toBe(true);
+    if (result3.ok) createdClaimReturnIds.push(result3.id);
+
+    const after = await getReturnedGoodsLostSalesValue({ includeDemo: true });
+
+    // Exactly 2 new confirmed-loss rows (the GOOD_RESALABLE return never
+    // created one) -- 1 priced, 1 not.
+    expect(after.totalLossRecords - before.totalLossRecords).toBe(2);
+    expect(after.recordsWithEstimate - before.recordsWithEstimate).toBe(1);
+    expect(after.recordsWithoutEstimate - before.recordsWithoutEstimate).toBe(1);
+
+    const usdBefore = before.byCurrency.find((b) => b.currencyCode === "USD")?.estimatedValue ?? "0";
+    const usdAfter = after.byCurrency.find((b) => b.currencyCode === "USD")?.estimatedValue ?? "0";
+    expect(Number(usdAfter) - Number(usdBefore)).toBeCloseTo(18.75, 4);
   });
 });

@@ -1,0 +1,48 @@
+-- Real Business Data Onboarding round (spec PART A): remove the Customer
+-- Decision workflow from the actual UX and replace it with a fully
+-- automatic shortage -> lost-sale rule. See prisma/schema.prisma's own
+-- comment just above the CustomerDecisionType enum for the full
+-- rationale behind what this migration deliberately does NOT do.
+--
+-- Entirely additive, same convention as every prior migration in this
+-- history: no column dropped, no existing column's type/nullability
+-- changed, no existing table dropped, no existing enum value removed.
+--
+-- Specifically NOT included here, on purpose, even though the
+-- application code for this round no longer uses them:
+--   - DROP TYPE "CustomerDecisionType" / DROP TABLE "CustomerDecisionEvent"
+--   - Any ALTER TYPE ... DROP VALUE on "UnfulfilledDemandStatus" (which
+--     would narrow it to CONFIRMED_LOST/SUPERSEDED)
+-- Both would be destructive against a live database that may already
+-- hold real CustomerDecisionEvent rows and UnfulfilledDemand rows in one
+-- of the five now-unreachable statuses -- exactly the kind of operation
+-- this round's binding delivery constraints forbid ("do not execute a
+-- destructive reset... do not delete the existing Neon data... do not
+-- execute a destructive database operation"). The application layer
+-- (lib/lost-sales/create-unfulfilled-demand.ts and everything upstream of
+-- it) simply stops writing new rows of those kinds; this migration only
+-- changes what happens next.
+--
+-- NOTE: authored by hand -- `prisma validate`/`generate`/`migrate` cannot
+-- reach binaries.prisma.sh from this sandbox (403 Forbidden, the same
+-- network-egress restriction every prior milestone's delivery report has
+-- documented; reconfirmed again this round). Not applied or tested
+-- against a live database here. The accompanying prisma/schema.prisma was
+-- reviewed by hand, field by field, against this file and against every
+-- prior migration that touches these tables/enums, for a 1:1 match.
+-- Apply with `prisma migrate deploy` (or `migrate dev` in development)
+-- against a real database before relying on it.
+
+-- AlterEnum: AUTOMATIC_SYSTEM_RECORDED is the only DecisionSource value
+-- any surviving code path writes now -- every LostSaleRecord this round
+-- creates is automatic, with no human decision involved (see
+-- lib/lost-sales/create-unfulfilled-demand.ts). Appended, never inserted
+-- before an existing value, so every existing row stays valid.
+ALTER TYPE "DecisionSource" ADD VALUE 'AUTOMATIC_SYSTEM_RECORDED';
+
+-- AlterTable: new UnfulfilledDemand rows are now created already fully
+-- cancelled and confirmed lost, with no decision step in between -- see
+-- UnfulfilledDemandStatus's own schema.prisma comment. The column's type
+-- and existing rows are completely untouched; this only changes what a
+-- future INSERT that omits "status" defaults to.
+ALTER TABLE "UnfulfilledDemand" ALTER COLUMN "status" SET DEFAULT 'CONFIRMED_LOST';

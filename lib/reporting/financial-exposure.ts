@@ -5,6 +5,7 @@ import { getInvoiceClaimsDashboard, type InvoiceClaimsDashboard } from "@/lib/in
 import type { CurrencyExposureBucket } from "@/lib/invoice-claims/financial";
 import { getInvoiceReconciliationReports, type InvoiceReconciliationReports } from "@/lib/invoice-reconciliation/queries";
 import { getSupplyShortageLostSalesValue, type SupplyShortageLostSalesValue } from "@/lib/lost-sales/queries";
+import { getReturnedGoodsLostSalesValue, type ReturnedGoodsLostSalesValue } from "@/lib/returns-credits/lost-sale-analytics";
 import type { ReportFilters } from "@/lib/reporting/types";
 import { demoWhere, dateRangeToTimestampFilter, defaultDateRange } from "@/lib/reporting/filters";
 
@@ -92,6 +93,15 @@ export type ReturnsAndCreditNotesSummary = {
 export type LostSalesBySourceReport = {
   sourceA: { label: string; description: string; exposureByCurrency: CurrencyExposureBucket[] };
   sourceB: { label: string; description: string } & SupplyShortageLostSalesValue;
+  // Real Business Data Onboarding round, Phase 7 (Claims analytics):
+  // confirmed loss from returned goods (lib/returns-credits/
+  // lost-sale-analytics.ts, backed by Phase 6's ClaimReturnLostSale).
+  // NOT a third independent pool to add to A and B -- it can describe the
+  // SAME claims Source A already covers, just with a different, more
+  // concrete signal (physical ReturnCondition, not a dispute amount). See
+  // getReturnedGoodsLostSalesValue's own module comment and this file's
+  // note string below.
+  sourceC: { label: string; description: string } & ReturnedGoodsLostSalesValue;
   note: string;
 };
 
@@ -152,11 +162,12 @@ export async function getFinancialExposureReport(filters: ReportFilters): Promis
   const effectiveTo = filters.dateTo ?? dateTo;
   const range = dateRangeToTimestampFilter({ dateFrom: effectiveFrom, dateTo: effectiveTo });
 
-  const [claims, reconciliation, returnsAndCreditNotes, supplyShortage] = await Promise.all([
+  const [claims, reconciliation, returnsAndCreditNotes, supplyShortage, returnedGoodsLoss] = await Promise.all([
     getInvoiceClaimsDashboard({ includeDemo: filters.includeDemo }),
     getInvoiceReconciliationReports({ includeDemo: filters.includeDemo }),
     getReturnsAndCreditNotesSummary(filters, range),
     getSupplyShortageLostSalesValue({ includeDemo: filters.includeDemo }),
+    getReturnedGoodsLostSalesValue({ includeDemo: filters.includeDemo }),
   ]);
 
   const lostSalesBySource: LostSalesBySourceReport = {
@@ -170,8 +181,13 @@ export async function getFinancialExposureReport(filters: ReportFilters): Promis
       description: "Estimated supply lost sales = unavailable quantity x applicable selling price, per lost-sale record -- only computed where a real price was available (never invented).",
       ...supplyShortage,
     },
+    sourceC: {
+      label: "Source C: Confirmed loss from returned goods",
+      description: "Of goods physically received back against a claim, the value of whatever was found DAMAGED, EXPIRED or otherwise unsellable -- a confirmed outcome from the physical inspection, not a dispute estimate. Priced only where the returned line's real invoiced unit price was on record (never invented).",
+      ...returnedGoodsLoss,
+    },
     note:
-      "Source A and Source B never overlap: Source A requires an actual invoiced line to dispute, while Source B's quantity was by definition never dispatched or invoiced. They are kept separate rather than summed into one figure -- Source A is broken down by currency (claims can span multiple SAP invoice currencies); Source B has none recorded, so adding the two would wrongly assume a shared currency.",
+      "Source A and Source B never overlap: Source A requires an actual invoiced line to dispute, while Source B's quantity was by definition never dispatched or invoiced. They are kept separate rather than summed into one figure -- Source A is broken down by currency (claims can span multiple SAP invoice currencies); Source B has none recorded, so adding the two would wrongly assume a shared currency. Source C is a different matter: it is NOT a third independent pool to add to A and B -- it can describe the very same claims Source A already covers, just measured from the physical return's own confirmed condition rather than the dispute's claimed value. Never add Source C to Source A for the same claim lines; that would double-count one loss as both a dispute estimate and a confirmed outcome.",
   };
 
   return { dateFrom: effectiveFrom, dateTo: effectiveTo, claims, reconciliation, returnsAndCreditNotes, lostSalesBySource };

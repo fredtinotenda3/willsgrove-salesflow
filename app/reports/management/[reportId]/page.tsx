@@ -29,8 +29,7 @@ import {
   type QuotationsPerformanceData,
 } from "../_components/summary-sections";
 import type { FinancialExposureReport } from "@/lib/reporting/financial-exposure";
-import type { LostSalesReportSummary } from "@/lib/lost-sales/queries";
-import type { OrderStatusBreakdownRow, ProductShortageBreakdownRow, DeliveryOutcomeBreakdownRow, CommunicationFailureBreakdownRow } from "@/lib/reporting/management-reports";
+import type { OrderStatusBreakdownRow, ProductShortageBreakdownRow, DeliveryOutcomeBreakdownRow, CommunicationFailureBreakdownRow, LostSalesManagementReport } from "@/lib/reporting/management-reports";
 import { AlertCircle } from "lucide-react";
 
 export const instant = false;
@@ -55,7 +54,7 @@ const EMPTY_FILTERS = {
   currency: null,
   lostSalesReason: null,
   unfulfilledDemandStatus: null,
-  customerDecisionType: null,
+  lostSaleSource: null,
   productCategory: null,
   productSearch: null,
   sapItemCode: null,
@@ -264,7 +263,7 @@ export default async function ManagementReportDetailPage({ params, searchParams 
             <>
               {reportId === "operational-summary" && <OperationalSummarySections data={result.data as OperationalSummaryData} />}
               {reportId === "quotations-performance" && <QuotationsPerformanceSections data={result.data as QuotationsPerformanceData} />}
-              {reportId === "lost-sales" && <LostSalesSections data={result.data as LostSalesReportSummary} />}
+              {reportId === "lost-sales" && <LostSalesSections data={result.data as LostSalesManagementReport} />}
               {reportId === "invoice-claims-exposure" && <FinancialExposureSections data={result.data as FinancialExposureReport} />}
               <p className="text-center text-[11px] text-[#9AA59E]">
                 Every figure above is also included, as a flat key/value list, in this report&apos;s CSV export.

@@ -6,6 +6,7 @@ import { dateOnlyStringToUtcDate } from "@/lib/dates";
 import { parseScaledDecimal } from "@/lib/picking/validation";
 import { recomputeClaimStatusAfterActuals } from "@/lib/returns-credits/apply-status-recompute";
 import { returnConditionRequiresDetail, type RecordClaimReturnInput } from "@/lib/returns-credits/validation";
+import { recordClaimReturnLostSaleIfLoss } from "@/lib/returns-credits/return-lost-sale";
 
 /**
  * Milestone 6B (Returns & Credit Notes). Recording that a physical return
@@ -44,7 +45,10 @@ export async function recordClaimReturn(
     return { ok: false, status: 400, message: "Received quantity must be greater than zero.", fieldErrors: { receivedQuantity: "Must be greater than zero." } };
   }
 
-  const claim = await prisma.invoiceClaim.findUnique({ where: { id: claimId }, select: { id: true, status: true } });
+  const claim = await prisma.invoiceClaim.findUnique({
+    where: { id: claimId },
+    select: { id: true, status: true, customerId: true },
+  });
   if (!claim) {
     return { ok: false, status: 404, message: "Claim not found." };
   }
@@ -116,6 +120,19 @@ export async function recordClaimReturn(
           claimLineId: input.claimLineId ?? null,
         },
       },
+    });
+
+    // Phase 6 (Returned-claim lost sales): automatic, mechanical --
+    // never a second human decision. Writes nothing for GOOD_RESALABLE
+    // (see recordClaimReturnLostSaleIfLoss's own comment).
+    await recordClaimReturnLostSaleIfLoss(tx, {
+      claimReturnId: record.id,
+      claimId,
+      claimLineId: input.claimLineId ?? null,
+      customerId: claim.customerId,
+      receivedQuantity: input.receivedQuantity,
+      condition: input.condition,
+      recordedById: receivedById,
     });
 
     await recomputeClaimStatusAfterActuals(tx, claimId, receivedById);

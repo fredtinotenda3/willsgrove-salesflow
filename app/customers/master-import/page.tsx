@@ -20,6 +20,8 @@ type CsvError = { row: number; message: string };
 
 type Preview = {
   fileName: string;
+  layout?: "RICH" | "LEAN";
+  layoutNote?: string | null;
   summary: {
     totalRows: number;
     validRows: number;
@@ -202,6 +204,25 @@ export default function CustomerMasterImportPage() {
         return;
       }
 
+      // Large-file reliability fix: an import can now commit some rows
+      // and stop partway through (see app/api/customers/master-import/
+      // route.ts's own comment) rather than always being all-or-nothing.
+      // The preview this screen is holding no longer matches reality --
+      // some "new"/"changed" rows it counted are now already imported --
+      // so it's cleared the same way a 409 clears it, forcing a fresh
+      // preview rather than letting a stale "Confirm import" click send
+      // counts the server will just reject again.
+      if (response.status === 207 && body?.partial) {
+        setPreview(null);
+        setConfirmed(false);
+        setNotice(
+          body?.message ??
+            "The import was interrupted partway through. Some customers were already imported. Please select the file again to re-check and finish the import.",
+        );
+        setStage("idle");
+        return;
+      }
+
       setNotice(body?.message ?? "The import failed. No changes were saved.");
       setStage("previewed");
     } catch {
@@ -350,6 +371,9 @@ export default function CustomerMasterImportPage() {
                       <section className="mt-6 rounded-2xl border border-[#E8ECE7] bg-white p-6">
                         <h3 className="text-base font-semibold">Preview: {preview.fileName}</h3>
                         <p className="mt-1 text-sm text-[#7D8981]">The file is valid. Nothing has been saved yet.</p>
+                        {preview.layoutNote && (
+                          <p className="mt-1 text-sm text-[#7D8981]">{preview.layoutNote}</p>
+                        )}
                         <div className="mt-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
                           <SummaryCard label="New customers" value={preview.summary.newCustomers} />
                           <SummaryCard label="Changed customers" value={preview.summary.changedCustomers} />

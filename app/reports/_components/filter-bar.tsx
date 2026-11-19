@@ -1,8 +1,7 @@
 import { Download, Filter } from "lucide-react";
 import type { FilterOption } from "@/lib/reporting/filter-options";
 import { DECISION_CATEGORIES, DECISION_PRIORITIES, DECISION_RECOMMENDATION_STATUSES } from "@/lib/reporting/decision-types";
-import { customerDecisionTypeValues } from "@/lib/lost-sales/validation";
-import { DECISION_TYPE_LABELS, LOST_SALE_REASON_LABELS } from "@/lib/lost-sales/display";
+import { LOST_SALE_REASON_LABELS, LOST_SALE_SOURCE_VALUES, LOST_SALE_SOURCE_LABELS } from "@/lib/lost-sales/display";
 
 /**
  * Milestone 11 (Operational BI), spec section 8: "a reusable, consistent
@@ -84,8 +83,8 @@ export function ReportFilterBar({
   showDecisionCategory = false,
   showPriority = false,
   showRecommendationStatus = false,
-  showCustomerDecisionType = false,
   showLostSalesReason = false,
+  showLostSaleSource = false,
   statusFilter,
 }: {
   viewAction: string;
@@ -110,8 +109,6 @@ export function ReportFilterBar({
   showPriority?: boolean;
   /** Milestone 15. DecisionRecommendationStatus enum -- the recommendation's lifecycle status, not to be confused with any order/quotation/claim status above. */
   showRecommendationStatus?: boolean;
-  /** Additional Implementation Requirements (spec section 3). CustomerDecisionType enum -- the customer's recorded decision on a shortage (Accept partial/Cancel/Substitute/...), distinct from statusFilter's unfulfilledDemandStatus option. */
-  showCustomerDecisionType?: boolean;
   /**
    * Additional Implementation Requirements (spec section 3). LostSaleReason
    * enum, as its own dropdown rather than through the single `statusFilter`
@@ -123,6 +120,16 @@ export function ReportFilterBar({
    * this is a new, additive option, not a replacement for that usage.
    */
   showLostSalesReason?: boolean;
+  /**
+   * Follow-up fix ("add source filters" for the consolidated lost-sales
+   * view). LostSaleSource ("SHORTAGE" | "RETURNED_PRODUCT"), its own
+   * dedicated dropdown for the exact same reason showLostSalesReason's
+   * own comment gives above: the lost-sales analytics page needs this
+   * AND unfulfilledDemandStatus (via `statusFilter`) AND
+   * lostSalesReason filterable at once, so this gets its own slot
+   * rather than overloading `statusFilter`.
+   */
+  showLostSaleSource?: boolean;
   statusFilter?: StatusFilterConfig;
 }) {
   const get = (key: string) => searchParams[key] ?? "";
@@ -245,19 +252,6 @@ export function ReportFilterBar({
           </Field>
         )}
 
-        {showCustomerDecisionType && (
-          <Field label="Customer decision">
-            <select name="customerDecisionType" defaultValue={get("customerDecisionType")} className={FIELD_INPUT_CLASS}>
-              <option value="">All decisions</option>
-              {customerDecisionTypeValues.map((value) => (
-                <option key={value} value={value}>
-                  {DECISION_TYPE_LABELS[value] ?? value}
-                </option>
-              ))}
-            </select>
-          </Field>
-        )}
-
         {showLostSalesReason && (
           <Field label="Loss reason">
             <select name="lostSalesReason" defaultValue={get("lostSalesReason")} className={FIELD_INPUT_CLASS}>
@@ -265,6 +259,19 @@ export function ReportFilterBar({
               {Object.keys(LOST_SALE_REASON_LABELS).map((value) => (
                 <option key={value} value={value}>
                   {LOST_SALE_REASON_LABELS[value]}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+
+        {showLostSaleSource && (
+          <Field label="Loss source">
+            <select name="lostSaleSource" defaultValue={get("lostSaleSource")} className={FIELD_INPUT_CLASS}>
+              <option value="">All sources</option>
+              {LOST_SALE_SOURCE_VALUES.map((value) => (
+                <option key={value} value={value}>
+                  {LOST_SALE_SOURCE_LABELS[value]}
                 </option>
               ))}
             </select>

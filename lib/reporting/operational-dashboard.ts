@@ -2,7 +2,6 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { getQuotationDashboardCounts } from "@/lib/quotations/queries";
 import { getApprovalDashboard } from "@/lib/approvals/queries";
-import { getLostSalesReportSummary } from "@/lib/lost-sales/queries";
 import type { ReportFilters, DrillDownLink } from "@/lib/reporting/types";
 
 /**
@@ -26,6 +25,15 @@ import type { ReportFilters, DrillDownLink } from "@/lib/reporting/types";
  * number invented for this dashboard); `snapshot` is the smaller set of
  * broader headline totals for context around it, not an attempt to
  * surface literally every number section 3 mentions.
+ *
+ * Real Business Data Onboarding round (spec PART A): the "Lost sales
+ * awaiting decision" action-queue item and its lostSalesPendingDecision
+ * snapshot field are removed outright -- there is no longer a decision
+ * step for a shortage to await (every shortage is automatically
+ * cancelled and confirmed lost the moment it's recorded; see
+ * lib/lost-sales/create-unfulfilled-demand.ts). A permanently-zero queue
+ * item would misrepresent the business as having a backlog it no longer
+ * can have, so it is deleted rather than left in place showing zero.
  */
 
 export type ActionQueueSeverity = "info" | "attention" | "urgent";
@@ -51,7 +59,6 @@ export type OperationalDashboard = {
     ordersDispatched: number;
     ordersDelivered: number;
     openInvoiceClaims: number;
-    lostSalesPendingDecision: number;
     outboundMessagesFailedBacklog: number;
     intakeAwaitingReview: number;
   };
@@ -63,7 +70,6 @@ export async function getOperationalDashboard(viewerId: string, viewerRole: stri
   const [
     quotationCounts,
     approvalDashboard,
-    lostSalesSummary,
     ordersReceived,
     ordersAwaitingApproval,
     ordersApproved,
@@ -80,7 +86,6 @@ export async function getOperationalDashboard(viewerId: string, viewerRole: stri
   ] = await Promise.all([
     getQuotationDashboardCounts(),
     getApprovalDashboard(viewerId, viewerRole, { includeDemo: filters.includeDemo }),
-    getLostSalesReportSummary({ includeDemo: filters.includeDemo }),
     prisma.customerOrder.count({ where: { ...demoWhere, status: "RECEIVED" } }),
     prisma.customerOrder.count({ where: { ...demoWhere, status: "READY_FOR_APPROVAL" } }),
     prisma.customerOrder.count({ where: { ...demoWhere, status: "APPROVED" } }),
@@ -96,7 +101,6 @@ export async function getOperationalDashboard(viewerId: string, viewerRole: stri
 
   const quotationsAwaitingPreparation = quotationCounts.draft;
   const quotationsIssuedAwaitingResponse = quotationCounts.issuedAwaitingResponse;
-  const lostSalesPendingDecision = lostSalesSummary.awaitingDecisionCount;
 
   const actionQueues: ActionQueueItem[] = [
     {
@@ -130,12 +134,6 @@ export async function getOperationalDashboard(viewerId: string, viewerRole: stri
       drillDown: { label: "View open claims", href: "/invoice-claims?status=OPEN" },
     },
     {
-      label: "Lost sales awaiting decision",
-      count: lostSalesPendingDecision,
-      severity: lostSalesPendingDecision > 0 ? "attention" : "info",
-      drillDown: { label: "View lost-sales decisions", href: "/lost-sales" },
-    },
-    {
       label: "Failed outbound messages",
       count: outboundMessagesFailedBacklog,
       severity: outboundMessagesFailedBacklog > 0 ? "urgent" : "info",
@@ -162,7 +160,6 @@ export async function getOperationalDashboard(viewerId: string, viewerRole: stri
       ordersDispatched,
       ordersDelivered,
       openInvoiceClaims,
-      lostSalesPendingDecision,
       outboundMessagesFailedBacklog,
       intakeAwaitingReview,
     },

@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { unfulfilledDemandStatusValues } from "@/lib/lost-sales/validation";
 
 /**
  * Milestone 4 (Lost-Sales Management). Read-only helpers shared by the
@@ -132,16 +133,21 @@ export type ListUnfulfilledDemandsOptions = {
   // -- see analytics-queries.ts's own comment on why exclusive-upper),
   // already converted from "YYYY-MM-DD" by the caller via
   // lib/dates.ts -- this function stays DB-only and never parses a raw
-  // query string itself. reason/decisionType filter through the related
-  // LostSaleRecord/CustomerDecisionEvent tables (a demand only matches
-  // if at least one of its records/events has that value) -- Prisma's
-  // `some` relation filter, not a new column.
+  // query string itself. reason filters through the related
+  // LostSaleRecord table (a demand only matches if at least one of its
+  // records has that value) -- Prisma's `some` relation filter, not a
+  // new column.
+  //
+  // Real Business Data Onboarding round (spec PART A): decisionType
+  // removed outright -- no surviving code path ever creates a new
+  // CustomerDecisionEvent to filter by any more (the model itself is
+  // kept at the schema level only for historical-data safety; see its
+  // own schema.prisma comment).
   productId?: string;
   salespersonId?: string;
   dateFrom?: Date;
   dateTo?: Date;
   reason?: string;
-  decisionType?: string;
 };
 
 export const LOST_SALES_DEFAULT_PAGE_SIZE = 50;
@@ -188,15 +194,12 @@ export function parseUnfulfilledDemandListQuery(params: URLSearchParams): Parsed
   return { ok: true, query: { page, pageSize, status, customerId, includeDemo } };
 }
 
-const unfulfilledDemandStatusValueSet = new Set([
-  "PENDING_DECISION",
-  "AWAITING_SUPPLY",
-  "PARTIALLY_CANCELLED",
-  "FULLY_CANCELLED",
-  "CONFIRMED_LOST",
-  "RESOLVED",
-  "SUPERSEDED",
-]);
+// Real Business Data Onboarding round (spec PART A): mirrors
+// lib/lost-sales/validation.ts's unfulfilledDemandStatusValues -- kept at
+// all 7 historical values (not pruned to the 2 now-reachable ones) so a
+// pre-existing row from before this round stays filterable/visible. See
+// that constant's own module comment for the full rationale.
+const unfulfilledDemandStatusValueSet = new Set<string>(unfulfilledDemandStatusValues);
 
 export type ListUnfulfilledDemandsResult = {
   demands: UnfulfilledDemandSummary[];
@@ -233,9 +236,6 @@ function buildUnfulfilledDemandListWhere(
     };
   }
   if (options.reason) where.lostSaleRecords = { some: { reason: options.reason as Prisma.LostSaleRecordWhereInput["reason"] } };
-  if (options.decisionType) {
-    where.decisionEvents = { some: { decisionType: options.decisionType as Prisma.CustomerDecisionEventWhereInput["decisionType"] } };
-  }
   return where;
 }
 
@@ -301,23 +301,12 @@ export async function listAllUnfulfilledDemandsForExport(
   return { demands: rows.map(toSummary), truncated: totalItems > MAX_EXPORT_ROWS };
 }
 
-export type DecisionEventDetail = {
-  id: string;
-  decisionType: string;
-  source: string;
-  quantity: string;
-  substituteProductId: string | null;
-  substituteSapItemCodeSnapshot: string | null;
-  substituteProductDescriptionSnapshot: string | null;
-  customerContactName: string | null;
-  reason: string | null;
-  remarks: string | null;
-  attachmentReference: string | null;
-  decidedAt: string;
-  recordedById: string;
-  recordedByName: string;
-  recordedAt: string;
-};
+// Real Business Data Onboarding round (spec PART A): DecisionEventDetail
+// removed outright -- no surviving code path ever records a new decision
+// event to detail any more (the UI/API/library surface that drove the
+// Customer Decision workflow is deleted; CustomerDecisionEvent itself is
+// kept at the schema level only for historical-data safety, see
+// prisma/schema.prisma).
 
 export type LostSaleRecordDetail = {
   id: string;
@@ -345,7 +334,6 @@ export type UnfulfilledDemandDetail = UnfulfilledDemandSummary & {
   // UnfulfilledDemandStatus.SUPERSEDED's schema.prisma comment.
   supersededByDemandRef: SupersessionRef | null;
   supersedesDemandRef: SupersessionRef | null;
-  decisionEvents: DecisionEventDetail[];
   lostSaleRecords: LostSaleRecordDetail[];
 };
 
@@ -360,26 +348,6 @@ export async function getUnfulfilledDemandDetail(id: string): Promise<Unfulfille
       followUpRemarks: true,
       supersededByDemand: { select: { id: true, createdAt: true, unavailableQuantity: true } },
       supersedesDemand: { select: { id: true, createdAt: true, unavailableQuantity: true } },
-      decisionEvents: {
-        orderBy: { recordedAt: "asc" },
-        select: {
-          id: true,
-          decisionType: true,
-          source: true,
-          quantity: true,
-          substituteProductId: true,
-          substituteSapItemCodeSnapshot: true,
-          substituteProductDescriptionSnapshot: true,
-          customerContactName: true,
-          reason: true,
-          remarks: true,
-          attachmentReference: true,
-          decidedAt: true,
-          recordedById: true,
-          recordedBy: { select: { name: true } },
-          recordedAt: true,
-        },
-      },
       lostSaleRecords: {
         orderBy: { confirmedAt: "asc" },
         select: {
@@ -420,23 +388,6 @@ export async function getUnfulfilledDemandDetail(id: string): Promise<Unfulfille
           unavailableQuantity: row.supersedesDemand.unavailableQuantity.toString(),
         }
       : null,
-    decisionEvents: row.decisionEvents.map((event) => ({
-      id: event.id,
-      decisionType: event.decisionType,
-      source: event.source,
-      quantity: event.quantity.toString(),
-      substituteProductId: event.substituteProductId,
-      substituteSapItemCodeSnapshot: event.substituteSapItemCodeSnapshot,
-      substituteProductDescriptionSnapshot: event.substituteProductDescriptionSnapshot,
-      customerContactName: event.customerContactName,
-      reason: event.reason,
-      remarks: event.remarks,
-      attachmentReference: event.attachmentReference,
-      decidedAt: event.decidedAt.toISOString(),
-      recordedById: event.recordedById,
-      recordedByName: event.recordedBy?.name ?? "Unknown",
-      recordedAt: event.recordedAt.toISOString(),
-    })),
     lostSaleRecords: row.lostSaleRecords.map((record) => ({
       id: record.id,
       quantity: record.quantity.toString(),
@@ -474,7 +425,19 @@ export type LossReasonBreakdown = {
 };
 
 export type LostSalesReportSummary = {
-  awaitingDecisionCount: number;
+  // Real Business Data Onboarding round (spec PART A): awaitingDecisionCount
+  // removed outright, not hardcoded to zero -- every NEW shortage is
+  // immediately and automatically confirmed lost (see
+  // lib/lost-sales/create-unfulfilled-demand.ts), so no demand created
+  // from this point forward can ever be PENDING_DECISION again, making
+  // "awaiting a customer decision" a structurally meaningless question
+  // for the system's current, going-forward state -- spec section 19:
+  // "No order is waiting for a customer decision" must hold everywhere,
+  // including in this summary's own field list. (PENDING_DECISION
+  // remains a valid historical value for a pre-existing row -- see
+  // UnfulfilledDemandStatus's own schema.prisma comment -- but this
+  // summary's job is to describe the current operational state, not
+  // surface a count of old rows nothing can act on any more.)
   totalUnavailableQuantity: string;
   totalOutstandingQuantity: string;
   totalConfirmedLostQuantity: string;
@@ -647,7 +610,6 @@ export async function getLostSalesReportSummary(options?: { includeDemo?: boolea
   const currentDemandWhere: Prisma.UnfulfilledDemandWhereInput = { ...demandWhere, status: { not: "SUPERSEDED" } };
 
   const [
-    awaitingDecisionCount,
     unavailableTotal,
     outstandingTotal,
     confirmedLostTotal,
@@ -656,7 +618,6 @@ export async function getLostSalesReportSummary(options?: { includeDemo?: boolea
     shortageByCustomer,
     lossReasons,
   ] = await Promise.all([
-    prisma.unfulfilledDemand.count({ where: { ...currentDemandWhere, status: "PENDING_DECISION" } }),
     prisma.unfulfilledDemand.aggregate({ where: currentDemandWhere, _sum: { unavailableQuantity: true } }),
     prisma.unfulfilledDemand.aggregate({ where: currentDemandWhere, _sum: { outstandingQuantity: true } }),
     prisma.unfulfilledDemand.aggregate({ where: demandWhere, _sum: { confirmedLostQuantity: true } }),
@@ -702,7 +663,6 @@ export async function getLostSalesReportSummary(options?: { includeDemo?: boolea
   const customerNameById = new Map(customers.map((customer) => [customer.id, customer.name]));
 
   return {
-    awaitingDecisionCount,
     totalUnavailableQuantity: (unavailableTotal._sum.unavailableQuantity ?? new Prisma.Decimal(0)).toString(),
     totalOutstandingQuantity: (outstandingTotal._sum.outstandingQuantity ?? new Prisma.Decimal(0)).toString(),
     totalConfirmedLostQuantity: (confirmedLostTotal._sum.confirmedLostQuantity ?? new Prisma.Decimal(0)).toString(),
@@ -734,5 +694,144 @@ export async function getLostSalesReportSummary(options?: { includeDemo?: boolea
       recordCount: row._count._all,
       totalQuantity: (row._sum.quantity ?? new Prisma.Decimal(0)).toString(),
     })),
+  };
+}
+
+/**
+ * Follow-up fix ("Returned-claim lost sales must... Show returned-claim
+ * losses in the same Lost Sales Analytics page, KPIs, charts and reports
+ * as shortage-based lost sales"). The row-level counterpart to
+ * lib/returns-credits/lost-sale-rows.ts's listReturnedProductLostSaleRows,
+ * read by lib/lost-sales/consolidated-analytics.ts to merge both sources
+ * into one view.
+ *
+ * Lists LostSaleRecord directly (Source B's own underlying table --
+ * getSupplyShortageLostSalesValue's whole-business summary stays
+ * unchanged and untouched), not UnfulfilledDemand: a LostSaleRecord row
+ * IS the confirmed-loss event (one per demand, by this round's
+ * auto-confirm rule -- see LostSaleRecord's own schema.prisma comment),
+ * the exact same granularity as a ClaimReturnLostSale row on the
+ * returned-product side. Reading at this granularity means this
+ * function unions the two sources' already-decided rows rather than
+ * re-deriving either side's "is this a real loss" business logic (which
+ * remains exclusively in create-unfulfilled-demand.ts's auto-confirm and
+ * lib/returns-credits/return-lost-sale.ts respectively).
+ *
+ * Currency: LostSaleRecord/UnfulfilledDemand carry no currency column at
+ * all (a known, pre-existing limitation -- see lib/reporting/
+ * financial-exposure.ts's own module comment). This function resolves a
+ * REAL one instead of leaving the figure unlabeled: CustomerOrder.currency
+ * is a required, always-set column (`@default("USD")`), so every row
+ * below carries its originating order's actual recorded currency, never
+ * an invented or assumed one.
+ */
+export type ShortageLostSaleRow = {
+  id: string; // LostSaleRecord.id
+  unfulfilledDemandId: string;
+  orderId: string;
+  orderReference: string;
+  customerId: string;
+  customerName: string;
+  productId: string | null;
+  sapItemCodeSnapshot: string | null;
+  productDescriptionSnapshot: string;
+  /** Product.unitOfMeasure, joined live -- null when productId is null or the product has none recorded. */
+  unitOfMeasure: string | null;
+  /** LostSaleRecord.quantity -- always equal to the parent demand's full confirmedLostQuantity, per this round's auto-confirm rule. */
+  quantity: string;
+  unitPrice: string | null;
+  totalValue: string | null;
+  /** CustomerOrder.currency -- never null (see this function's own module comment). */
+  currencyCode: string;
+  reason: string; // LostSaleReason
+  salespersonId: string | null;
+  confirmedAt: Date;
+  isDemo: boolean;
+};
+
+export type ListShortageLostSalesResult = {
+  rows: ShortageLostSaleRow[];
+  totalMatching: number;
+  truncated: boolean;
+};
+
+export type ShortageLostSaleFilters = {
+  includeDemo: boolean;
+  customerId?: string | null;
+  productId?: string | null;
+  salespersonId?: string | null;
+  /** Applied against LostSaleRecord.confirmedAt -- the "this loss was confirmed" timestamp, the same role ClaimReturnLostSale.recordedAt plays on the returned-product side. */
+  dateRange: { gte?: Date; lt?: Date };
+};
+
+const MAX_SHORTAGE_LOST_SALE_ROWS = 10_000;
+
+export async function listShortageLostSaleRows(filters: ShortageLostSaleFilters): Promise<ListShortageLostSalesResult> {
+  const where: Prisma.LostSaleRecordWhereInput = {
+    confirmedAt: filters.dateRange,
+    unfulfilledDemand: {
+      ...(filters.includeDemo ? {} : { isDemo: false }),
+      ...(filters.customerId ? { customerId: filters.customerId } : {}),
+      ...(filters.productId ? { productId: filters.productId } : {}),
+      ...(filters.salespersonId ? { order: { salespersonId: filters.salespersonId } } : {}),
+    },
+  };
+
+  const [totalMatching, rawRows] = await Promise.all([
+    prisma.lostSaleRecord.count({ where }),
+    prisma.lostSaleRecord.findMany({
+      where,
+      take: MAX_SHORTAGE_LOST_SALE_ROWS,
+      orderBy: { confirmedAt: "asc" },
+      select: {
+        id: true,
+        unfulfilledDemandId: true,
+        quantity: true,
+        reason: true,
+        estimatedUnitPrice: true,
+        estimatedValue: true,
+        confirmedAt: true,
+        unfulfilledDemand: {
+          select: {
+            orderId: true,
+            order: { select: { reference: true, salespersonId: true, currency: true } },
+            customerId: true,
+            customer: { select: { name: true } },
+            productId: true,
+            product: { select: { unitOfMeasure: true } },
+            sapItemCodeSnapshot: true,
+            productDescriptionSnapshot: true,
+            isDemo: true,
+          },
+        },
+      },
+    }),
+  ]);
+
+  const rows: ShortageLostSaleRow[] = rawRows.map((row) => ({
+    id: row.id,
+    unfulfilledDemandId: row.unfulfilledDemandId,
+    orderId: row.unfulfilledDemand.orderId,
+    orderReference: row.unfulfilledDemand.order.reference,
+    customerId: row.unfulfilledDemand.customerId,
+    customerName: row.unfulfilledDemand.customer.name,
+    productId: row.unfulfilledDemand.productId,
+    sapItemCodeSnapshot: row.unfulfilledDemand.sapItemCodeSnapshot,
+    productDescriptionSnapshot: row.unfulfilledDemand.productDescriptionSnapshot,
+    unitOfMeasure: row.unfulfilledDemand.product?.unitOfMeasure ?? null,
+    quantity: row.quantity.toString(),
+    unitPrice: row.estimatedUnitPrice?.toString() ?? null,
+    totalValue: row.estimatedValue?.toString() ?? null,
+    currencyCode: row.unfulfilledDemand.order.currency,
+    reason: row.reason,
+    salespersonId: row.unfulfilledDemand.order.salespersonId,
+    confirmedAt: row.confirmedAt,
+    isDemo: row.unfulfilledDemand.isDemo,
+  }));
+
+  return {
+    rows,
+    totalMatching,
+    truncated: totalMatching > MAX_SHORTAGE_LOST_SALE_ROWS,
   };
 }

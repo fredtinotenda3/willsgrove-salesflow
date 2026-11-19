@@ -23,8 +23,7 @@ import DeliveryOutcomePanel from "./delivery-outcome-panel";
  * handover, and per-matched-line SAP item code / description / authorized
  * quantity / actual invoiced quantity / remaining quantity / difference.
  * ReconciliationPanel is the one client-rendered island (manual match /
- * cannot-link / reopen / rerun-match / note actions), same split as
- * app/lost-sales/[id]/page.tsx's DecisionPanel.
+ * cannot-link / reopen / rerun-match / note actions).
  */
 export const instant = false;
 

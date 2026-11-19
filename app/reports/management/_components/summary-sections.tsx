@@ -2,9 +2,8 @@ import type { SalesPipelineReport, SalesPipelineFunnel } from "@/lib/reporting/s
 import type { FulfilmentIntelligenceReport } from "@/lib/reporting/fulfilment-intelligence";
 import type { FinancialExposureReport } from "@/lib/reporting/financial-exposure";
 import type { CommunicationsMonitoringReport } from "@/lib/reporting/communications-monitoring";
-import type { LostSalesReportSummary } from "@/lib/lost-sales/queries";
 import type { QuotationDashboardCounts } from "@/lib/quotations/queries";
-import type { OperationalSummaryPeriod } from "@/lib/reporting/management-reports";
+import type { OperationalSummaryPeriod, LostSalesManagementReport } from "@/lib/reporting/management-reports";
 import { LOST_SALE_REASON_LABELS } from "@/lib/lost-sales/display";
 import { CLAIM_CATEGORY_LABELS, CLAIM_PRIORITY_LABELS, CLAIM_STATUS_LABELS } from "@/lib/invoice-claims/display";
 import { QUOTATION_STATUS_LABELS } from "@/lib/quotations/display";
@@ -510,15 +509,21 @@ export function QuotationsPerformanceSections({ data }: { data: QuotationsPerfor
 // Lost sales (management-reports.ts's getLostSalesManagementReport)
 // ---------------------------------------------------------------------------
 
-export function LostSalesSections({ data }: { data: LostSalesReportSummary }) {
+export function LostSalesSections({ data }: { data: LostSalesManagementReport }) {
   const maxReason = Math.max(1, ...data.lossReasonBreakdown.map((r) => r.recordCount));
 
   return (
     <div className="space-y-6">
-      <SectionCard title="Lost sales, right now" description="A whole-business current total, not date-filtered -- reused as-is from the existing lost-sales summary">
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <MetricCard title="Awaiting manager decision" value={String(data.awaitingDecisionCount)} dataQuality="actual" />
-          <MetricCard title="Unavailable quantity" value={quantity(data.totalUnavailableQuantity)} dataQuality="actual" />
+      <SectionCard title="Lost sales, right now" description="A whole-business current total, not date-filtered -- reused as-is from the existing lost-sales summary. No &quot;awaiting manager decision&quot; tile here -- every shortage is automatically cancelled and confirmed lost the moment it is recorded (spec PART A), so there is no longer a decision step to await.">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+          <MetricCard
+            title="Unavailable quantity"
+            value={quantity(data.totalUnavailableQuantity)}
+            description={`≈ ${quantity(data.estimatedValue)} in estimated value${
+              data.demandsWithoutEstimate > 0 ? ` (excludes ${data.demandsWithoutEstimate} demand(s) with no resolvable price)` : ""
+            }`}
+            dataQuality="actual"
+          />
           <MetricCard title="Outstanding quantity" value={quantity(data.totalOutstandingQuantity)} dataQuality="actual" />
           <MetricCard title="Confirmed lost quantity" value={quantity(data.totalConfirmedLostQuantity)} dataQuality="actual" />
         </div>
@@ -598,12 +603,25 @@ export function OrderStatusBreakdownSection({
   );
 }
 
-export function ProductShortageBreakdownSection({ data }: { data: { topProducts: { productDescription: string; lineCount: number; totalUnavailableQuantity: string }[]; totalLines: number } }) {
+export function ProductShortageBreakdownSection({
+  data,
+}: {
+  data: { topProducts: { productDescription: string; lineCount: number; totalUnavailableQuantity: string; totalUnavailableValue?: string; linesWithoutPrice?: number }[]; totalLines: number };
+}) {
   return (
     <RankedList
       title="Top shortage products"
       description={`Ranked by total unavailable quantity across ${data.totalLines} matching picking line(s), not just the current page`}
-      rows={data.topProducts.map((p) => ({ label: p.productDescription, detail: `${quantity(p.totalUnavailableQuantity)} units short, ${p.lineCount} line(s)` }))}
+      rows={data.topProducts.map((p) => ({
+        label: p.productDescription,
+        detail: `${quantity(p.totalUnavailableQuantity)} units short, ${p.lineCount} line(s)${
+          p.totalUnavailableValue !== undefined
+            ? ` -- ≈ ${quantity(p.totalUnavailableValue)} in value${
+                p.linesWithoutPrice ? ` (${p.linesWithoutPrice} line(s) with no approved price excluded)` : ""
+              }`
+            : ""
+        }`,
+      }))}
       empty="No shortages match these filters."
     />
   );

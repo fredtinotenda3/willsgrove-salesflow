@@ -37,7 +37,7 @@ function emptyFilters(overrides: Partial<ReportFilters> = {}): ReportFilters {
     priority: null,
     recommendationStatus: null,
     unfulfilledDemandStatus: null,
-    customerDecisionType: null,
+    lostSaleSource: null,
     ...overrides,
   };
 }

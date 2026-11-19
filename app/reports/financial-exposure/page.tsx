@@ -30,7 +30,7 @@ const EMPTY_FILTERS = {
   currency: null,
   lostSalesReason: null,
   unfulfilledDemandStatus: null,
-  customerDecisionType: null,
+  lostSaleSource: null,
   productCategory: null,
   productSearch: null,
   sapItemCode: null,
@@ -185,7 +185,7 @@ export default async function FinancialExposureReportPage({ searchParams }: Rout
           <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
             <h2 className="text-sm font-bold text-[#17251E]">Lost sales, by source</h2>
             <p className="mt-1 text-xs text-[#849087]">{report.lostSalesBySource.note}</p>
-            <div className="mt-4 grid grid-cols-1 gap-6 xl:grid-cols-2">
+            <div className="mt-4 grid grid-cols-1 gap-6 xl:grid-cols-3">
               <div>
                 <p className="text-xs font-semibold text-[#17251E]">{report.lostSalesBySource.sourceA.label}</p>
                 <p className="mt-1 text-[11px] text-[#849087]">{report.lostSalesBySource.sourceA.description}</p>
@@ -219,6 +219,37 @@ export default async function FinancialExposureReportPage({ searchParams }: Rout
                   <Row label="Estimated supply lost sales value" value={report.lostSalesBySource.sourceB.estimatedValue} />
                   <Row label="Lost-sale records priced" value={String(report.lostSalesBySource.sourceB.recordsWithEstimate)} />
                   <Row label="Lost-sale records without a price (excluded)" value={String(report.lostSalesBySource.sourceB.recordsWithoutEstimate)} />
+                </div>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-[#17251E]">{report.lostSalesBySource.sourceC.label}</p>
+                <p className="mt-1 text-[11px] text-[#849087]">{report.lostSalesBySource.sourceC.description}</p>
+                {report.lostSalesBySource.sourceC.byCurrency.length === 0 ? (
+                  <EmptyState message="No confirmed-loss returns recorded." />
+                ) : (
+                  <div className="mt-3 overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead className="text-[11px] uppercase tracking-wide text-[#849087]">
+                        <tr>
+                          <th className="py-2 pr-4">Currency</th>
+                          <th className="py-2">Confirmed loss value</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#EEF1ED]">
+                        {report.lostSalesBySource.sourceC.byCurrency.map((row) => (
+                          <tr key={row.currencyCode}>
+                            <td className="py-2 pr-4 font-semibold">{row.currencyCode}</td>
+                            <td className="py-2 tabular-nums">{row.estimatedValue}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <div className="mt-3 space-y-2 text-sm">
+                  <Row label="Confirmed-loss returns, total" value={String(report.lostSalesBySource.sourceC.totalLossRecords)} />
+                  <Row label="Confirmed-loss returns priced" value={String(report.lostSalesBySource.sourceC.recordsWithEstimate)} />
+                  <Row label="Confirmed-loss returns without a price (excluded)" value={String(report.lostSalesBySource.sourceC.recordsWithoutEstimate)} />
                 </div>
               </div>
             </div>

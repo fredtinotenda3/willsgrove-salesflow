@@ -31,6 +31,44 @@ export async function readPriceListCsvUpload(formData: FormData): Promise<CsvUpl
   return { ok: true, fileName: file.name, csvText: await file.text() };
 }
 
+// Real Business Data Onboarding round (spec PART A, Phase 4a): the real
+// SAP price-list export the business has (business-data/Prices.xlsx) is
+// a 7-sheet .xlsx workbook, not the invented flat CSV shape
+// lib/sap-price-list-csv.ts was built around (see lib/sap-price-list-xlsx.ts's
+// module comment for why that's read directly rather than hand-converted
+// first). This widens the upload accepted by both price-list import API
+// routes to either format -- readPriceListCsvUpload above is UNCHANGED
+// and still used wherever a .csv is actually uploaded; this is an
+// additional, format-detecting entry point, not a replacement.
+export type PriceListFileUploadResult =
+  | { ok: true; fileName: string; kind: "csv"; csvText: string }
+  | { ok: true; fileName: string; kind: "xlsx"; buffer: Buffer }
+  | { ok: false; status: number; message: string };
+
+export async function readPriceListFileUpload(formData: FormData): Promise<PriceListFileUploadResult> {
+  const file = formData.get("file");
+
+  if (!(file instanceof File)) {
+    return { ok: false, status: 400, message: "Please select a price-list CSV or Excel (.xlsx) file." };
+  }
+  if (file.size === 0) {
+    return { ok: false, status: 400, message: "The selected file is empty." };
+  }
+  if (file.size > MAX_FILE_SIZE) {
+    return { ok: false, status: 413, message: "The file exceeds the 25 MB size limit." };
+  }
+
+  const lowerName = file.name.toLowerCase();
+  if (lowerName.endsWith(".csv")) {
+    return { ok: true, fileName: file.name, kind: "csv", csvText: await file.text() };
+  }
+  if (lowerName.endsWith(".xlsx")) {
+    const arrayBuffer = await file.arrayBuffer();
+    return { ok: true, fileName: file.name, kind: "xlsx", buffer: Buffer.from(arrayBuffer) };
+  }
+  return { ok: false, status: 400, message: "Only .csv or .xlsx files are supported." };
+}
+
 // `type` alias, not `interface` -- see the identical comment in
 // lib/tax-code-import.ts. plan.changedLists carries this wholesale as
 // `incoming: ListDefinition`, and that array is embedded as-is
@@ -182,7 +220,24 @@ export async function planPriceListImport(rows: PriceListEntryRow[]): Promise<Pr
       continue;
     }
 
-    const hasChanges = existing.unitPrice !== row.unitPrice || existing.validTo !== row.validTo;
+    // Real Business Data Onboarding round (spec PART A, Phase 4): a plain
+    // string comparison here is wrong, and was never exercised against a
+    // real database before this round's DB-integration test caught it
+    // (tests/price-list-customer-pricing-db.integration.test.ts) --
+    // existing.unitPrice comes from a Prisma Decimal(18,4) column's own
+    // .toString(), which strips trailing zeros ("0.7000" -> "0.7"), while
+    // an incoming row's unitPrice is whatever string its source parser
+    // captured verbatim (lib/sap-price-list-xlsx.ts keeps "USD 0.70"'s
+    // "0.70" exactly; lib/sap-price-list-csv.ts's UNIT_PRICE column can
+    // equally carry a trailing zero). "0.70" !== "0.7" as plain strings
+    // even though they're the same price, which would have marked every
+    // such entry "changed" on every single re-import forever -- re-import
+    // idempotency (this file's own docs/milestones claim, and the Price
+    // Lists Import page's explicit "nothing has been saved yet" preview
+    // promise) depends on this comparison being numeric, not textual.
+    // Prisma.Decimal is this codebase's own established pattern for exact
+    // decimal comparison (lib/quotations/calculations.ts and others).
+    const hasChanges = !new Prisma.Decimal(existing.unitPrice).equals(new Prisma.Decimal(row.unitPrice)) || existing.validTo !== row.validTo;
 
     if (hasChanges) {
       changedEntries.push({

@@ -9,7 +9,8 @@ import { Loader2, Link2, Ban, RotateCcw } from "lucide-react";
  * reconciliation actions (spec section 7): match it to a specific order
  * line by hand, mark it as having nothing to do with SalesFlow, or reopen
  * a previous decision. Same "re-fetch via router.refresh(), don't guess
- * at the new state" convention as app/lost-sales/[id]/decision-panel.tsx.
+ * at the new state" convention this project uses throughout its action
+ * panels.
  */
 
 type CandidateOrderLine = {

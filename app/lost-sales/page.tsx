@@ -10,19 +10,26 @@ import {
 import { unfulfilledDemandStatusValues } from "@/lib/lost-sales/validation";
 import { initialsFor, avatarColorFor } from "@/lib/order-display";
 import Sidebar from "../components/sidebar";
-import { TrendingDown, ChevronRight, ChevronLeft, Clock3, PackageX, Ban } from "lucide-react";
+import { TrendingDown, ChevronRight, ChevronLeft, PackageX, Ban } from "lucide-react";
 
 /**
  * Milestone 4 (Lost-Sales Management).
  *
  * The /lost-sales list page -- spec section 6's required list of
  * unavailable/unfulfilled demand, plus a handful of the spec section 7
- * figures (awaiting-decision count, total outstanding, total confirmed
- * lost) as plain stat tiles. Deliberately no chart/trend view yet --
- * "avoid unnecessary dashboard complexity... before advanced BI" (spec
- * section 6) -- the full breakdown (top products/customers/reasons)
- * lives at GET /api/lost-sales/reports for a future, explicitly-asked-for
- * reporting page to build on without any schema change.
+ * figures (total unavailable, total outstanding, total confirmed lost) as
+ * plain stat tiles. Deliberately no chart/trend view yet -- "avoid
+ * unnecessary dashboard complexity... before advanced BI" (spec section
+ * 6) -- the full breakdown (top products/customers/reasons) lives at GET
+ * /api/lost-sales/reports for a future, explicitly-asked-for reporting
+ * page to build on without any schema change.
+ *
+ * Real Business Data Onboarding round (spec PART A): the "Awaiting
+ * customer decision" tile is gone -- there is no decision step left to
+ * await (every shortage is automatically cancelled and confirmed lost the
+ * moment it's recorded; see lib/lost-sales/create-unfulfilled-demand.ts).
+ * Replaced with "Total unavailable quantity (current)," the natural
+ * live-shortage figure now that there's no pending-decision count to show.
  *
  * Same "deliberately simple Server Component list, plain query-string
  * pagination" choice as app/fulfilment/page.tsx.
@@ -77,9 +84,9 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
           <section>
             <h1 className="text-2xl font-bold tracking-tight text-[#17251E]">Unfulfilled Demand</h1>
             <p className="mt-1 text-sm text-gray-500">
-              What the warehouse couldn&apos;t supply, what the customer decided to do about it, and what has
-              actually become a confirmed lost sale -- kept as three distinct things throughout. For trends,
-              breakdowns and a filterable drilldown, see{" "}
+              What the warehouse couldn&apos;t supply, automatically cancelled and recorded as a confirmed lost sale
+              the moment it was found short -- no customer decision step. For trends, breakdowns and a filterable
+              drilldown, see{" "}
               <Link href="/lost-sales/analytics" className="font-semibold text-[#173D2E] hover:underline">
                 Lost Sales Analytics
               </Link>
@@ -90,11 +97,11 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
           <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div className="flex items-center gap-3 rounded-xl border border-[#E8EBE6] bg-white p-4">
               <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-50 text-amber-600">
-                <Clock3 size={18} />
+                <PackageX size={18} />
               </div>
               <div>
-                <p className="text-lg font-bold text-[#17251E]">{summary.awaitingDecisionCount}</p>
-                <p className="text-xs text-gray-400">Awaiting customer decision</p>
+                <p className="text-lg font-bold text-[#17251E]">{summary.totalUnavailableQuantity}</p>
+                <p className="text-xs text-gray-400">Total unavailable quantity (current)</p>
               </div>
             </div>
             <div className="flex items-center gap-3 rounded-xl border border-[#E8EBE6] bg-white p-4">

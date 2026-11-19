@@ -104,12 +104,17 @@ export function RateStat({ label, ratePercent, sampleSize, sampleLabel = "record
   );
 }
 
-function buildPageHref(basePath: string, searchParams: Record<string, string | undefined>, page: number): string {
+function buildPageHref(
+  basePath: string,
+  searchParams: Record<string, string | undefined>,
+  page: number,
+  pageParam: string
+): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(searchParams)) {
-    if (value !== undefined && value !== "" && key !== "page") params.set(key, value);
+    if (value !== undefined && value !== "" && key !== pageParam) params.set(key, value);
   }
-  params.set("page", String(page));
+  params.set(pageParam, String(page));
   return `${basePath}?${params.toString()}`;
 }
 
@@ -120,6 +125,7 @@ export function Pagination({
   totalPages,
   totalItems,
   pageSize,
+  pageParam = "page",
 }: {
   basePath: string;
   searchParams: Record<string, string | undefined>;
@@ -127,6 +133,15 @@ export function Pagination({
   totalPages: number;
   totalItems: number;
   pageSize: number;
+  /**
+   * Follow-up fix (consolidated lost-sales drilldown). Defaults to "page"
+   * -- every pre-existing call site keeps that behaviour unchanged. A
+   * page with two independently-paginated tables (e.g.
+   * /lost-sales/analytics's shortage-only order-level drilldown AND the
+   * new combined-source drilldown) passes a distinct query-param name
+   * for its second table, so paging through one never resets the other.
+   */
+  pageParam?: string;
 }) {
   const start = totalItems === 0 ? 0 : (page - 1) * pageSize + 1;
   const end = Math.min(totalItems, page * pageSize);
@@ -137,7 +152,7 @@ export function Pagination({
       </p>
       <div className="flex items-center gap-2">
         <Link
-          href={buildPageHref(basePath, searchParams, Math.max(1, page - 1))}
+          href={buildPageHref(basePath, searchParams, Math.max(1, page - 1), pageParam)}
           aria-disabled={page <= 1}
           className={`rounded-lg border border-[#E1E7E2] px-3 py-1.5 font-semibold ${page <= 1 ? "pointer-events-none opacity-40" : "hover:bg-gray-50"}`}
         >
@@ -147,7 +162,7 @@ export function Pagination({
           Page {page} of {totalPages}
         </span>
         <Link
-          href={buildPageHref(basePath, searchParams, Math.min(totalPages, page + 1))}
+          href={buildPageHref(basePath, searchParams, Math.min(totalPages, page + 1), pageParam)}
           aria-disabled={page >= totalPages}
           className={`rounded-lg border border-[#E1E7E2] px-3 py-1.5 font-semibold ${page >= totalPages ? "pointer-events-none opacity-40" : "hover:bg-gray-50"}`}
         >

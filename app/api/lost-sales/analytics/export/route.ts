@@ -3,6 +3,7 @@ import { requireUserOrResponse } from "@/lib/auth/current-user";
 import { parseReportFilters, dateRangeToTimestampFilter, resolveEffectiveDateRange } from "@/lib/reporting/filters";
 import { listAllUnfulfilledDemandsForExport } from "@/lib/lost-sales/queries";
 import { UNFULFILLED_DEMAND_STATUS_LABELS } from "@/lib/lost-sales/display";
+import { multiplyDecimalStrings } from "@/lib/lost-sales/validation";
 import { buildCsv, recordReportExport, csvResponseHeaders } from "@/lib/reporting/export-csv";
 
 /**
@@ -38,16 +39,28 @@ export async function GET(request: NextRequest) {
       dateFrom,
       dateTo,
       reason: parsed.filters.lostSalesReason ?? undefined,
-      decisionType: parsed.filters.customerDecisionType ?? undefined,
     });
 
+    // Follow-up fix: "since now we have prices, the graphs should now
+    // have prices too... the quantity should be associated with its
+    // price" -- requestedValue/foundValue reuse this demand's own
+    // estimatedUnitPrice snapshot (the SAME price already used for
+    // estimatedValue, Source B's unavailable-quantity figure), via the
+    // one existing decimal-string multiplier this module already trusts
+    // for money math (lib/lost-sales/validation.ts's
+    // multiplyDecimalStrings -- see lib/lost-sales/estimate-value.ts's
+    // own use of it). null (never a fabricated 0) whenever
+    // estimatedUnitPrice itself is null, same "never invent a value"
+    // rule as estimatedValue.
     const csvRows = demands.map((demand) => ({
       orderReference: demand.orderReference,
       customerName: demand.customerName,
       sapItemCode: demand.sapItemCodeSnapshot ?? "",
       productDescription: demand.productDescriptionSnapshot,
       requestedQuantity: demand.requestedQuantity,
+      requestedValue: demand.estimatedUnitPrice ? (multiplyDecimalStrings(demand.estimatedUnitPrice, demand.requestedQuantity) ?? "") : "",
       foundQuantity: demand.foundQuantity,
+      foundValue: demand.estimatedUnitPrice ? (multiplyDecimalStrings(demand.estimatedUnitPrice, demand.foundQuantity) ?? "") : "",
       unavailableQuantity: demand.unavailableQuantity,
       outstandingQuantity: demand.outstandingQuantity,
       confirmedLostQuantity: demand.confirmedLostQuantity,
@@ -63,7 +76,9 @@ export async function GET(request: NextRequest) {
       { key: "sapItemCode", header: "SAP item code" },
       { key: "productDescription", header: "Product" },
       { key: "requestedQuantity", header: "Requested quantity" },
+      { key: "requestedValue", header: "Requested value" },
       { key: "foundQuantity", header: "Found quantity" },
+      { key: "foundValue", header: "Found value" },
       { key: "unavailableQuantity", header: "Unavailable quantity" },
       { key: "outstandingQuantity", header: "Outstanding quantity" },
       { key: "confirmedLostQuantity", header: "Confirmed lost quantity" },

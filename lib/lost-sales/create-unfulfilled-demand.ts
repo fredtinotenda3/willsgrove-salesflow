@@ -2,12 +2,14 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import type { PrismaTransactionClient } from "@/lib/prisma";
 import { resolveOriginalDemandFields } from "@/lib/lost-sales/resolve-fields";
-import { deriveUnfulfilledDemandStatus } from "@/lib/lost-sales/validation";
 import { resolveEstimatedLostSaleValue } from "@/lib/lost-sales/estimate-value";
 
 /**
- * Milestone 4 (Lost-Sales Management), extended by the Additional
- * Implementation Requirements ("lost-sales automation," section 1).
+ * Milestone 4 (Lost-Sales Management), rewritten for the Real Business
+ * Data Onboarding round's removal of the Customer Decision workflow
+ * (spec PART A, section 4): "Requested = Found + Unavailable. There is no
+ * customer approval step. The system should automatically: Cancel the
+ * unavailable quantity... Record it as a lost sale."
  *
  * Called from INSIDE lib/picking/authorize-picking.ts's existing
  * transaction (never opens its own) the instant a COMPLETED PickingSession
@@ -16,20 +18,32 @@ import { resolveEstimatedLostSaleValue } from "@/lib/lost-sales/estimate-value";
  * PickingLine whose unavailableQuantity > 0; a fully-available line
  * creates none at all (spec test scenario 1).
  *
- * Two behaviours added on top of Milestone 4's original, unchanged
- * creation logic:
+ * Three behaviours, all in the SAME transaction as the shortage itself:
  *
  *   1. Automatic estimate (spec: "record the relevant date and applicable
- *      selling price... calculate the estimated lost-sales value"). Reuses
- *      the exact same resolveEstimatedLostSaleValue() the deliberate,
- *      manual lib/lost-sales/confirm-lost-sale.ts action already uses --
- *      so the two never drift into two different pricing rules -- but
- *      calls it unconditionally, right here, the moment the shortage
- *      itself is recorded, rather than waiting for that separate manual
- *      step (which the spec's section 2 removes from the user interface
- *      precisely because this estimate is no longer conditional on it).
+ *      selling price... calculate the estimated lost-sales value"), via
+ *      resolveEstimatedLostSaleValue() -- OrderLine.approvedUnitPrice
+ *      first, then the customer's PriceList, never a guessed/zero price.
  *
- *   2. Supersession (spec: "automatic lost sales must update, not
+ *   2. Automatic cancellation AND confirmation, in the SAME write, with
+ *      NO intervening decision step: cancelledQuantity and
+ *      confirmedLostQuantity are both set equal to the full
+ *      unavailableQuantity, outstandingQuantity/substitutedQuantity stay
+ *      0, status is CONFIRMED_LOST, and a LostSaleRecord is created
+ *      alongside the UnfulfilledDemand itself, reusing the SAME `estimate`
+ *      already resolved above for its own estimatedUnitPrice/
+ *      estimatedValue/estimatedValueSource -- so the two figures can never
+ *      diverge, because they are quite literally the same resolved value
+ *      written twice in one transaction. reason is picked mechanically,
+ *      never guessed at a business-judgement level: INSUFFICIENT_QUANTITY
+ *      when something was found but not enough, PRODUCT_UNAVAILABLE when
+ *      nothing was found at all. decisionSource is always
+ *      AUTOMATIC_SYSTEM_RECORDED (lib/lost-sales/validation.ts) and
+ *      confirmedById is the same actorId that authorized the picking
+ *      session -- there is no separate human "confirm" action to attribute
+ *      this to.
+ *
+ *   3. Supersession (spec: "automatic lost sales must update, not
  *      duplicate... if picking records are corrected... update the
  *      corresponding lost-sales record consistently"). Picking a session
  *      a SECOND time for the same order (lib/picking/start-picking.ts
@@ -45,17 +59,13 @@ import { resolveEstimatedLostSaleValue } from "@/lib/lost-sales/estimate-value";
  *      supersededByDemandId, or linked to nothing if the correction found
  *      the line fully available (no replacement is created in that case:
  *      the spec's own "corrected to 100: reverse the estimate to zero"
- *      example). The superseded row's quantity buckets, decision history
- *      (CustomerDecisionEvent) and any lost-sale confirmations
- *      (LostSaleRecord) are never touched, deleted or recomputed -- only
- *      its `status` and `supersededByDemandId` change -- so nothing the
- *      spec calls out as needing preservation ("a customer decision must
- *      not silently erase the original unavailable quantity or its
- *      history") is lost. See this function's own in-line comment at the
- *      supersession check for the one deliberately-undecided edge case
- *      (a correction arriving after a decision/confirmation already
- *      exists on the superseded row) and this round's delivery report for
- *      the reasoning behind it.
+ *      example). The superseded row's quantity buckets and its own
+ *      LostSaleRecord are never touched, deleted or recomputed -- only its
+ *      `status` and `supersededByDemandId` change -- and the replacement
+ *      row gets its OWN fresh LostSaleRecord for its own (corrected)
+ *      quantity, so "update, not duplicate" holds exactly as it did under
+ *      the prior design, just with the confirmation happening
+ *      automatically instead of waiting on a human.
  */
 export type CreateUnfulfilledDemandsResult = { createdCount: number; supersededCount: number };
 
@@ -168,17 +178,13 @@ export async function createUnfulfilledDemandsForSession(
 
     const unavailableQuantityText = line.unavailableQuantity!.toString();
 
-    // Always PENDING_DECISION at creation (every bucket starts at zero) --
-    // still computed via the shared deriveUnfulfilledDemandStatus rather
-    // than hardcoded, so there is exactly one definition of this mapping
-    // in the codebase.
-    const status = deriveUnfulfilledDemandStatus({
-      unavailableQuantity: unavailableQuantityText,
-      outstandingQuantity: "0.0000",
-      cancelledQuantity: "0.0000",
-      substitutedQuantity: "0.0000",
-      confirmedLostQuantity: "0.0000",
-    });
+    // PART A, section 4: "There is no customer approval step. The system
+    // should automatically: Cancel the unavailable quantity... Record it
+    // as a lost sale." CONFIRMED_LOST is therefore the only status a newly
+    // created demand can ever have -- cancelledQuantity and
+    // confirmedLostQuantity are both set equal to the full
+    // unavailableQuantity below, with no intervening bucket state.
+    const status = "CONFIRMED_LOST" as const;
 
     // foundQuantity is never actually null here: complete-picking.ts
     // already requires found + unavailable === requested for EVERY line
@@ -216,11 +222,58 @@ export async function createUnfulfilledDemandsForSession(
         foundQuantity,
         unavailableQuantity: line.unavailableQuantity!,
         status,
+        // No decision step ever reduces these buckets below the full
+        // shortage -- see the status comment above.
+        cancelledQuantity: line.unavailableQuantity!,
+        confirmedLostQuantity: line.unavailableQuantity!,
         estimatedUnitPrice: estimate?.unitPrice ?? null,
         estimatedValue: estimate?.value ?? null,
         estimatedValueSource: estimate?.source ?? null,
       },
       select: { id: true },
+    });
+
+    // Additional Implementation Requirements (lost-sales automation,
+    // section 1) / PART A, section 4: the confirmed LostSaleRecord is
+    // created in the SAME transaction, at the SAME moment, as the
+    // UnfulfilledDemand itself -- never a separate human "confirm" step.
+    // `reason` is picked mechanically, never a business judgement call:
+    // INSUFFICIENT_QUANTITY when the line found something but not enough,
+    // PRODUCT_UNAVAILABLE when nothing was found at all. The estimate
+    // fields below are the exact same `estimate` object already resolved
+    // for the UnfulfilledDemand above, so totalEstimatedLostValue and
+    // totalConfirmedLostValue can never diverge for this row.
+    const reason = foundQuantity.isZero() ? "PRODUCT_UNAVAILABLE" : "INSUFFICIENT_QUANTITY";
+    await tx.lostSaleRecord.create({
+      data: {
+        unfulfilledDemandId: created.id,
+        quantity: line.unavailableQuantity!,
+        reason,
+        reasonDetail: null,
+        decisionSource: "AUTOMATIC_SYSTEM_RECORDED",
+        estimatedUnitPrice: estimate?.unitPrice ?? null,
+        estimatedValue: estimate?.value ?? null,
+        estimatedValueSource: estimate?.source ?? null,
+        remarks: null,
+        confirmedById: actorId,
+        confirmedAt,
+      },
+    });
+    await tx.auditEvent.create({
+      data: {
+        actorId,
+        action: "LOST_SALE_CONFIRMED",
+        entityType: "UnfulfilledDemand",
+        entityId: created.id,
+        afterData: {
+          quantity: unavailableQuantityText,
+          reason,
+          decisionSource: "AUTOMATIC_SYSTEM_RECORDED",
+          estimatedUnitPrice: estimate?.unitPrice ?? null,
+          estimatedValue: estimate?.value ?? null,
+          estimatedValueSource: estimate?.source ?? null,
+        },
+      },
     });
 
     // Link the correction to whatever it replaces, in the same

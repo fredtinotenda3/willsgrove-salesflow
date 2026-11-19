@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 
 /**
- * Milestone 4 (Lost-Sales Management). DB-backed acceptance tests for
- * the full lost-sales lifecycle -- automatic UnfulfilledDemand creation
- * on authorization, customer-decision recording (every bucket),
- * substitute acceptance, outstanding-to-lost conversion, duplicate/
- * over-allocation prevention, original-PO immutability, audit history,
- * and reporting -- against a REAL database through a REAL generated
- * @prisma/client.
+ * Milestone 4 (Lost-Sales Management), rewritten for the Real Business
+ * Data Onboarding round's removal of the Customer Decision workflow
+ * (spec PART A). DB-backed acceptance tests for the full automatic
+ * lost-sales lifecycle -- UnfulfilledDemand creation on authorization,
+ * IMMEDIATE AND AUTOMATIC cancellation + lost-sale confirmation (no
+ * human decision step), re-pick/correction supersession ("update, not
+ * duplicate"), original-PO immutability, audit history, and reporting --
+ * against a REAL database through a REAL generated @prisma/client.
  *
  * OFF BY DEFAULT, for the exact same reason as
  * tests/picking-db.integration.test.ts and
@@ -16,11 +17,6 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
  * docs/milestones/PROGRESS.md's "Sandbox-only blocker"). Every lib
  * touched here is imported with a dynamic `await import(...)` INSIDE the
  * (skippable) test bodies below, never a static top-of-file import.
- * This file ALSO cannot run until `npx prisma generate` has actually
- * been run against the schema this milestone adds (UnfulfilledDemand/
- * CustomerDecisionEvent/LostSaleRecord) -- see this round's honesty note
- * in docs/milestones/PROGRESS.md about why that could not be verified
- * from inside this sandbox.
  *
  *   RUN_DB_INTEGRATION_TESTS=1 npm test
  *
@@ -28,30 +24,35 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
  * DEMO-CUST-* customer, and at least two real, active, imported SAP
  * products must already exist).
  *
- * Note on role gating (spec test scenario 17): exactly like
- * authorizePickingSession, confirmLostSale() itself is role-agnostic by
- * design -- SALES_MANAGER/ADMINISTRATOR-only enforcement lives entirely
- * in app/api/lost-sales/[id]/confirm-lost/route.ts's
- * requireUserOrResponse(["SALES_MANAGER","ADMINISTRATOR"]) call. This
- * test calls the lib function directly, so it intentionally does not
- * (and cannot, from here) exercise that 403 -- the same pre-existing,
- * documented, accepted scope boundary as every other role-gated action
- * in this project (no route handler anywhere in this codebase has its
- * own dedicated unit test).
+ * Real Business Data Onboarding round: there is no longer a
+ * recordCustomerDecision/confirmLostSale lib function, and no NEW
+ * UnfulfilledDemand can ever reach PENDING_DECISION/AWAITING_SUPPLY/
+ * PARTIALLY_CANCELLED/FULLY_CANCELLED/RESOLVED any more -- see
+ * lib/lost-sales/validation.ts's module comment and
+ * lib/lost-sales/create-unfulfilled-demand.ts's module comment for the
+ * full design (the CustomerDecisionEvent model and those five status
+ * values are kept at the schema level, unused by any surviving code
+ * path, purely for historical-data safety -- see prisma/schema.prisma).
+ * Every test below that used to drive the old decision/
+ * confirm lifecycle has been rewritten to check the new automatic
+ * behaviour directly; tests that existed ONLY to exercise decision-bucket
+ * arithmetic that no longer exists (accept-and-cancel-remainder,
+ * wait/partial/substitute mixes, outstanding-to-cancelled conversion on
+ * confirm, substitute-product validation) have been removed outright
+ * rather than left testing dead code.
  *
  * Every row this test creates is marked isDemo: true.
  */
 const RUN_DB_INTEGRATION_TESTS =
   Boolean(process.env.DATABASE_URL) && process.env.RUN_DB_INTEGRATION_TESTS === "1";
 
-describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management", () => {
+describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management (automatic, spec PART A)", () => {
   let skipAll = false;
 
   let adminId: string;
   let customerId: string;
   let productAId: string;
   let productASapCode: string;
-  let productBId: string;
 
   const createdOrderIds: string[] = [];
   const uniqueSuffix = `inttest-${Date.now()}`;
@@ -64,17 +65,21 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management",
       where: { sapCustomerCode: { startsWith: "DEMO-CUST" } },
       select: { id: true },
     });
+    // Real Business Data Onboarding round (spec PART A): only ONE product
+    // is needed now -- the second product this file used to keep around
+    // (take: 2) existed solely to exercise SUBSTITUTE_ACCEPTED's
+    // substituteProductId, a decision outcome that no longer exists.
     const products = await prisma.product.findMany({
       where: { isDemo: false, status: "ACTIVE" },
       orderBy: { sapItemCode: "asc" },
-      take: 2,
+      take: 1,
       select: { id: true, sapItemCode: true },
     });
 
-    if (!admin || !customer || products.length < 2) {
+    if (!admin || !customer || products.length < 1) {
       console.log(
         "Skipping Milestone 4 lost-sales DB integration test: need an admin user, a DEMO-CUST-* customer, " +
-          "and at least two active products. Run `npm run db:seed` first, then re-run with RUN_DB_INTEGRATION_TESTS=1."
+          "and at least one active product. Run `npm run db:seed` first, then re-run with RUN_DB_INTEGRATION_TESTS=1."
       );
       skipAll = true;
       return;
@@ -84,19 +89,16 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management",
     customerId = customer.id;
     productAId = products[0]!.id;
     productASapCode = products[0]!.sapItemCode;
-    productBId = products[1]!.id;
   });
 
   afterAll(async () => {
     const { prisma } = await import("@/lib/prisma");
     try {
       // Deletion order respects every onDelete: Restrict FK this
-      // milestone added -- LostSaleRecord/CustomerDecisionEvent before
-      // UnfulfilledDemand, UnfulfilledDemand before PickingSession.
+      // milestone added -- LostSaleRecord before UnfulfilledDemand,
+      // UnfulfilledDemand before PickingSession. There is no longer a
+      // CustomerDecisionEvent table to clear first.
       await prisma.lostSaleRecord.deleteMany({ where: { unfulfilledDemand: { orderId: { in: createdOrderIds } } } });
-      await prisma.customerDecisionEvent.deleteMany({
-        where: { unfulfilledDemand: { orderId: { in: createdOrderIds } } },
-      });
       await prisma.unfulfilledDemand.deleteMany({ where: { orderId: { in: createdOrderIds } } });
       // PickingLine rows cascade-delete with their PickingSession.
       await prisma.pickingSession.deleteMany({ where: { orderId: { in: createdOrderIds } } });
@@ -195,7 +197,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management",
     return { orderId: order.id, line1Id: line1!.id, line2Id: line2!.id, line3Id: line3!.id };
   }
 
-  it("scenarios 1/2/3/20: authorization creates exactly one UnfulfilledDemand per unavailable line, none for the fully-available line", async () => {
+  it("scenarios 1/2/3/20: authorization creates exactly one UnfulfilledDemand per unavailable line (none for the fully-available line), each IMMEDIATELY and AUTOMATICALLY cancelled and confirmed lost -- no customer-decision step", async () => {
     if (skipAll) return;
     const { prisma } = await import("@/lib/prisma");
 
@@ -214,21 +216,53 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management",
     expect(line2Demand.unavailableQuantity.toString()).toBe("8.0000");
     expect(line2Demand.productId).toBe(productAId);
     expect(line2Demand.sapItemCodeSnapshot).toBe(productASapCode);
-    // Scenario 4: never automatically classified as lost.
-    expect(line2Demand.status).toBe("PENDING_DECISION");
-    expect(line2Demand.confirmedLostQuantity.toString()).toBe("0.0000");
+    // Real Business Data Onboarding round (spec PART A): automatically
+    // and fully cancelled AND confirmed lost the instant it was recorded
+    // -- never PENDING_DECISION (that value is only ever reachable by a
+    // row created before this round; a NEW demand can never land there).
+    expect(line2Demand.status).toBe("CONFIRMED_LOST");
+    expect(line2Demand.cancelledQuantity.toString()).toBe("8.0000");
+    expect(line2Demand.confirmedLostQuantity.toString()).toBe("8.0000");
+    expect(line2Demand.outstandingQuantity.toString()).toBe("0.0000");
+    expect(line2Demand.substitutedQuantity.toString()).toBe("0.0000");
 
     const line3Demand = demands.find((d) => d.orderLineId === line3Id)!;
     expect(line3Demand.unavailableQuantity.toString()).toBe("10.0000");
     expect(line3Demand.productId).toBeNull();
     expect(line3Demand.productDescriptionSnapshot).toBe(`Customer wording for line 3 ${uniqueSuffix}`);
-    expect(line3Demand.status).toBe("PENDING_DECISION");
+    expect(line3Demand.status).toBe("CONFIRMED_LOST");
+    expect(line3Demand.cancelledQuantity.toString()).toBe("10.0000");
+    expect(line3Demand.confirmedLostQuantity.toString()).toBe("10.0000");
 
-    // Scenario 16: audit history preserved for the creation itself.
-    const auditEvents = await prisma.auditEvent.findMany({
+    // Each automatically-created demand has its own automatically-created
+    // LostSaleRecord -- reason is picked mechanically from whether
+    // anything was found at all: line2 found SOME (12 > 0) so its reason
+    // is INSUFFICIENT_QUANTITY; line3 found NONE so its reason is
+    // PRODUCT_UNAVAILABLE. Both carry decisionSource
+    // AUTOMATIC_SYSTEM_RECORDED -- no human ever decided anything.
+    const line2Record = await prisma.lostSaleRecord.findFirstOrThrow({ where: { unfulfilledDemandId: line2Demand.id } });
+    expect(line2Record.reason).toBe("INSUFFICIENT_QUANTITY");
+    expect(line2Record.decisionSource).toBe("AUTOMATIC_SYSTEM_RECORDED");
+    expect(line2Record.quantity.toString()).toBe("8.0000");
+    expect(line2Record.estimatedUnitPrice?.toString()).toBe("15.5000");
+    expect(line2Record.estimatedValue?.toString()).toBe("124.0000"); // 15.5 * 8
+    expect(line2Record.estimatedValueSource).toBe("ORDER_LINE_APPROVED_PRICE");
+
+    const line3Record = await prisma.lostSaleRecord.findFirstOrThrow({ where: { unfulfilledDemandId: line3Demand.id } });
+    expect(line3Record.reason).toBe("PRODUCT_UNAVAILABLE");
+    expect(line3Record.decisionSource).toBe("AUTOMATIC_SYSTEM_RECORDED");
+    expect(line3Record.quantity.toString()).toBe("10.0000");
+
+    // Scenario 16: audit history preserved for the creation AND the
+    // automatic confirmation.
+    const creationEvents = await prisma.auditEvent.findMany({
       where: { action: "UNFULFILLED_DEMAND_CREATED", entityId: { in: [line2Demand.id, line3Demand.id] } },
     });
-    expect(auditEvents).toHaveLength(2);
+    expect(creationEvents).toHaveLength(2);
+    const confirmEvents = await prisma.auditEvent.findMany({
+      where: { action: "LOST_SALE_CONFIRMED", entityId: { in: [line2Demand.id, line3Demand.id] } },
+    });
+    expect(confirmEvents).toHaveLength(2);
   });
 
   /**
@@ -299,7 +333,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management",
     return { orderId: order.id, lineId, originalDemandId: originalDemand.id };
   }
 
-  it("Additional Implementation Requirements (lost-sales automation): a re-pick correction with a reduced-but-still-real shortage supersedes the original demand with its replacement, rather than creating a duplicate", async () => {
+  it("Additional Implementation Requirements (lost-sales automation), still true under spec PART A: a re-pick correction with a reduced-but-still-real shortage supersedes the original demand with its OWN freshly-confirmed-lost replacement, never a duplicate", async () => {
     if (skipAll) return;
     const { prisma } = await import("@/lib/prisma");
 
@@ -312,13 +346,19 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management",
     expect(original.supersededByDemandId).not.toBeNull();
     // The superseded row's own quantity bucket is untouched by the
     // correction -- it still reflects exactly what was recorded at the
-    // time, never silently rewritten to match the new session.
+    // time, never silently rewritten to match the new session. It was
+    // itself automatically cancelled/confirmed-lost for 4.0000 before
+    // being superseded -- that history is preserved, not erased.
     expect(original.unavailableQuantity.toString()).toBe("4.0000");
+    expect(original.confirmedLostQuantity.toString()).toBe("4.0000");
 
     const replacement = await prisma.unfulfilledDemand.findUniqueOrThrow({ where: { id: original.supersededByDemandId! } });
     expect(replacement.orderLineId).toBe(lineId);
     expect(replacement.unavailableQuantity.toString()).toBe("1.0000");
-    expect(replacement.status).toBe("PENDING_DECISION");
+    // The replacement is itself immediately and automatically confirmed
+    // lost for its OWN (smaller) quantity -- never PENDING_DECISION.
+    expect(replacement.status).toBe("CONFIRMED_LOST");
+    expect(replacement.confirmedLostQuantity.toString()).toBe("1.0000");
 
     // No-duplicate guarantee: exactly one NON-superseded UnfulfilledDemand
     // exists for this order line -- an aggregate that sums every
@@ -329,6 +369,17 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management",
     expect(liveDemandsForLine).toHaveLength(1);
     expect(liveDemandsForLine[0]!.id).toBe(replacement.id);
 
+    // "Update, not duplicate" extends to LostSaleRecord too: the original
+    // demand's own record (4.0000) is untouched history, and the
+    // replacement has exactly one record of its own (1.0000) -- never two
+    // records double-counting the same corrected shortage.
+    const originalRecords = await prisma.lostSaleRecord.findMany({ where: { unfulfilledDemandId: original.id } });
+    expect(originalRecords).toHaveLength(1);
+    expect(originalRecords[0]!.quantity.toString()).toBe("4.0000");
+    const replacementRecords = await prisma.lostSaleRecord.findMany({ where: { unfulfilledDemandId: replacement.id } });
+    expect(replacementRecords).toHaveLength(1);
+    expect(replacementRecords[0]!.quantity.toString()).toBe("1.0000");
+
     // Correction is itself audited, distinctly from the original creation.
     const supersessionEvents = await prisma.auditEvent.findMany({
       where: { action: "UNFULFILLED_DEMAND_SUPERSEDED", entityId: originalDemandId },
@@ -336,7 +387,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management",
     expect(supersessionEvents).toHaveLength(1);
   });
 
-  it("Additional Implementation Requirements (lost-sales automation): a re-pick correction that finds the line fully available supersedes the original demand with NO replacement (zero outstanding, zero duplicate)", async () => {
+  it("Additional Implementation Requirements (lost-sales automation), still true under spec PART A: a re-pick correction that finds the line fully available supersedes the original demand with NO replacement (zero outstanding, zero duplicate)", async () => {
     if (skipAll) return;
     const { prisma } = await import("@/lib/prisma");
 
@@ -367,246 +418,42 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management",
     expect(afterData.supersededByDemandId).toBeNull();
   });
 
-  it("scenario 15: recording decisions and confirming a lost sale never touches the original Customer PO", async () => {
+  it("scenario 15: the automatic shortage/lost-sales recording never touches the original Customer PO", async () => {
     if (skipAll) return;
     const { prisma } = await import("@/lib/prisma");
-    const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
-    const { confirmLostSale } = await import("@/lib/lost-sales/confirm-lost-sale");
 
     const { orderId, line2Id } = await createThreeLineOrderAndAuthorize();
-    const before = await prisma.orderLine.findUniqueOrThrow({ where: { id: line2Id } });
-
-    const demand = await prisma.unfulfilledDemand.findFirstOrThrow({ where: { orderLineId: line2Id } });
-
-    await recordCustomerDecision(
-      { unfulfilledDemandId: demand.id, decisionType: "PARTIAL_CANCELLATION", source: "CUSTOMER_EMAIL", quantity: "8.0000" },
-      adminId
-    );
-    await confirmLostSale(
-      { unfulfilledDemandId: demand.id, quantity: "8.0000", reason: "PRODUCT_UNAVAILABLE", decisionSource: "CUSTOMER_EMAIL" },
-      adminId
-    );
-
     const after = await prisma.orderLine.findUniqueOrThrow({ where: { id: line2Id } });
-    expect(after.requestedQuantity.toString()).toBe(before.requestedQuantity.toString());
-    expect(after.originalProductDescription).toBe(before.originalProductDescription);
-    expect(after.sapItemCodeSnapshot).toBe(before.sapItemCodeSnapshot);
-    expect(after.approvedUnitPrice?.toString()).toBe(before.approvedUnitPrice?.toString());
+
+    // Real Business Data Onboarding round (spec PART A): no decision/
+    // confirm step to run -- createThreeLineOrderAndAuthorize's own
+    // authorizePickingSession call already recorded the automatic
+    // cancellation and lost-sale confirmation. The original PO fields are
+    // asserted directly against the values the fixture itself supplied,
+    // since there is no separate "before" snapshot to compare against --
+    // authorization and automatic lost-sales recording happen in the
+    // same transaction.
+    expect(after.requestedQuantity.toString()).toBe("20.0000");
+    expect(after.originalProductDescription).toBe(`Customer wording for line 2 ${uniqueSuffix}`);
+    expect(after.approvedUnitPrice?.toString()).toBe("15.5000");
 
     const order = await prisma.customerOrder.findUniqueOrThrow({ where: { id: orderId } });
     expect(order.status).toBe("READY_TO_INVOICE");
   });
 
-  it("scenarios 5/9/13/14: accept-and-cancel-remainder consumes the whole remainder; a further decision is refused", async () => {
-    if (skipAll) return;
-    const { prisma } = await import("@/lib/prisma");
-    const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
-
-    const { line3Id } = await createThreeLineOrderAndAuthorize();
-    const demand = await prisma.unfulfilledDemand.findFirstOrThrow({ where: { orderLineId: line3Id } });
-    expect(demand.unavailableQuantity.toString()).toBe("10.0000");
-
-    const result = await recordCustomerDecision(
-      { unfulfilledDemandId: demand.id, decisionType: "ACCEPT_PARTIAL_CANCEL_REMAINDER", source: "CUSTOMER_PHONE_CALL" },
-      adminId
-    );
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.event.quantity).toBe("10.0000");
-      expect(result.demand.status).toBe("FULLY_CANCELLED");
-    }
-
-    // Scenario 14: a further decision now has nothing left to consume.
-    const overAllocated = await recordCustomerDecision(
-      { unfulfilledDemandId: demand.id, decisionType: "PARTIAL_CANCELLATION", source: "CUSTOMER_EMAIL", quantity: "1.0000" },
-      adminId
-    );
-    expect(overAllocated.ok).toBe(false);
-    if (!overAllocated.ok) expect(overAllocated.status).toBe(400);
-  });
-
-  it("scenarios 6/9/10/11: a mix of waiting, partial cancellation, and a substitute on the same line", async () => {
-    if (skipAll) return;
-    const { prisma } = await import("@/lib/prisma");
-    const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
-
-    const { line2Id } = await createThreeLineOrderAndAuthorize();
-    const demand = await prisma.unfulfilledDemand.findFirstOrThrow({ where: { orderLineId: line2Id } });
-    expect(demand.unavailableQuantity.toString()).toBe("8.0000");
-
-    // 3 of 8: wait for remaining quantity -> outstanding.
-    const wait = await recordCustomerDecision(
-      {
-        unfulfilledDemandId: demand.id,
-        decisionType: "AWAIT_REMAINING_QUANTITY",
-        source: "CUSTOMER_PHONE_CALL",
-        quantity: "3.0000",
-        expectedFollowUpDate: "2026-12-01",
-      },
-      adminId
-    );
-    expect(wait.ok).toBe(true);
-    if (wait.ok) expect(wait.demand.status).toBe("PENDING_DECISION"); // 5 still undecided
-
-    // 2 of the remaining 5: partial cancellation.
-    const partial = await recordCustomerDecision(
-      { unfulfilledDemandId: demand.id, decisionType: "PARTIAL_CANCELLATION", source: "CUSTOMER_EMAIL", quantity: "2.0000" },
-      adminId
-    );
-    expect(partial.ok).toBe(true);
-    if (partial.ok) expect(partial.demand.status).toBe("PENDING_DECISION"); // 3 still undecided
-
-    // The remaining 3: substitute accepted.
-    const substitute = await recordCustomerDecision(
-      {
-        unfulfilledDemandId: demand.id,
-        decisionType: "SUBSTITUTE_ACCEPTED",
-        source: "CUSTOMER_IN_PERSON",
-        quantity: "3.0000",
-        substituteProductId: productBId,
-      },
-      adminId
-    );
-    expect(substitute.ok).toBe(true);
-    // Fully decided now (0 undecided), but outstanding (3) > 0 takes priority.
-    if (substitute.ok) expect(substitute.demand.status).toBe("AWAITING_SUPPLY");
-
-    const finalDemand = await prisma.unfulfilledDemand.findUniqueOrThrow({ where: { id: demand.id } });
-    expect(finalDemand.outstandingQuantity.toString()).toBe("3.0000");
-    expect(finalDemand.cancelledQuantity.toString()).toBe("2.0000");
-    expect(finalDemand.substitutedQuantity.toString()).toBe("3.0000");
-    expect(finalDemand.expectedFollowUpDate).not.toBeNull();
-
-    const events = await prisma.customerDecisionEvent.findMany({ where: { unfulfilledDemandId: demand.id } });
-    const substituteEvent = events.find((e) => e.decisionType === "SUBSTITUTE_ACCEPTED")!;
-    expect(substituteEvent.substituteProductId).toBe(productBId);
-    expect(substituteEvent.substituteSapItemCodeSnapshot).not.toBeNull();
-  });
-
-  it("refuses a SUBSTITUTE_ACCEPTED decision against a non-existent product", async () => {
-    if (skipAll) return;
-    const { prisma } = await import("@/lib/prisma");
-    const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
-
-    const { line3Id } = await createThreeLineOrderAndAuthorize();
-    const demand = await prisma.unfulfilledDemand.findFirstOrThrow({ where: { orderLineId: line3Id } });
-
-    const result = await recordCustomerDecision(
-      {
-        unfulfilledDemandId: demand.id,
-        decisionType: "SUBSTITUTE_ACCEPTED",
-        source: "CUSTOMER_EMAIL",
-        quantity: "1.0000",
-        substituteProductId: "does-not-exist",
-      },
-      adminId
-    );
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.status).toBe(400);
-  });
-
-  it("scenario 12: converts a shortfall from outstanding into cancelled when confirming a lost sale", async () => {
-    if (skipAll) return;
-    const { prisma } = await import("@/lib/prisma");
-    const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
-    const { confirmLostSale } = await import("@/lib/lost-sales/confirm-lost-sale");
-
-    const { line3Id } = await createThreeLineOrderAndAuthorize();
-    const demand = await prisma.unfulfilledDemand.findFirstOrThrow({ where: { orderLineId: line3Id } });
-    expect(demand.unavailableQuantity.toString()).toBe("10.0000");
-
-    // 3 cancelled, 7 outstanding -- fully decided.
-    await recordCustomerDecision(
-      { unfulfilledDemandId: demand.id, decisionType: "PARTIAL_CANCELLATION", source: "CUSTOMER_EMAIL", quantity: "3.0000" },
-      adminId
-    );
-    await recordCustomerDecision(
-      { unfulfilledDemandId: demand.id, decisionType: "AWAIT_REMAINING_QUANTITY", source: "CUSTOMER_EMAIL", quantity: "7.0000" },
-      adminId
-    );
-
-    // Confirm 5 as lost: 3 from cancelled, 2 drawn from outstanding.
-    const confirmed = await confirmLostSale(
-      { unfulfilledDemandId: demand.id, quantity: "5.0000", reason: "CUSTOMER_SOURCED_ELSEWHERE", decisionSource: "CUSTOMER_EMAIL" },
-      adminId
-    );
-    expect(confirmed.ok).toBe(true);
-
-    const after = await prisma.unfulfilledDemand.findUniqueOrThrow({ where: { id: demand.id } });
-    expect(after.cancelledQuantity.toString()).toBe("5.0000");
-    expect(after.confirmedLostQuantity.toString()).toBe("5.0000");
-    expect(after.outstandingQuantity.toString()).toBe("5.0000");
-    expect(after.status).toBe("AWAITING_SUPPLY"); // 5 still outstanding
-
-    // Refuses a lost-sale quantity exceeding what's available from both sources.
-    const refused = await confirmLostSale(
-      { unfulfilledDemandId: demand.id, quantity: "20.0000", reason: "OTHER", reasonDetail: "test", decisionSource: "CUSTOMER_EMAIL" },
-      adminId
-    );
-    expect(refused.ok).toBe(false);
-
-    // OTHER with no detail is refused before the quantity check even runs.
-    const missingDetail = await confirmLostSale(
-      { unfulfilledDemandId: demand.id, quantity: "1.0000", reason: "OTHER", decisionSource: "CUSTOMER_EMAIL" },
-      adminId
-    );
-    expect(missingDetail.ok).toBe(false);
-
-    // Scenario 16: audit history preserved for the decision + confirmation.
-    const auditActions = await prisma.auditEvent.findMany({
-      where: { entityId: demand.id, action: { in: ["CUSTOMER_DECISION_RECORDED", "LOST_SALE_CONFIRMED"] } },
-    });
-    expect(auditActions.length).toBeGreaterThanOrEqual(3); // 2 decisions + 1 confirmation
-  });
-
-  it("estimates a lost sale's value from the order line's own approved price, never invents one", async () => {
-    if (skipAll) return;
-    const { prisma } = await import("@/lib/prisma");
-    const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
-    const { confirmLostSale } = await import("@/lib/lost-sales/confirm-lost-sale");
-
-    // line2 was created with approvedUnitPrice "15.5000".
-    const { line2Id } = await createThreeLineOrderAndAuthorize();
-    const demand = await prisma.unfulfilledDemand.findFirstOrThrow({ where: { orderLineId: line2Id } });
-
-    await recordCustomerDecision(
-      { unfulfilledDemandId: demand.id, decisionType: "ACCEPT_PARTIAL_CANCEL_REMAINDER", source: "CUSTOMER_EMAIL" },
-      adminId
-    );
-    const confirmed = await confirmLostSale(
-      { unfulfilledDemandId: demand.id, quantity: "8.0000", reason: "PRODUCT_UNAVAILABLE", decisionSource: "CUSTOMER_EMAIL" },
-      adminId
-    );
-    expect(confirmed.ok).toBe(true);
-    if (confirmed.ok) {
-      expect(confirmed.record.estimatedUnitPrice).toBe("15.5000");
-      expect(confirmed.record.estimatedValue).toBe("124.0000"); // 15.5 * 8
-      expect(confirmed.record.estimatedValueSource).toBe("ORDER_LINE_APPROVED_PRICE");
-    }
-  });
-
-  it("scenario 18: reporting figures reflect what was actually recorded, with distinct unavailable/outstanding/lost totals", async () => {
+  it("scenario 18: reporting figures reflect what was automatically recorded, with distinct unavailable/confirmed-lost totals", async () => {
     if (skipAll) return;
     const { listUnfulfilledDemands, getLostSalesReportSummary } = await import("@/lib/lost-sales/queries");
-    const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
-    const { confirmLostSale } = await import("@/lib/lost-sales/confirm-lost-sale");
 
     await createThreeLineOrderAndAuthorize();
     const { demands } = await listUnfulfilledDemands({ page: 1, pageSize: 50, customerId, includeDemo: true });
     expect(demands.length).toBeGreaterThanOrEqual(2);
 
     const line2Demand = demands.find((d) => d.unavailableQuantity === "8.0000")!;
-    await recordCustomerDecision(
-      { unfulfilledDemandId: line2Demand.id, decisionType: "PARTIAL_CANCELLATION", source: "CUSTOMER_EMAIL", quantity: "8.0000" },
-      adminId
-    );
-    await confirmLostSale(
-      { unfulfilledDemandId: line2Demand.id, quantity: "8.0000", reason: "PRODUCT_UNAVAILABLE", decisionSource: "CUSTOMER_EMAIL" },
-      adminId
-    );
+    expect(line2Demand.status).toBe("CONFIRMED_LOST");
 
     const summary = await getLostSalesReportSummary({ includeDemo: true });
-    expect(Number(summary.totalConfirmedLostQuantity)).toBeGreaterThanOrEqual(8);
+    expect(Number(summary.totalConfirmedLostQuantity)).toBeGreaterThanOrEqual(18); // this test's 8 + 10, automatically
     expect(Number(summary.totalUnavailableQuantity)).toBeGreaterThanOrEqual(18); // at least this test's 8 + 10
     const productEntry = summary.topConfirmedLostProducts.find((p) => p.sapItemCodeSnapshot === productASapCode);
     expect(productEntry).toBeDefined();
@@ -621,31 +468,22 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management",
    * summed across every LostSaleRecord that has a resolvable price --
    * never inventing one for a record that has none (see
    * lib/lost-sales/estimate-value.ts's own comment, exercised above by
-   * "estimates a lost sale's value...").
+   * "scenarios 1/2/3/20"'s own estimatedValue assertions). Real Business
+   * Data Onboarding round: this figure is now populated automatically on
+   * authorization, not on a separate manual confirmation.
    */
-  it("Source B: getSupplyShortageLostSalesValue sums estimatedValue across LostSaleRecords, excluding (and counting separately) those with no resolvable price", async () => {
+  it("Source B: getSupplyShortageLostSalesValue sums estimatedValue across automatically-created LostSaleRecords, excluding (and counting separately) those with no resolvable price", async () => {
     if (skipAll) return;
     const { getSupplyShortageLostSalesValue } = await import("@/lib/lost-sales/queries");
-    const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
-    const { confirmLostSale } = await import("@/lib/lost-sales/confirm-lost-sale");
     const { prisma } = await import("@/lib/prisma");
 
     const before = await getSupplyShortageLostSalesValue({ includeDemo: true });
 
-    // line2 was created with approvedUnitPrice "15.5000"; confirming 8 of
-    // it as lost gives a known, exact estimatedValue of 124.0000 (15.5 * 8)
-    // -- see "estimates a lost sale's value..." above for the same math.
-    const { line2Id } = await createThreeLineOrderAndAuthorize();
-    const demand = await prisma.unfulfilledDemand.findFirstOrThrow({ where: { orderLineId: line2Id } });
-    await recordCustomerDecision(
-      { unfulfilledDemandId: demand.id, decisionType: "ACCEPT_PARTIAL_CANCEL_REMAINDER", source: "CUSTOMER_EMAIL" },
-      adminId
-    );
-    const confirmed = await confirmLostSale(
-      { unfulfilledDemandId: demand.id, quantity: "8.0000", reason: "PRODUCT_UNAVAILABLE", decisionSource: "CUSTOMER_EMAIL" },
-      adminId
-    );
-    expect(confirmed.ok).toBe(true);
+    // line2 was created with approvedUnitPrice "15.5000"; its 8.0000
+    // unavailable units are automatically confirmed lost on
+    // authorization, giving a known, exact estimatedValue of 124.0000
+    // (15.5 * 8) -- see "scenarios 1/2/3/20" above for the same math.
+    await createThreeLineOrderAndAuthorize();
 
     const after = await getSupplyShortageLostSalesValue({ includeDemo: true });
     // The sum grew by exactly 124.0000 -- not re-derived from scratch,

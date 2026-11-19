@@ -85,10 +85,39 @@ export async function POST(request: NextRequest) {
 
     const result = await executeCustomerMasterImport(plan, upload.fileName);
 
+    // Real-world incident fix: a large file is now imported in bounded
+    // chunks (see lib/customer-master-import.ts's own module comment),
+    // which means a failure partway through is possible and must be
+    // reported honestly -- never as "completed" and never as the old
+    // catch-all's misleading "No changes were saved" (some chunks may
+    // well have committed). Re-running the exact same file is safe and
+    // will pick up where it left off (already-imported rows show as
+    // unchanged, never duplicated).
+    if (result.partial) {
+      return Response.json(
+        {
+          success: false,
+          partial: true,
+          message:
+            `The import was interrupted after committing ${result.created} new and ${result.updated} updated ` +
+            `customer(s) -- some rows were not yet processed. It is safe to re-run this exact file: already-imported ` +
+            `customers will be detected as unchanged, not duplicated.`,
+          fileName: upload.fileName,
+          layout: parsed.layout,
+          summary: { created: result.created, updated: result.updated, unchanged: result.unchanged },
+          auditEventId: result.auditEventId,
+          importExecuted: true,
+          failureReason: result.partialReason,
+        },
+        { status: 207 }
+      );
+    }
+
     return Response.json({
       success: true,
       message: "Customer master import completed.",
       fileName: upload.fileName,
+      layout: parsed.layout,
       summary: { created: result.created, updated: result.updated, unchanged: result.unchanged },
       auditEventId: result.auditEventId,
       importExecuted: true,

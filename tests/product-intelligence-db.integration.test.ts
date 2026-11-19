@@ -144,7 +144,6 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
       // so UnfulfilledDemand (and its own dependents) must be cleared
       // BEFORE PickingLine/PickingSession, never after.
       await prisma.lostSaleRecord.deleteMany({ where: { unfulfilledDemand: { orderId: { in: createdOrderIds } } } });
-      await prisma.customerDecisionEvent.deleteMany({ where: { unfulfilledDemand: { orderId: { in: createdOrderIds } } } });
       await prisma.unfulfilledDemand.deleteMany({ where: { orderId: { in: createdOrderIds } } });
       await prisma.pickingLine.deleteMany({ where: { pickingSession: { orderId: { in: createdOrderIds } } } });
       await prisma.pickingSession.deleteMany({ where: { orderId: { in: createdOrderIds } } });
@@ -325,7 +324,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
       currency: null,
       lostSalesReason: null,
       unfulfilledDemandStatus: null,
-      customerDecisionType: null,
+      lostSaleSource: null,
       productCategory: null,
       productSearch: null,
       sapItemCode: null,
@@ -399,10 +398,10 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
     });
   });
 
-  // --- Item 5: lost sales, via the real picking -> authorize -> decide -> confirm lifecycle ---
+  // --- Item 5: lost sales, via the real picking -> authorize lifecycle (automatic lost-sales recording) ---
 
   describe("item 5: highest lost-sales activity", () => {
-    it("a confirmed lost sale is grouped by sapItemCode and resolves productId through the real lifecycle", async () => {
+    it("an automatically-confirmed lost sale is grouped by sapItemCode and resolves productId through the real lifecycle", async () => {
       if (skipAll) return;
       const { prisma } = await import("@/lib/prisma");
       const { generateOrderReference } = await import("@/lib/orders");
@@ -410,8 +409,6 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
       const { recordPickedLine } = await import("@/lib/picking/record-picked-line");
       const { completePickingSession } = await import("@/lib/picking/complete-picking");
       const { authorizePickingSession } = await import("@/lib/picking/authorize-picking");
-      const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
-      const { confirmLostSale } = await import("@/lib/lost-sales/confirm-lost-sale");
       const { getProductLostSalesRanking } = await import("@/lib/reporting/product-demand-queries");
 
       const itemCode = `ITEM-${uniqueSuffix}-lostsale`;
@@ -461,11 +458,9 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
       expect(demand.sapItemCodeSnapshot).toBe(itemCode);
       expect(demand.productId).toBe(product.id);
 
-      const decided = await recordCustomerDecision({ unfulfilledDemandId: demand.id, decisionType: "ENTIRE_LINE_CANCELLED", source: "CUSTOMER_EMAIL", quantity: "10.0000" }, adminId);
-      if (!decided.ok) throw new Error(decided.message);
-
-      const confirmed = await confirmLostSale({ unfulfilledDemandId: demand.id, quantity: "10.0000", reason: "PRODUCT_UNAVAILABLE", decisionSource: "CUSTOMER_EMAIL" }, adminId);
-      if (!confirmed.ok) throw new Error(confirmed.message);
+      // Real Business Data Onboarding round (spec PART A): no decision/
+      // confirm step -- authorizePickingSession already recorded the
+      // shortage as CONFIRMED_LOST with its LostSaleRecord automatically.
 
       const ranking = await getProductLostSalesRanking(emptyFilters());
       const row = ranking.rows.find((r) => r.sapItemCode === itemCode);
@@ -491,8 +486,6 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
       const { recordPickedLine } = await import("@/lib/picking/record-picked-line");
       const { completePickingSession } = await import("@/lib/picking/complete-picking");
       const { authorizePickingSession } = await import("@/lib/picking/authorize-picking");
-      const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
-      const { confirmLostSale } = await import("@/lib/lost-sales/confirm-lost-sale");
       const { getProductLostSalesRanking, getProductLostSalesSummary } = await import("@/lib/reporting/product-demand-queries");
 
       const itemCode = `ITEM-${uniqueSuffix}-lostsale-demo`;
@@ -539,11 +532,9 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 14: product intelligence",
 
       const demand = await prisma.unfulfilledDemand.findFirst({ where: { orderId: order.id }, select: { id: true } });
       if (!demand) throw new Error("Expected an UnfulfilledDemand row after authorization.");
-
-      const decided = await recordCustomerDecision({ unfulfilledDemandId: demand.id, decisionType: "ENTIRE_LINE_CANCELLED", source: "CUSTOMER_EMAIL", quantity: "4.0000" }, adminId);
-      if (!decided.ok) throw new Error(decided.message);
-      const confirmed = await confirmLostSale({ unfulfilledDemandId: demand.id, quantity: "4.0000", reason: "PRODUCT_UNAVAILABLE", decisionSource: "CUSTOMER_EMAIL" }, adminId);
-      if (!confirmed.ok) throw new Error(confirmed.message);
+      // Real Business Data Onboarding round (spec PART A): no decision/
+      // confirm step -- authorizePickingSession already recorded the
+      // shortage as CONFIRMED_LOST with its LostSaleRecord automatically.
 
       const demoExcluded = { ...emptyFilters(), includeDemo: false };
       const demoIncluded = { ...emptyFilters(), includeDemo: true };

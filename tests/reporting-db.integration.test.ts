@@ -311,7 +311,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       currency: null,
       lostSalesReason: null,
       unfulfilledDemandStatus: null,
-      customerDecisionType: null,
+      lostSaleSource: null,
       includeDemo: true,
       // Milestone 14/15 added these five fields to ReportFilters; kept
       // null here since this describe block's reports don't consume any
@@ -391,7 +391,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       currency: null,
       lostSalesReason: null,
       unfulfilledDemandStatus: null,
-      customerDecisionType: null,
+      lostSaleSource: null,
       includeDemo: true,
       productCategory: null,
       productSearch: null,
@@ -714,7 +714,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
       currency: null,
       lostSalesReason: null,
       unfulfilledDemandStatus: null,
-      customerDecisionType: null,
+      lostSaleSource: null,
       includeDemo: true,
       productCategory: null,
       productSearch: null,
@@ -890,7 +890,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
         currency: null,
         lostSalesReason: null,
         unfulfilledDemandStatus: null,
-        customerDecisionType: null,
+        lostSaleSource: null,
         includeDemo: true,
       } as never);
 
@@ -941,7 +941,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 11: operational BI reporti
         currency: null,
         lostSalesReason: null,
         unfulfilledDemandStatus: null,
-        customerDecisionType: null,
+        lostSaleSource: null,
         includeDemo: true,
       } as never);
 

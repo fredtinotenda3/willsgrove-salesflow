@@ -249,6 +249,16 @@ export default async function InvoiceClaimDetailPage({ params }: RouteParams) {
                     {ret.conditionDetail && <p className="mt-1 text-gray-600">Detail: {ret.conditionDetail}</p>}
                     {ret.conditionNotes && <p className="mt-1 text-gray-600">Notes: {ret.conditionNotes}</p>}
                     {ret.creditNote && <p className="mt-1 text-[10px] text-cyan-700">Linked to credit note {ret.creditNote.sapCreditNoteDocNum}</p>}
+                    {ret.condition === "GOOD_RESALABLE" ? (
+                      <p className="mt-1 text-[10px] text-emerald-700">Resalable -- no lost sale recorded.</p>
+                    ) : ret.lostSale ? (
+                      <p className="mt-1 text-[10px] text-rose-700">
+                        Lost sale recorded
+                        {ret.lostSale.estimatedValue
+                          ? `: ~${ret.lostSale.estimatedValue.toString()} ${ret.lostSale.currencyCode ?? ""}`.trimEnd()
+                          : " (value not available -- no invoiced price on record for this line)"}
+                      </p>
+                    ) : null}
                     <p className="mt-2 text-[10px] text-gray-400">
                       Received {new Date(ret.receivedDate).toLocaleDateString()} by {ret.receivedBy.name} · recorded {new Date(ret.receivedAt).toLocaleString()}
                     </p>

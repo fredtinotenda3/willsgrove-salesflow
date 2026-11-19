@@ -138,6 +138,14 @@ export async function getDecisionDashboard(viewerId: string, viewerRole: string,
     .filter((bucket) => Number(bucket.potentialCreditExposure) > 0)
     .map((bucket) => ({ currencyCode: bucket.currencyCode, amount: formatOrderAmount(bucket.potentialCreditExposure, bucket.currencyCode) }));
 
+  // Real Business Data Onboarding round, Phase 7 (Claims analytics):
+  // Source C's own per-currency breakdown, same shape as Source A's
+  // above (both are per-currency; Source B has none, hence
+  // formatPlainAmount for that tile instead).
+  const returnedGoodsLossBreakdown = financialExposure.lostSalesBySource.sourceC.byCurrency
+    .filter((bucket) => Number(bucket.estimatedValue) > 0)
+    .map((bucket) => ({ currencyCode: bucket.currencyCode, amount: formatOrderAmount(bucket.estimatedValue, bucket.currencyCode) }));
+
   const openClaimsCount =
     (financialExposure.claims.statusCounts.OPEN ?? 0) +
     (financialExposure.claims.statusCounts.UNDER_INVESTIGATION ?? 0) +
@@ -269,6 +277,22 @@ export async function getDecisionDashboard(viewerId: string, viewerRole: string,
       visibility: "management",
       drillDown: { label: "View lost-sales analytics", href: "/lost-sales/analytics" },
       definition: "Source B: sum of estimated value (unavailable quantity x applicable selling price) across lost-sale records with a resolvable price.",
+    },
+    {
+      id: "returnedGoodsLostSalesValue",
+      area: "lost_sales",
+      label: "Confirmed Loss (Returned Goods)",
+      value: returnedGoodsLossBreakdown[0]
+        ? returnedGoodsLossBreakdown.length > 1
+          ? `${returnedGoodsLossBreakdown[0].amount} +${returnedGoodsLossBreakdown.length - 1} more`
+          : returnedGoodsLossBreakdown[0].amount
+        : "$0.00",
+      currencyBreakdown: returnedGoodsLossBreakdown,
+      unit: "currency",
+      comparison: { kind: "pointInTime", asOfLabel: "current position" },
+      visibility: "management",
+      drillDown: { label: "View financial exposure", href: "/reports/financial-exposure" },
+      definition: "Source C: of goods physically returned against a claim, the confirmed value of whatever was found DAMAGED, EXPIRED or otherwise unsellable -- a confirmed outcome, not a dispute estimate. Never summed with Source A (Claims Financial Exposure) for the same claim; see the financial exposure report's own note.",
     },
   ];
 

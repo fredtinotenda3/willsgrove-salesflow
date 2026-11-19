@@ -26,12 +26,15 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
  *     confirm attribution-queries.ts's bulk fetch reads the right rows
  *     back out of a real database, not to re-derive the classification
  *     logic itself).
- *   - Lost-sales-by-salesperson, via the full, real
- *     picking -> authorize -> customer-decision -> confirm-lost-sale
+ *   - Lost-sales-by-salesperson, via the full, real picking -> authorize
  *     lifecycle (reusing the exact fixture pattern already proven in
  *     tests/lost-sales-db.integration.test.ts), with a salesperson
  *     assigned on the order -- the one genuinely new join this milestone
- *     adds that has no existing test coverage anywhere else.
+ *     adds that has no existing test coverage anywhere else. Real
+ *     Business Data Onboarding round (spec PART A): authorizePickingSession
+ *     alone now produces a CONFIRMED_LOST UnfulfilledDemand with its
+ *     LostSaleRecord already attached -- there is no separate
+ *     customer-decision/confirm-lost-sale step left to drive.
  *   - The sales-revenue `currency` filter fix (this round's own
  *     completeness fix to lib/reporting/sales-revenue-queries.ts, which
  *     had accepted but never applied `filters.currency`).
@@ -95,7 +98,6 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 12: sales performance inte
       await prisma.sapInvoiceImportBatch.deleteMany({ where: { id: { in: createdImportBatchIds } } });
 
       await prisma.lostSaleRecord.deleteMany({ where: { unfulfilledDemand: { orderId: { in: createdOrderIds } } } });
-      await prisma.customerDecisionEvent.deleteMany({ where: { unfulfilledDemand: { orderId: { in: createdOrderIds } } } });
       await prisma.unfulfilledDemand.deleteMany({ where: { orderId: { in: createdOrderIds } } });
       await prisma.pickingSession.deleteMany({ where: { orderId: { in: createdOrderIds } } });
       await prisma.orderStatusHistory.deleteMany({ where: { orderId: { in: createdOrderIds } } });
@@ -195,10 +197,10 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 12: sales performance inte
     });
   });
 
-  // --- Section 2: lost-sales-by-salesperson, via the real picking -> authorize -> decision -> confirm-lost-sale lifecycle ---
+  // --- Section 2: lost-sales-by-salesperson, via the real picking -> authorize lifecycle (automatic lost-sales recording) ---
 
   describe("lost-sales-by-salesperson", () => {
-    it("a confirmed lost sale on an order with an assigned salesperson is attributed to that salesperson, filterable by reason", async () => {
+    it("a shortage on an order with an assigned salesperson is automatically confirmed lost and attributed to that salesperson, filterable by reason", async () => {
       if (skipAll) return;
       const { prisma } = await import("@/lib/prisma");
       const { generateOrderReference } = await import("@/lib/orders");
@@ -206,8 +208,6 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 12: sales performance inte
       const { recordPickedLine } = await import("@/lib/picking/record-picked-line");
       const { completePickingSession } = await import("@/lib/picking/complete-picking");
       const { authorizePickingSession } = await import("@/lib/picking/authorize-picking");
-      const { recordCustomerDecision } = await import("@/lib/lost-sales/record-decision");
-      const { confirmLostSale } = await import("@/lib/lost-sales/confirm-lost-sale");
       const { getSalesPerformanceReport } = await import("@/lib/reporting/sales-performance");
 
       const order = await prisma.customerOrder.create({
@@ -240,20 +240,22 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 12: sales performance inte
       const authorized = await authorizePickingSession(started.session.id, adminId);
       if (!authorized.ok) throw new Error(authorized.message);
 
-      const demand = await prisma.unfulfilledDemand.findFirst({ where: { orderId: order.id }, select: { id: true } });
+      // Real Business Data Onboarding round (spec PART A): no decision/
+      // confirm step -- authorizePickingSession's own transaction already
+      // created the UnfulfilledDemand AND its LostSaleRecord, fully
+      // cancelled and confirmed lost, automatically.
+      const demand = await prisma.unfulfilledDemand.findFirst({
+        where: { orderId: order.id },
+        select: { id: true, status: true, confirmedLostQuantity: true },
+      });
       if (!demand) throw new Error("Expected an UnfulfilledDemand row after authorization.");
+      expect(demand.status).toBe("CONFIRMED_LOST");
+      expect(demand.confirmedLostQuantity.toString()).toBe("10.0000");
 
-      const decided = await recordCustomerDecision(
-        { unfulfilledDemandId: demand.id, decisionType: "ENTIRE_LINE_CANCELLED", source: "CUSTOMER_EMAIL", quantity: "10.0000" },
-        adminId
-      );
-      if (!decided.ok) throw new Error(decided.message);
-
-      const confirmed = await confirmLostSale(
-        { unfulfilledDemandId: demand.id, quantity: "10.0000", reason: "PRODUCT_UNAVAILABLE", decisionSource: "CUSTOMER_EMAIL" },
-        adminId
-      );
-      if (!confirmed.ok) throw new Error(confirmed.message);
+      const lostSaleRecord = await prisma.lostSaleRecord.findFirst({ where: { unfulfilledDemandId: demand.id } });
+      if (!lostSaleRecord) throw new Error("Expected an automatically-created LostSaleRecord.");
+      expect(lostSaleRecord.decisionSource).toBe("AUTOMATIC_SYSTEM_RECORDED");
+      expect(lostSaleRecord.reason).toBe("PRODUCT_UNAVAILABLE");
 
       const report = await getSalesPerformanceReport({
         dateFrom: "2026-02-01",
@@ -269,7 +271,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 12: sales performance inte
         currency: null,
         lostSalesReason: null,
         unfulfilledDemandStatus: null,
-        customerDecisionType: null,
+        lostSaleSource: null,
         includeDemo: true,
         productCategory: null,
         productSearch: null,
@@ -402,7 +404,7 @@ function reportFiltersFor(customerId: string) {
     currency: null,
     lostSalesReason: null,
     unfulfilledDemandStatus: null,
-    customerDecisionType: null,
+    lostSaleSource: null,
     includeDemo: true,
     productCategory: null,
     productSearch: null,

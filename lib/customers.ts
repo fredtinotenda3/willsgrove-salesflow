@@ -39,6 +39,25 @@ const duplicateCodeFailure: MutationFailure = {
   fieldErrors: { sapCustomerCode: "This SAP customer code is already used." },
 };
 
+// Real Business Data Onboarding round (spec PART A, Phase 4b): the only
+// foreign key updateCustomer can violate is priceListId (Customer.priceList's
+// onDelete: SetNull means a PriceList being deleted can never leave a
+// dangling reference -- the only way to get a P2003 here is a request
+// naming a price-list id that doesn't exist).
+function isForeignKeyViolation(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2003"
+  );
+}
+
+const unknownPriceListFailure: MutationFailure = {
+  ok: false,
+  status: 400,
+  message: "That price list could not be found.",
+  fieldErrors: { priceListId: "This price list no longer exists. Refresh and try again." },
+};
+
 export async function createCustomer(
   input: CreateCustomerInput,
   // isDemo is intentionally not part of CreateCustomerInput (and therefore
@@ -107,6 +126,7 @@ const UPDATABLE_KEYS = [
   "category",
   "notes",
   "status",
+  "priceListId",
 ] as const;
 
 export async function updateCustomer(
@@ -125,6 +145,7 @@ export async function updateCustomer(
           category: true,
           notes: true,
           status: true,
+          priceListId: true,
         },
       });
 
@@ -174,6 +195,10 @@ export async function updateCustomer(
   } catch (error) {
     if (isUniqueViolation(error)) {
       return duplicateCodeFailure;
+    }
+
+    if (isForeignKeyViolation(error)) {
+      return unknownPriceListFailure;
     }
 
     throw error;

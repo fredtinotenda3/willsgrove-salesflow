@@ -59,7 +59,7 @@ function emptyFilters(overrides: Partial<ReportFilters> = {}): ReportFilters {
     priority: null,
     recommendationStatus: null,
     unfulfilledDemandStatus: null,
-    customerDecisionType: null,
+    lostSaleSource: null,
     ...overrides,
   };
 }
@@ -112,6 +112,32 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Part 5: dashboard query orchestratio
     // rather than hanging or throwing a pool-timeout error.
     expect(dashboard).toBeDefined();
     expect(dashboard.snapshot).toBeDefined();
+
+    // Real Business Data Onboarding round, Phase 9 (RBAC verification):
+    // the Phase 7 "Source C" KPI tile is wired into the real end-to-end
+    // orchestration (not just unit-constructed) and carries
+    // visibility: "management" -- the exact field app/page.tsx's
+    // `visibleKpis` filter (kpi.visibility === "all" || isManagement)
+    // reads to decide whether a SALESPERSON ever sees it. This is the
+    // actual RBAC boundary for this tile; app/page.tsx itself is a
+    // server component with no render-test harness in this project, so
+    // asserting on the data it filters on is this project's existing,
+    // established way of covering that boundary (see this file's other
+    // tests for the same "assert on the real orchestrated output"
+    // approach).
+    const returnedGoodsTile = dashboard.kpis.find((kpi) => kpi.id === "returnedGoodsLostSalesValue");
+    expect(returnedGoodsTile).toBeDefined();
+    expect(returnedGoodsTile?.visibility).toBe("management");
+    expect(returnedGoodsTile?.area).toBe("lost_sales");
+
+    // Same boundary, same reasoning, for the two sibling management-only
+    // lost-sales/claims KPIs it sits beside -- a regression here (e.g. a
+    // future edit that defaults visibility to "all") would silently
+    // leak financial exposure figures to every role.
+    const claimsExposureTile = dashboard.kpis.find((kpi) => kpi.area === "lost_sales" && kpi.id !== "returnedGoodsLostSalesValue" && kpi.id !== "estimatedLostSalesValue");
+    const supplyShortageTile = dashboard.kpis.find((kpi) => kpi.id === "estimatedLostSalesValue");
+    if (claimsExposureTile) expect(claimsExposureTile.visibility).toBe("management");
+    expect(supplyShortageTile?.visibility).toBe("management");
   });
 
   it("firing several full dashboard loads concurrently -- simulating several users opening the homepage at once -- never throws a connection-pool-timeout error", async () => {

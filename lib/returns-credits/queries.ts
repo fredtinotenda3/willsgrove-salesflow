@@ -17,6 +17,10 @@ export async function listClaimReturns(claimId: string) {
       claimLine: { select: { id: true, sapInvoiceLine: { select: { sapItemCode: true, sapItemDescription: true } } } },
       receivedBy: { select: { id: true, name: true } },
       creditNote: { select: { id: true, sapCreditNoteDocNum: true, amount: true } },
+      // Real Business Data Onboarding round, Phase 6 (Returned-claim
+      // lost sales). Null whenever this return's own condition was
+      // GOOD_RESALABLE -- see ClaimReturnLostSale's own comment.
+      lostSale: { select: { id: true, estimatedUnitPrice: true, estimatedValue: true, currencyCode: true } },
     },
     orderBy: { receivedAt: "desc" },
   });

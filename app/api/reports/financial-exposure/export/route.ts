@@ -42,6 +42,24 @@ export async function GET(request: NextRequest) {
       [{ key: "metric", header: "Source B: Insufficient supply at fulfilment" }, { key: "value", header: "Value" }]
     );
 
+    // Real Business Data Onboarding round, Phase 7 (Claims analytics):
+    // Source C (confirmed loss from returned goods) -- its own
+    // clearly-labeled, per-currency block, same reasoning as Source B's
+    // above: never a column that could be summed with Source A's or
+    // Source B's by a careless spreadsheet formula. See
+    // getFinancialExposureReport's own note for why Source C is never
+    // added to Source A even though they can share the same claim.
+    const sourceCCsv = buildCsv(
+      report.lostSalesBySource.sourceC.byCurrency,
+      [{ key: "currencyCode", header: "Source C: Confirmed loss from returned goods -- Currency" }, { key: "recordCount", header: "Record count" }, { key: "estimatedValue", header: "Confirmed loss value" }]
+    );
+    const sourceCTotalsCsv = buildCsv(
+      [{ metric: "Confirmed-loss returns, total", value: String(report.lostSalesBySource.sourceC.totalLossRecords) },
+       { metric: "Confirmed-loss returns priced", value: String(report.lostSalesBySource.sourceC.recordsWithEstimate) },
+       { metric: "Confirmed-loss returns without a price (excluded)", value: String(report.lostSalesBySource.sourceC.recordsWithoutEstimate) }],
+      [{ key: "metric", header: "Source C totals" }, { key: "value", header: "Value" }]
+    );
+
     const otherRows = [
       ...flattenToKeyValueRows(report.claims.statusCounts, "claims.statusCounts"),
       ...flattenToKeyValueRows(report.claims.categoryCounts, "claims.categoryCounts"),
@@ -53,16 +71,17 @@ export async function GET(request: NextRequest) {
     const otherCsv = buildCsv(otherRows, [{ key: "metric", header: "Metric" }, { key: "value", header: "Value" }]);
 
     // One file: the exposure table (Source A), a blank separator, Source
-    // B's totals, a blank separator, then everything else flattened --
-    // a single export per spec section 8, not two downloads for one
+    // B's totals, a blank separator, Source C's per-currency table and
+    // totals, a blank separator, then everything else flattened -- a
+    // single export per spec section 8, not multiple downloads for one
     // report.
-    const csv = exposureCsv + "\r\n" + sourceBCsv + "\r\n" + otherCsv;
+    const csv = exposureCsv + "\r\n" + sourceBCsv + "\r\n" + sourceCCsv + "\r\n" + sourceCTotalsCsv + "\r\n" + otherCsv;
 
     await recordReportExport({
       actorId: auth.user.id,
       reportId: "financial-exposure",
       filters: { ...parsed.filters, dateFrom: report.dateFrom, dateTo: report.dateTo },
-      rowCount: report.claims.exposureByCurrency.length + 3 + otherRows.length,
+      rowCount: report.claims.exposureByCurrency.length + 3 + report.lostSalesBySource.sourceC.byCurrency.length + 3 + otherRows.length,
     });
 
     return new NextResponse(csv, { headers: csvResponseHeaders("financial-exposure") });

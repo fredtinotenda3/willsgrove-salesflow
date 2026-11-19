@@ -124,17 +124,34 @@ export type ReportFilters = {
   recommendationStatus: string | null;
   /**
    * Additional Implementation Requirements (spec section 3: "Lost Sales
-   * Analytics Overhaul"). Two more, like lostSalesReason above, each
-   * mapping onto exactly one schema enum (UnfulfilledDemandStatus/
-   * CustomerDecisionType) and centrally validated in
-   * lib/reporting/filters.ts's parseReportFilters. Applied by
+   * Analytics Overhaul"). Like lostSalesReason above, maps onto exactly
+   * one schema enum (UnfulfilledDemandStatus) and is centrally validated
+   * in lib/reporting/filters.ts's parseReportFilters. Applied by
    * lib/lost-sales/analytics-queries.ts's getLostSalesAnalytics; every
-   * other existing report function ignores them (same "every page
-   * states null when a filter doesn't apply to it" convention this
-   * whole type already follows).
+   * other existing report function ignores it (same "every page states
+   * null when a filter doesn't apply to it" convention this whole type
+   * already follows).
+   *
+   * Real Business Data Onboarding round (spec PART A): customerDecisionType
+   * was removed from this type entirely -- the UI/API filter surface for
+   * the Customer Decision workflow it filtered is deleted outright, not
+   * merely hidden (the CustomerDecisionType enum itself is kept at the
+   * schema level only for historical-data safety; see its schema.prisma
+   * comment).
    */
   unfulfilledDemandStatus: string | null;
-  customerDecisionType: string | null;
+  /**
+   * Follow-up fix ("Returned-claim lost sales must... clearly distinguish
+   * the different sources of lost sales... add source filters"). A
+   * LostSaleSource value ("SHORTAGE" | "RETURNED_PRODUCT") or null for
+   * "both sources" -- validated centrally in parseReportFilters, same
+   * precedent as lostSalesReason/unfulfilledDemandStatus above. Applied
+   * only by lib/lost-sales/consolidated-analytics.ts's
+   * getConsolidatedLostSalesAnalytics; every other report function
+   * ignores it, same "null when a filter doesn't apply here" convention
+   * this whole type already follows.
+   */
+  lostSaleSource: string | null;
 };
 
 export type PaginationParams = {

@@ -13,6 +13,13 @@ export type CustomerListQuery = {
   status: RecordStatus | null;
   page: number;
   pageSize: number;
+  // Real Business Data Onboarding round (spec PART A, Phase 4b): undefined
+  // = no price-list filter, "UNASSIGNED" = customers with no price list at
+  // all (priceListId null), any other value = that exact PriceList id. A
+  // URL query string can't carry a literal null, so "UNASSIGNED" is a
+  // reserved sentinel here, same convention category/status already use
+  // ("All"/"ALL") for "no filter" vs. a real value.
+  priceListId: string | null;
 };
 
 export type ParsedCustomerListQuery =
@@ -94,9 +101,12 @@ export function parseCustomerListQuery(
     };
   }
 
+  const rawPriceListId = (params.get("priceListId") ?? "").trim();
+  const priceListId = rawPriceListId === "" ? null : rawPriceListId;
+
   return {
     ok: true,
-    query: { search, category, status, page, pageSize },
+    query: { search, category, status, page, pageSize, priceListId },
   };
 }
 
@@ -109,6 +119,8 @@ const customerListSelect = {
   category: true,
   status: true,
   createdAt: true,
+  priceListId: true,
+  priceList: { select: { id: true, code: true, name: true } },
   locations: {
     where: { isActive: true },
     orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
@@ -141,6 +153,12 @@ export async function listCustomers(query: CustomerListQuery) {
 
   if (query.status) {
     where.status = query.status;
+  }
+
+  if (query.priceListId === "UNASSIGNED") {
+    where.priceListId = null;
+  } else if (query.priceListId) {
+    where.priceListId = query.priceListId;
   }
 
   const [filteredTotal, rows, total, active, withoutLocations, groups] =
@@ -185,6 +203,8 @@ export async function listCustomers(query: CustomerListQuery) {
         category: customer.category,
         status: customer.status,
         createdAt: customer.createdAt.toISOString(),
+        priceListId: customer.priceListId,
+        priceList: customer.priceList,
         primaryLocation: primary
           ? { label: primary.label, city: primary.city }
           : null,
@@ -222,6 +242,8 @@ export async function getCustomerById(id: string) {
       notes: true,
       createdAt: true,
       updatedAt: true,
+      priceListId: true,
+      priceList: { select: { id: true, code: true, name: true, currencyCode: true } },
       locations: {
         orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
         select: {
@@ -254,6 +276,8 @@ export async function getCustomerById(id: string) {
     notes: customer.notes,
     createdAt: customer.createdAt.toISOString(),
     updatedAt: customer.updatedAt.toISOString(),
+    priceListId: customer.priceListId,
+    priceList: customer.priceList,
     locations: customer.locations,
     orderCount: customer._count.orders,
   };

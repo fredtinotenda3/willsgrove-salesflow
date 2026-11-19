@@ -591,7 +591,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 13: customer intelligence"
       currency: null,
       lostSalesReason: null,
       unfulfilledDemandStatus: null,
-      customerDecisionType: null,
+      lostSaleSource: null,
       productCategory: null,
       productSearch: null,
       sapItemCode: null,

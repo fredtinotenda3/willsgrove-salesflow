@@ -47,6 +47,13 @@ type LineDraft = {
   notes: string;
   suggestions: ProductSuggestion[];
   showSuggestions: boolean;
+  // Real Business Data Onboarding round, follow-up fix: when the
+  // selected customer has a price list carrying an entry for this
+  // product, that price is prefilled into unitPrice above (still fully
+  // editable) and this note is shown next to the field so the operator
+  // knows WHY it's already filled in and can judge whether to change
+  // it -- never silently/invisibly applied.
+  priceListHint: string | null;
 };
 
 let lineKeyCounter = 0;
@@ -66,6 +73,7 @@ function newLine(): LineDraft {
     notes: "",
     suggestions: [],
     showSuggestions: false,
+    priceListHint: null,
   };
 }
 
@@ -172,7 +180,39 @@ export default function NewQuotationForm() {
       productQuery: product.itemName,
       suggestions: [],
       showSuggestions: false,
+      priceListHint: null,
     });
+
+    // Customer-specific pricing: if this customer has a price list and
+    // it carries a price for this product, prefill it -- the operator
+    // can still change it, this never blocks or locks the field. Only
+    // fills a BLANK price, so re-selecting a product never clobbers a
+    // value already typed for this line.
+    if (selectedCustomer) {
+      lookupPriceListPrice(key, selectedCustomer.id, product.id);
+    }
+  }
+
+  function lookupPriceListPrice(key: string, customerId: string, productId: string) {
+    fetch(`/api/price-lists/lookup?customerId=${encodeURIComponent(customerId)}&productId=${encodeURIComponent(productId)}`, {
+      cache: "no-store",
+    })
+      .then((res) => res.json())
+      .then((data: { success?: boolean; price?: { unitPrice: string; currencyCode: string; priceListCode: string } | null }) => {
+        if (!data.success || !data.price) return;
+        setLines((prev) =>
+          prev.map((line) =>
+            line.key === key && line.productId === productId && line.unitPrice.trim() === ""
+              ? {
+                  ...line,
+                  unitPrice: data.price!.unitPrice,
+                  priceListHint: `Prefilled from ${data.price!.priceListCode} price list (${data.price!.currencyCode})`,
+                }
+              : line
+          )
+        );
+      })
+      .catch(() => {});
   }
 
   async function submit() {
@@ -295,7 +335,7 @@ export default function NewQuotationForm() {
               <div className="absolute z-10 mt-1 w-full rounded-lg border border-gray-100 bg-white shadow-lg">
                 {customerResults.length === 0 && <p className="px-4 py-3 text-xs text-gray-400">No customers found.</p>}
                 {customerResults.map((customer) => (
-                  <button key={customer.id} type="button" onClick={() => { setSelectedCustomer(customer); setShowCustomerResults(false); }} className="block w-full px-4 py-3 text-left text-xs hover:bg-gray-50">
+                  <button key={customer.id} type="button" onClick={() => { setSelectedCustomer(customer); setShowCustomerResults(false); for (const line of lines) { if (line.productId && line.unitPrice.trim() === "") lookupPriceListPrice(line.key, customer.id, line.productId); } }} className="block w-full px-4 py-3 text-left text-xs hover:bg-gray-50">
                     <p className="font-medium text-gray-700">{customer.name}</p>
                     {customer.sapCustomerCode && <p className="text-[10px] text-gray-400">{customer.sapCustomerCode}</p>}
                   </button>
@@ -431,7 +471,8 @@ export default function NewQuotationForm() {
                 </div>
                 <div>
                   <label className="text-[10px] font-semibold text-gray-400">Unit price *</label>
-                  <input type="text" inputMode="decimal" value={line.unitPrice} onChange={(event) => updateLine(line.key, { unitPrice: event.target.value })} placeholder="0.0000" className="mt-1 h-9 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]" />
+                  <input type="text" inputMode="decimal" value={line.unitPrice} onChange={(event) => updateLine(line.key, { unitPrice: event.target.value, priceListHint: null })} placeholder="0.0000" className="mt-1 h-9 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]" />
+                  {line.priceListHint && <p className="mt-1 text-[10px] text-green-600">{line.priceListHint}</p>}
                 </div>
                 <div>
                   <label className="text-[10px] font-semibold text-gray-400">Discount % (optional)</label>

@@ -120,6 +120,23 @@ type AnalyticsRow = {
   confirmedLostQuantity: number;
   estimatedUnitPrice: number | null;
   estimatedValue: number | null;
+  // Real Business Data Onboarding round, follow-up fix: "since now we
+  // have prices, the graphs should now have prices too... the quantity
+  // should be associated with its price" -- estimatedUnitPrice above was
+  // ALREADY resolved and snapshotted on this row at creation time
+  // (create-unfulfilled-demand.ts's resolveEstimatedLostSaleValue), but
+  // until now it was only ever multiplied against unavailableQuantity
+  // (estimatedValue, the "lost sale" figure). requestedValue/foundValue
+  // apply that exact same snapshot price to the OTHER two quantities
+  // this module has always tracked, so "requested 500kg" and "found
+  // 420kg" read as a dollar figure too, not just a bare count. Same
+  // "never invent a value" discipline as estimatedValue: null (not 0)
+  // whenever estimatedUnitPrice itself is null, so a row with no
+  // resolvable price silently drops out of the SUM rather than
+  // understating it with a fabricated zero -- demandsWithoutEstimate
+  // already discloses exactly how many rows that affects.
+  requestedValue: number | null;
+  foundValue: number | null;
   // Chart intelligence enhancement: this row's own confirmed-lost value,
   // from LostSaleRecord.estimatedValue (Source B's manually-confirmed
   // figure -- see lib/lost-sales/queries.ts's getSupplyShortageLostSalesValue
@@ -143,6 +160,9 @@ export type LostSalesTrendPoint = {
   foundQuantity: string;
   unavailableQuantity: string;
   estimatedLostValue: string;
+  /** Follow-up fix: requestedQuantity/foundQuantity priced at each row's own snapshotted estimatedUnitPrice -- see AnalyticsRow.requestedValue/foundValue's own comment. */
+  requestedValue: string;
+  foundValue: string;
   /** Chart intelligence enhancement: Source B's confirmed (not merely estimated) value for demands created in this bucket -- see AnalyticsRow.confirmedLostValue. Never summed into estimatedLostValue above; always shown as its own, separately-labeled figure. */
   confirmedLostValue: string;
   demandCount: number;
@@ -171,6 +191,9 @@ export type LostSalesProductBreakdown = {
   unavailableQuantity: string;
   /** Chart intelligence enhancement: this product's own shortage rate within the scope this breakdown was computed over -- null for the same reason computeShortageRate returns null (zero requested), never gated by MIN_DEMAND_COUNT_FOR_RATE_RANKING here (that gate only applies to the dedicated shortageRateByProduct RANKING below, not to a per-product breakdown row that always shows its own real number). */
   shortageRatePercent: number | null;
+  /** Follow-up fix: this product's requested/found quantity priced at each contributing row's own snapshotted estimatedUnitPrice -- see AnalyticsRow.requestedValue/foundValue's own comment. */
+  requestedValue: string;
+  foundValue: string;
   /** Chart intelligence enhancement: Source B automatic estimate, this product's share. */
   estimatedValue: string;
   /** Chart intelligence enhancement: Source B's actually-confirmed value, this product's share -- see LostSalesTrendPoint.confirmedLostValue's own comment on the distinction this never blurs. */
@@ -188,6 +211,9 @@ export type LostSalesCustomerBreakdown = {
   /** Chart intelligence enhancement. */
   requestedQuantity: string;
   foundQuantity: string;
+  /** Follow-up fix: see LostSalesProductBreakdown.requestedValue/foundValue's own comment -- same per-row snapshotted price, aggregated per customer instead of per product. */
+  requestedValue: string;
+  foundValue: string;
   estimatedValue: string;
   confirmedLostValue: string;
   affectedOrderCount: number;
@@ -223,6 +249,9 @@ export type LostSalesAnalyticsResult = {
     totalUnavailableQuantity: string;
     totalOutstandingQuantity: string;
     totalConfirmedLostQuantity: string;
+    /** Follow-up fix: totalRequestedQuantity/totalFoundQuantity priced at each row's own snapshotted estimatedUnitPrice -- see AnalyticsRow.requestedValue/foundValue's own comment. Shares demandsWithoutEstimate below (the same snapshot price backs all three value figures). */
+    totalRequestedValue: string;
+    totalFoundValue: string;
     totalEstimatedLostValue: string;
     /** Chart intelligence enhancement: Source B's actually-confirmed value (LostSaleRecord.estimatedValue) across the whole filtered scope -- see LostSalesTrendPoint.confirmedLostValue's own comment. Never added to totalEstimatedLostValue. */
     totalConfirmedLostValue: string;
@@ -254,7 +283,13 @@ export type LostSalesAnalyticsResult = {
   composition: LostSalesCompositionBreakdown;
   distribution: LostSalesDistribution;
   lossReasonBreakdown: { reason: string; recordCount: number; totalQuantity: string; totalConfirmedValue: string }[];
-  decisionTypeBreakdown: { decisionType: string; eventCount: number; totalQuantity: string }[];
+  // Real Business Data Onboarding round (spec PART A): decisionTypeBreakdown
+  // removed outright -- no surviving code path ever creates a new
+  // CustomerDecisionEvent to break down any more (the UI/API/library
+  // surface that drove the Customer Decision workflow is deleted, not
+  // merely hidden; the underlying model itself is kept at the schema
+  // level only for historical-data safety -- see its schema.prisma
+  // comment).
   drilldown: ListUnfulfilledDemandsResult;
 };
 
@@ -325,12 +360,9 @@ export async function getLostSalesAnalytics(
     ...(filters.lostSalesReason
       ? { lostSaleRecords: { some: { reason: filters.lostSalesReason as Prisma.LostSaleRecordWhereInput["reason"] } } }
       : {}),
-    ...(filters.customerDecisionType
-      ? { decisionEvents: { some: { decisionType: filters.customerDecisionType as Prisma.CustomerDecisionEventWhereInput["decisionType"] } } }
-      : {}),
   };
 
-  const [totalMatching, rawRows, reasonGroups, decisionGroups, drilldown] = await Promise.all([
+  const [totalMatching, rawRows, reasonGroups, drilldown] = await Promise.all([
     prisma.unfulfilledDemand.count({ where }),
     prisma.unfulfilledDemand.findMany({
       where,
@@ -382,13 +414,6 @@ export async function getLostSalesAnalytics(
       _sum: { quantity: true, estimatedValue: true },
       orderBy: { _count: { reason: "desc" } },
     }),
-    prisma.customerDecisionEvent.groupBy({
-      by: ["decisionType"],
-      where: { unfulfilledDemand: where },
-      _count: { _all: true },
-      _sum: { quantity: true },
-      orderBy: { _count: { decisionType: "desc" } },
-    }),
     listUnfulfilledDemands({
       page: drilldownPage.page,
       pageSize: drilldownPage.pageSize,
@@ -400,7 +425,6 @@ export async function getLostSalesAnalytics(
       dateFrom: effectiveFromDate,
       dateTo: effectiveToDateExclusive,
       reason: filters.lostSalesReason ?? undefined,
-      decisionType: filters.customerDecisionType ?? undefined,
     }),
   ]);
 
@@ -422,6 +446,9 @@ export async function getLostSalesAnalytics(
     confirmedLostQuantity: toNumber(row.confirmedLostQuantity),
     estimatedUnitPrice: row.estimatedUnitPrice === null ? null : toNumber(row.estimatedUnitPrice),
     estimatedValue: row.estimatedValue === null ? null : toNumber(row.estimatedValue),
+    requestedValue:
+      row.estimatedUnitPrice === null ? null : toNumber(row.requestedQuantity) * toNumber(row.estimatedUnitPrice),
+    foundValue: row.estimatedUnitPrice === null ? null : toNumber(row.foundQuantity) * toNumber(row.estimatedUnitPrice),
     confirmedLostValue: row.lostSaleRecords.reduce(
       (sum: number, record: { estimatedValue: { toString(): string } | null }) => sum + toNumber(record.estimatedValue),
       0
@@ -438,6 +465,8 @@ export async function getLostSalesAnalytics(
   let totalOutstanding = 0;
   let totalConfirmedLost = 0;
   let totalEstimatedValue = 0;
+  let totalRequestedValue = 0;
+  let totalFoundValue = 0;
   let totalConfirmedLostValue = 0;
   let demandsWithoutEstimate = 0;
   const allOrderIds = new Set<string>();
@@ -457,6 +486,12 @@ export async function getLostSalesAnalytics(
     totalConfirmedLostValue += row.confirmedLostValue;
     if (row.estimatedValue !== null) {
       totalEstimatedValue += row.estimatedValue;
+      // Follow-up fix: requestedValue/foundValue are non-null exactly
+      // when estimatedValue is (same snapshotted estimatedUnitPrice
+      // backs all three) -- summed in lockstep here rather than guarded
+      // separately, so the three totals can never drift apart.
+      totalRequestedValue += row.requestedValue ?? 0;
+      totalFoundValue += row.foundValue ?? 0;
     } else {
       demandsWithoutEstimate += 1;
     }
@@ -485,6 +520,8 @@ export async function getLostSalesAnalytics(
     found: number;
     unavailable: number;
     estimatedValue: number;
+    requestedValue: number;
+    foundValue: number;
     confirmedLostValue: number;
     count: number;
     orderIds: Set<string>;
@@ -500,6 +537,8 @@ export async function getLostSalesAnalytics(
       found: 0,
       unavailable: 0,
       estimatedValue: 0,
+      requestedValue: 0,
+      foundValue: 0,
       confirmedLostValue: 0,
       count: 0,
       orderIds: new Set(),
@@ -511,6 +550,8 @@ export async function getLostSalesAnalytics(
     agg.found += row.foundQuantity;
     agg.unavailable += row.unavailableQuantity;
     agg.estimatedValue += row.estimatedValue ?? 0;
+    agg.requestedValue += row.requestedValue ?? 0;
+    agg.foundValue += row.foundValue ?? 0;
     agg.confirmedLostValue += row.confirmedLostValue;
     agg.count += 1;
     agg.orderIds.add(row.orderId);
@@ -532,6 +573,8 @@ export async function getLostSalesAnalytics(
         const rate = computeShortageRate(agg.unavailable, agg.requested);
         return rate === null ? null : Math.round(rate * 10000) / 100;
       })(),
+      requestedValue: formatTotal(agg.requestedValue),
+      foundValue: formatTotal(agg.foundValue),
       estimatedValue: formatTotal(agg.estimatedValue),
       confirmedLostValue: formatTotal(agg.confirmedLostValue),
       affectedOrderCount: agg.orderIds.size,
@@ -547,6 +590,8 @@ export async function getLostSalesAnalytics(
       found: number;
       unavailable: number;
       estimatedValue: number;
+      requestedValue: number;
+      foundValue: number;
       confirmedLostValue: number;
       count: number;
       orderIds: Set<string>;
@@ -564,6 +609,8 @@ export async function getLostSalesAnalytics(
         found: 0,
         unavailable: 0,
         estimatedValue: 0,
+        requestedValue: 0,
+        foundValue: 0,
         confirmedLostValue: 0,
         count: 0,
         orderIds: new Set<string>(),
@@ -575,6 +622,8 @@ export async function getLostSalesAnalytics(
     bucket.found += row.foundQuantity;
     bucket.unavailable += row.unavailableQuantity;
     bucket.estimatedValue += row.estimatedValue ?? 0;
+    bucket.requestedValue += row.requestedValue ?? 0;
+    bucket.foundValue += row.foundValue ?? 0;
     bucket.confirmedLostValue += row.confirmedLostValue;
     bucket.count += 1;
     bucket.orderIds.add(row.orderId);
@@ -605,6 +654,8 @@ export async function getLostSalesAnalytics(
         foundQuantity: formatTotal(totals.found),
         unavailableQuantity: formatTotal(totals.unavailable),
         estimatedLostValue: formatTotal(totals.estimatedValue),
+        requestedValue: formatTotal(totals.requestedValue),
+        foundValue: formatTotal(totals.foundValue),
         confirmedLostValue: formatTotal(totals.confirmedLostValue),
         demandCount: totals.count,
         affectedOrderCount: totals.orderIds.size,
@@ -634,6 +685,8 @@ export async function getLostSalesAnalytics(
     requested: number;
     found: number;
     estimatedValue: number;
+    requestedValue: number;
+    foundValue: number;
     confirmedLostValue: number;
     count: number;
     orderIds: Set<string>;
@@ -655,6 +708,8 @@ export async function getLostSalesAnalytics(
       unavailableQuantity: formatTotal(agg.unavailable),
       requestedQuantity: formatTotal(agg.requested),
       foundQuantity: formatTotal(agg.found),
+      requestedValue: formatTotal(agg.requestedValue),
+      foundValue: formatTotal(agg.foundValue),
       estimatedValue: formatTotal(agg.estimatedValue),
       confirmedLostValue: formatTotal(agg.confirmedLostValue),
       affectedOrderCount: agg.orderIds.size,
@@ -680,6 +735,8 @@ export async function getLostSalesAnalytics(
         requested: 0,
         found: 0,
         estimatedValue: 0,
+        requestedValue: 0,
+        foundValue: 0,
         confirmedLostValue: 0,
         count: 0,
         orderIds: new Set<string>(),
@@ -688,6 +745,8 @@ export async function getLostSalesAnalytics(
     customerAgg.requested += row.requestedQuantity;
     customerAgg.found += row.foundQuantity;
     customerAgg.estimatedValue += row.estimatedValue ?? 0;
+    customerAgg.requestedValue += row.requestedValue ?? 0;
+    customerAgg.foundValue += row.foundValue ?? 0;
     customerAgg.confirmedLostValue += row.confirmedLostValue;
     customerAgg.count += 1;
     customerAgg.orderIds.add(row.orderId);
@@ -801,6 +860,8 @@ export async function getLostSalesAnalytics(
       totalUnavailableQuantity: formatTotal(totalUnavailable),
       totalOutstandingQuantity: formatTotal(totalOutstanding),
       totalConfirmedLostQuantity: formatTotal(totalConfirmedLost),
+      totalRequestedValue: formatTotal(totalRequestedValue),
+      totalFoundValue: formatTotal(totalFoundValue),
       totalEstimatedLostValue: formatTotal(totalEstimatedValue),
       totalConfirmedLostValue: formatTotal(totalConfirmedLostValue),
       demandsWithoutEstimate,
@@ -825,11 +886,6 @@ export async function getLostSalesAnalytics(
       totalQuantity: formatTotal(toNumber(group._sum.quantity)),
       // Chart intelligence enhancement.
       totalConfirmedValue: formatTotal(toNumber(group._sum.estimatedValue)),
-    })),
-    decisionTypeBreakdown: decisionGroups.map((group) => ({
-      decisionType: group.decisionType,
-      eventCount: group._count._all,
-      totalQuantity: formatTotal(toNumber(group._sum.quantity)),
     })),
     drilldown,
   };

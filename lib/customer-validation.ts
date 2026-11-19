@@ -25,6 +25,15 @@ export type CreateCustomerInput = CustomerFields & {
 
 export type UpdateCustomerInput = Partial<CustomerFields> & {
   status?: RecordStatus;
+  // Real Business Data Onboarding round (spec PART A, Phase 4b): undefined
+  // = not provided (no change), null = explicitly unassign the customer's
+  // price list, a non-empty string = assign to that PriceList's id.
+  // Existence of the referenced PriceList is a database concern, checked
+  // in lib/customers.ts's updateCustomer (a foreign-key violation there
+  // is reported as a clean 400, not a 500) -- this layer only checks
+  // shape, same division of labor sapCustomerCode's uniqueness check
+  // already uses.
+  priceListId?: string | null;
 };
 
 export type ValidationResult<T> =
@@ -242,6 +251,18 @@ export function validateUpdateCustomer(
       value.status = RecordStatus.INACTIVE;
     } else {
       errors.status = "Status must be ACTIVE or INACTIVE.";
+    }
+  }
+
+  const rawPriceListId = body.priceListId;
+
+  if (rawPriceListId !== undefined) {
+    if (rawPriceListId === null) {
+      value.priceListId = null;
+    } else if (typeof rawPriceListId !== "string" || rawPriceListId.trim() === "") {
+      errors.priceListId = "Price list id must be a non-empty string, or null to unassign.";
+    } else {
+      value.priceListId = rawPriceListId.trim();
     }
   }
 

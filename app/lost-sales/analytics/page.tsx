@@ -2,11 +2,18 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { getLostSalesAnalytics } from "@/lib/lost-sales/analytics-queries";
+import { getConsolidatedLostSalesAnalytics } from "@/lib/lost-sales/consolidated-analytics";
 import { getClaimReasonAnalytics } from "@/lib/invoice-claims/reason-analytics";
 import { parseLostSalesAnalyticsPeriod, lostSalesAnalyticsPeriodValues, type LostSalesAnalyticsPeriod } from "@/lib/lost-sales/analytics-validation";
 import { LOST_SALES_MAX_PAGE_SIZE } from "@/lib/lost-sales/queries";
 import { unfulfilledDemandStatusValues } from "@/lib/lost-sales/validation";
-import { UNFULFILLED_DEMAND_STATUS_LABELS, UNFULFILLED_DEMAND_STATUS_STYLES, LOST_SALE_REASON_LABELS, DECISION_TYPE_LABELS } from "@/lib/lost-sales/display";
+import {
+  UNFULFILLED_DEMAND_STATUS_LABELS,
+  UNFULFILLED_DEMAND_STATUS_STYLES,
+  LOST_SALE_REASON_LABELS,
+  LOST_SALE_SOURCE_LABELS,
+  LOST_SALE_SOURCE_STYLES,
+} from "@/lib/lost-sales/display";
 import { getReportFilterOptions } from "@/lib/reporting/filter-options";
 import { parseReportFilters, parsePagination, REPORT_DEFAULT_PAGE_SIZE } from "@/lib/reporting/filters";
 import { toFlatSearchParams, toURLSearchParams, filtersOnly, type ReportSearchParams } from "../../reports/_components/search-params";
@@ -22,7 +29,7 @@ import {
   CompositionStackedBar,
   UnavailableQuantityDistribution,
 } from "./_components/charts";
-import { AlertCircle, ChevronRight, Info } from "lucide-react";
+import { AlertCircle, ChevronRight, Download, Info } from "lucide-react";
 
 /**
  * Additional Implementation Requirements (spec section 3: "Lost Sales
@@ -56,7 +63,7 @@ const EMPTY_FILTERS = {
   currency: null,
   lostSalesReason: null,
   unfulfilledDemandStatus: null,
-  customerDecisionType: null,
+  lostSaleSource: null,
   productCategory: null,
   productSearch: null,
   sapItemCode: null,
@@ -116,8 +123,18 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
   const rawPagination = parsedPagination.ok ? parsedPagination.pagination : { page: 1, pageSize: REPORT_DEFAULT_PAGE_SIZE };
   const pagination = { page: rawPagination.page, pageSize: Math.min(rawPagination.pageSize, LOST_SALES_MAX_PAGE_SIZE) };
 
-  const [analytics, claimReasonAnalytics, filterOptions] = await Promise.all([
+  // Follow-up fix (consolidated lost-sales drilldown). Its own page
+  // number, under its own query-param name -- see Pagination's own
+  // `pageParam` comment for why this table cannot share "page" with the
+  // shortage-only order-level drilldown already on this same page.
+  // Reuses the same clamped pageSize as that table (pageSize is not
+  // independently filterable here -- one bound is enough).
+  const consolidatedPageRaw = Number.parseInt(urlSearchParams.get("consolidatedPage") ?? "1", 10);
+  const consolidatedPage = { page: Number.isFinite(consolidatedPageRaw) && consolidatedPageRaw >= 1 ? consolidatedPageRaw : 1, pageSize: pagination.pageSize };
+
+  const [analytics, consolidated, claimReasonAnalytics, filterOptions] = await Promise.all([
     getLostSalesAnalytics(filters, period, pagination),
+    getConsolidatedLostSalesAnalytics(filters, consolidatedPage),
     getClaimReasonAnalytics(filters),
     getReportFilterOptions(),
   ]);
@@ -196,7 +213,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
             showSalesperson
             showProduct
             showLostSalesReason
-            showCustomerDecisionType
+            showLostSaleSource
             statusFilter={{
               queryKey: "unfulfilledDemandStatus",
               label: "Demand status",
@@ -205,9 +222,28 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
           />
 
           <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
-            <MetricCard title="Requested quantity" value={formatQuantity(analytics.kpis.totalRequestedQuantity)} dataQuality="actual" />
-            <MetricCard title="Found quantity" value={formatQuantity(analytics.kpis.totalFoundQuantity)} dataQuality="actual" />
-            <MetricCard title="Unavailable quantity" value={formatQuantity(analytics.kpis.totalUnavailableQuantity)} dataQuality="actual" />
+            <MetricCard
+              title="Requested quantity"
+              value={formatQuantity(analytics.kpis.totalRequestedQuantity)}
+              description={`≈ ${formatQuantity(analytics.kpis.totalRequestedValue)} in value${
+                analytics.kpis.demandsWithoutEstimate > 0 ? " (excludes demand(s) with no resolvable price)" : ""
+              }`}
+              dataQuality="actual"
+            />
+            <MetricCard
+              title="Found quantity"
+              value={formatQuantity(analytics.kpis.totalFoundQuantity)}
+              description={`≈ ${formatQuantity(analytics.kpis.totalFoundValue)} in value${
+                analytics.kpis.demandsWithoutEstimate > 0 ? " (excludes demand(s) with no resolvable price)" : ""
+              }`}
+              dataQuality="actual"
+            />
+            <MetricCard
+              title="Unavailable quantity"
+              value={formatQuantity(analytics.kpis.totalUnavailableQuantity)}
+              description={`≈ ${formatQuantity(analytics.kpis.totalEstimatedLostValue)} in estimated lost value -- see below for the confirmed figure`}
+              dataQuality="actual"
+            />
             <MetricCard title="Outstanding (awaiting supply)" value={formatQuantity(analytics.kpis.totalOutstandingQuantity)} dataQuality="actual" />
             <MetricCard title="Confirmed lost quantity" value={formatQuantity(analytics.kpis.totalConfirmedLostQuantity)} dataQuality="actual" />
           </section>
@@ -248,6 +284,249 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
             <RateStat label="Shortage rate" ratePercent={analytics.kpis.shortageRatePercent} sampleSize={analytics.sampleSize} sampleLabel="demand records" />
           </section>
 
+          {/*
+            Follow-up fix ("Show returned-claim losses in the same Lost
+            Sales Analytics page, KPIs, charts and reports as
+            shortage-based lost sales... Show separate breakdowns by
+            source... Add source filters and drill-down..."). Everything
+            above this point is the pre-existing, UNCHANGED shortage-only
+            view (UnfulfilledDemand/LostSaleRecord) -- requested/found/
+            outstanding quantities have no meaningful equivalent for a
+            physical return (a return was never "requested" or "found"
+            during picking), so that view stays exactly as it was.
+            Everything in this section is the NEW combined view: both
+            sources, side by side, never isolated in a separate report.
+          */}
+          <SectionCard
+            title="Lost sales by source (combined)"
+            description="Confirmed losses from BOTH sources -- shortages never delivered, and physically returned goods found unsellable. Never double-counted: the two sources describe disjoint quantities of goods (undelivered vs. delivered-then-returned) -- see each row's own drill-down for the underlying record."
+          >
+            <div className="space-y-5">
+              <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <MetricCard
+                  title="Combined confirmed lost quantity"
+                  value={formatQuantity(consolidated.kpis.totalConfirmedLostQuantity)}
+                  description={consolidated.kpis.mixedUnitsOfMeasure ? "Spans more than one unit of measure -- see the by-product breakdown for each product's own unit" : consolidated.kpis.quantityUnitCode ?? undefined}
+                  dataQuality="actual"
+                />
+                <MetricCard title="From shortages" value={formatQuantity(consolidated.kpis.shortageConfirmedLostQuantity)} dataQuality="actual" />
+                <MetricCard title="From returned product" value={formatQuantity(consolidated.kpis.returnedConfirmedLostQuantity)} dataQuality="actual" />
+                <MetricCard title="Affected orders / customers" value={`${consolidated.kpis.affectedOrderCount.toLocaleString()} / ${consolidated.kpis.affectedCustomerCount.toLocaleString()}`} dataQuality="actual" />
+              </section>
+
+              {consolidated.kpis.recordsWithoutValue > 0 && (
+                <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                  <Info size={18} className="mt-0.5 shrink-0" />
+                  <p>
+                    {consolidated.kpis.recordsWithoutValue} record(s) in scope have no resolvable unit price and are excluded from every value total
+                    below -- never shown as a fabricated zero.
+                  </p>
+                </div>
+              )}
+
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#849087]">Confirmed lost value by currency (never summed across currencies)</p>
+                {consolidated.valueByCurrency.length === 0 ? (
+                  <EmptyState message="No priced confirmed losses in the selected range." />
+                ) : (
+                  <div className="overflow-x-auto rounded-xl border border-[#EEF1ED]">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-[#F7F8F6] text-[11px] uppercase tracking-wide text-[#849087]">
+                        <tr>
+                          <th className="px-4 py-2 font-semibold">Currency</th>
+                          <th className="px-4 py-2 text-right font-semibold">From shortages</th>
+                          <th className="px-4 py-2 text-right font-semibold">From returned product</th>
+                          <th className="px-4 py-2 text-right font-semibold">Combined</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#EEF1ED]">
+                        {consolidated.valueByCurrency.map((bucket) => (
+                          <tr key={bucket.currencyCode}>
+                            <td className="px-4 py-2 font-semibold text-[#17251E]">{bucket.currencyCode}</td>
+                            <td className="whitespace-nowrap px-4 py-2 text-right text-[#17251E]">{formatQuantity(bucket.shortageValue)}</td>
+                            <td className="whitespace-nowrap px-4 py-2 text-right text-[#17251E]">{formatQuantity(bucket.returnedValue)}</td>
+                            <td className="whitespace-nowrap px-4 py-2 text-right font-semibold text-[#17251E]">{formatQuantity(bucket.totalValue)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#849087]">By source</p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {consolidated.bySource.map((row) => (
+                    <Link
+                      key={row.source}
+                      href={buildDrillDownHref(basePath, baseQuery, { lostSaleSource: row.source })}
+                      className="block rounded-xl border border-[#EEF1ED] p-4 transition hover:bg-gray-50"
+                    >
+                      <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold ${LOST_SALE_SOURCE_STYLES[row.source] ?? "bg-gray-100 text-gray-600"}`}>
+                        {LOST_SALE_SOURCE_LABELS[row.source] ?? row.source}
+                      </span>
+                      <p className="mt-2 text-sm text-[#17251E]">
+                        {row.recordCount.toLocaleString()} record(s) -- {formatQuantity(row.quantity)} unit(s)
+                      </p>
+                      <p className="mt-1 text-[11px] text-[#9AA59E]">
+                        {row.valueByCurrency.length === 0
+                          ? "No priced records"
+                          : row.valueByCurrency.map((v) => `${v.currencyCode} ${formatQuantity(v.value)}`).join(" · ")}
+                        {row.recordsWithoutValue > 0 ? ` (+${row.recordsWithoutValue} unpriced)` : ""}
+                      </p>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                <div>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#849087]">Top products by combined lost quantity</p>
+                  {consolidated.byProduct.length === 0 ? (
+                    <EmptyState message="No confirmed losses match this filter." />
+                  ) : (
+                    <div className="space-y-3">
+                      {consolidated.byProduct.map((row) => (
+                        <div key={`${row.sapItemCodeSnapshot ?? row.productId ?? row.productDescriptionSnapshot ?? "unresolved"}`} className="rounded-lg border border-[#EEF1ED] p-3">
+                          <p className="text-sm font-medium text-[#17251E]">
+                            {row.productDescriptionSnapshot ?? <span className="italic text-[#9AA59E]">Unspecified (claim-level return)</span>}
+                          </p>
+                          {row.sapItemCodeSnapshot && <p className="text-[10px] text-gray-400">{row.sapItemCodeSnapshot}</p>}
+                          <p className="mt-1 text-[11px] text-[#718078]">
+                            {formatQuantity(row.quantity)} {row.mixedUnitsOfMeasure ? "(mixed units)" : row.unitOfMeasure ?? ""} -- shortage{" "}
+                            {formatQuantity(row.shortageQuantity)} / returned {formatQuantity(row.returnedQuantity)}
+                          </p>
+                          <p className="mt-0.5 text-[11px] text-[#9AA59E]">
+                            {row.valueByCurrency.length === 0
+                              ? "No priced records"
+                              : row.valueByCurrency.map((v) => `${v.currencyCode} ${formatQuantity(v.value)}`).join(" · ")}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#849087]">Top customers by combined lost quantity</p>
+                  {consolidated.byCustomer.length === 0 ? (
+                    <EmptyState message="No confirmed losses match this filter." />
+                  ) : (
+                    <div className="space-y-3">
+                      {consolidated.byCustomer.map((row) => (
+                        <div key={row.customerId} className="rounded-lg border border-[#EEF1ED] p-3">
+                          <p className="text-sm font-medium text-[#17251E]">{row.customerName}</p>
+                          <p className="mt-1 text-[11px] text-[#718078]">
+                            {formatQuantity(row.quantity)} unit(s) -- shortage {formatQuantity(row.shortageQuantity)} / returned {formatQuantity(row.returnedQuantity)}
+                          </p>
+                          <p className="mt-0.5 text-[11px] text-[#9AA59E]">
+                            {row.valueByCurrency.length === 0
+                              ? "No priced records"
+                              : row.valueByCurrency.map((v) => `${v.currencyCode} ${formatQuantity(v.value)}`).join(" · ")}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </SectionCard>
+
+          <SectionCard
+            title="Combined lost-sales drilldown"
+            description={`${consolidated.drilldown.pagination.totalItems} confirmed lost-sale record(s) match the current filters, across both sources -- product, customer, quantity, unit of measure, unit price and total value, with drill-down to the original order, invoice, claim and return`}
+          >
+            <div className="mb-4 flex justify-end">
+              <a
+                href={buildDrillDownHref("/api/lost-sales/analytics/consolidated-export", baseQuery, {})}
+                className="inline-flex items-center gap-2 rounded-xl border border-[#D7E0D5] px-4 py-2 text-xs font-semibold text-[#17251E] transition hover:bg-gray-50"
+              >
+                <Download size={13} />
+                Export CSV (every row, both sources)
+              </a>
+            </div>
+            {consolidated.drilldown.rows.length === 0 ? (
+              <EmptyState message="No confirmed lost-sale records match this filter." />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-[#F7F8F6] text-[11px] uppercase tracking-wide text-[#849087]">
+                    <tr>
+                      <th className="px-5 py-3 font-semibold">Source</th>
+                      <th className="px-5 py-3 font-semibold">Date</th>
+                      <th className="px-5 py-3 font-semibold">Customer</th>
+                      <th className="px-5 py-3 font-semibold">Product</th>
+                      <th className="px-5 py-3 text-right font-semibold">Quantity</th>
+                      <th className="px-5 py-3 text-right font-semibold">Unit price</th>
+                      <th className="px-5 py-3 text-right font-semibold">Total value</th>
+                      <th className="px-5 py-3 font-semibold">Drill-down</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#EEF1ED]">
+                    {consolidated.drilldown.rows.map((row) => (
+                      <tr key={`${row.source}-${row.id}`} className="hover:bg-gray-50">
+                        <td className="whitespace-nowrap px-5 py-3">
+                          <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${LOST_SALE_SOURCE_STYLES[row.source] ?? "bg-gray-100 text-gray-500"}`}>
+                            {LOST_SALE_SOURCE_LABELS[row.source] ?? row.source}
+                          </span>
+                        </td>
+                        <td className="whitespace-nowrap px-5 py-3 text-[#17251E]">{new Date(row.date).toLocaleDateString()}</td>
+                        <td className="px-5 py-3 font-medium text-[#17251E]">{row.customerName}</td>
+                        <td className="px-5 py-3 text-[#17251E]">
+                          <p className="font-medium">{row.productDescriptionSnapshot ?? <span className="italic text-[#9AA59E]">Unspecified</span>}</p>
+                          {row.sapItemCodeSnapshot && <p className="text-[10px] text-gray-400">{row.sapItemCodeSnapshot}</p>}
+                        </td>
+                        <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">
+                          {formatQuantity(row.quantity)} {row.unitOfMeasure ?? ""}
+                        </td>
+                        <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">
+                          {row.unitPrice !== null ? formatQuantity(row.unitPrice) : <span className="text-[#C3CBC5]">--</span>}
+                        </td>
+                        <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">
+                          {row.totalValue !== null ? `${row.currencyCode ?? "UNKNOWN"} ${formatQuantity(row.totalValue)}` : <span className="text-[#C3CBC5]">--</span>}
+                        </td>
+                        <td className="whitespace-nowrap px-5 py-3">
+                          <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold text-gray-500">
+                            {row.orderId && (
+                              <Link href={`/orders/${row.orderId}`} className="inline-flex items-center gap-0.5 hover:text-[#173D2E]">
+                                Order <ChevronRight size={12} />
+                              </Link>
+                            )}
+                            {row.source === "SHORTAGE" && row.unfulfilledDemandId && (
+                              <Link href={`/lost-sales/${row.unfulfilledDemandId}`} className="inline-flex items-center gap-0.5 hover:text-[#173D2E]">
+                                Demand <ChevronRight size={12} />
+                              </Link>
+                            )}
+                            {row.source === "RETURNED_PRODUCT" && row.sapInvoiceId && (
+                              <Link href={`/invoice-reconciliation/${row.sapInvoiceId}`} className="inline-flex items-center gap-0.5 hover:text-[#173D2E]">
+                                Invoice <ChevronRight size={12} />
+                              </Link>
+                            )}
+                            {row.source === "RETURNED_PRODUCT" && row.claimId && (
+                              <Link href={`/invoice-claims/${row.claimId}`} className="inline-flex items-center gap-0.5 hover:text-[#173D2E]" title={row.returnReference ? `Return ${row.returnReference}, rendered on this claim's own page` : undefined}>
+                                Claim &amp; return <ChevronRight size={12} />
+                              </Link>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <Pagination
+              basePath={basePath}
+              searchParams={flatSearchParams}
+              page={consolidated.drilldown.pagination.page}
+              totalPages={consolidated.drilldown.pagination.totalPages}
+              totalItems={consolidated.drilldown.pagination.totalItems}
+              pageSize={consolidated.drilldown.pagination.pageSize}
+              pageParam="consolidatedPage"
+            />
+          </SectionCard>
+
           <SectionCard title="Requested vs. unavailable quantity over time" description="Same unit (quantity), one shared axis -- hover a point for the full product/customer breakdown behind it">
             <RequestedVsUnavailableTrendChart data={analytics.trend} basePath={basePath} baseQuery={baseQuery} />
           </SectionCard>
@@ -286,56 +565,45 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
             <UnavailableQuantityDistribution distribution={analytics.distribution} />
           </SectionCard>
 
-          <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-            <SectionCard title="By loss reason" description="LostSaleRecord.reason, across every confirmed-lost record in scope -- click a reason to see its records">
-              {analytics.lossReasonBreakdown.length === 0 ? (
-                <EmptyState message="No confirmed lost-sale records in the selected range." />
-              ) : (
-                <div className="space-y-4">
-                  {analytics.lossReasonBreakdown.map((row) => (
-                    <Link
-                      key={row.reason}
-                      href={buildDrillDownHref(basePath, baseQuery, { lostSalesReason: row.reason })}
-                      className="-m-1.5 block rounded-lg p-1.5 transition hover:bg-gray-50"
-                    >
-                      <BarRow
-                        label={LOST_SALE_REASON_LABELS[row.reason] ?? row.reason}
-                        count={row.recordCount}
-                        maxCount={Math.max(...analytics.lossReasonBreakdown.map((r) => r.recordCount))}
-                        color="bg-[#2a78d6]"
-                      />
-                      <p className="mt-1 text-[11px] text-[#9AA59E]">
-                        {formatQuantity(row.totalQuantity)} unit(s) -- confirmed value {formatQuantity(row.totalConfirmedValue)}
-                      </p>
-                    </Link>
-                  ))}
-                </div>
-              )}
-            </SectionCard>
-            <SectionCard title="By customer decision" description="CustomerDecisionEvent.decisionType, across every recorded decision in scope -- click a decision type to see its records">
-              {analytics.decisionTypeBreakdown.length === 0 ? (
-                <EmptyState message="No customer decisions recorded in the selected range." />
-              ) : (
-                <div className="space-y-4">
-                  {analytics.decisionTypeBreakdown.map((row) => (
-                    <Link
-                      key={row.decisionType}
-                      href={buildDrillDownHref(basePath, baseQuery, { customerDecisionType: row.decisionType })}
-                      className="-m-1.5 block rounded-lg p-1.5 transition hover:bg-gray-50"
-                    >
-                      <BarRow
-                        label={DECISION_TYPE_LABELS[row.decisionType] ?? row.decisionType}
-                        count={row.eventCount}
-                        maxCount={Math.max(...analytics.decisionTypeBreakdown.map((r) => r.eventCount))}
-                        color="bg-[#1baf7a]"
-                      />
-                      <p className="mt-1 text-[11px] text-[#9AA59E]">{formatQuantity(row.totalQuantity)} unit(s) across these events</p>
-                    </Link>
-                  ))}
-                </div>
-              )}
-            </SectionCard>
-          </section>
+          {/*
+            Real Business Data Onboarding round (spec PART A): the "By
+            customer decision" breakdown is removed outright, not just
+            hidden -- no surviving code path ever creates a new
+            CustomerDecisionEvent to break down any more (see
+            lib/lost-sales/analytics-queries.ts's own comment on why
+            decisionTypeBreakdown no longer exists on this analytics
+            result). "By loss reason" survives unchanged: LostSaleRecord
+            and its reason enum are untouched by this round -- every
+            shortage is still reasoned (INSUFFICIENT_QUANTITY /
+            PRODUCT_UNAVAILABLE, picked automatically; see
+            create-unfulfilled-demand.ts), just no longer through a human
+            decision step.
+          */}
+          <SectionCard title="By loss reason" description="LostSaleRecord.reason, across every confirmed-lost record in scope -- click a reason to see its records">
+            {analytics.lossReasonBreakdown.length === 0 ? (
+              <EmptyState message="No confirmed lost-sale records in the selected range." />
+            ) : (
+              <div className="space-y-4">
+                {analytics.lossReasonBreakdown.map((row) => (
+                  <Link
+                    key={row.reason}
+                    href={buildDrillDownHref(basePath, baseQuery, { lostSalesReason: row.reason })}
+                    className="-m-1.5 block rounded-lg p-1.5 transition hover:bg-gray-50"
+                  >
+                    <BarRow
+                      label={LOST_SALE_REASON_LABELS[row.reason] ?? row.reason}
+                      count={row.recordCount}
+                      maxCount={Math.max(...analytics.lossReasonBreakdown.map((r) => r.recordCount))}
+                      color="bg-[#2a78d6]"
+                    />
+                    <p className="mt-1 text-[11px] text-[#9AA59E]">
+                      {formatQuantity(row.totalQuantity)} unit(s) -- confirmed value {formatQuantity(row.totalConfirmedValue)}
+                    </p>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </SectionCard>
 
           <SectionCard
             title="Claims by standardised reason"
@@ -420,6 +688,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
                       <th className="px-5 py-3 text-right font-semibold">Unavailable</th>
                       <th className="px-5 py-3 text-right font-semibold">Outstanding</th>
                       <th className="px-5 py-3 text-right font-semibold">Lost</th>
+                      <th className="px-5 py-3 text-right font-semibold">Est. value</th>
                       <th className="px-5 py-3 font-semibold">Status</th>
                       <th className="px-5 py-3" />
                     </tr>
@@ -441,6 +710,9 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
                         <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">{demand.unavailableQuantity}</td>
                         <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">{demand.outstandingQuantity}</td>
                         <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">{demand.confirmedLostQuantity}</td>
+                        <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">
+                          {demand.estimatedValue !== null ? formatQuantity(demand.estimatedValue) : <span className="text-[#C3CBC5]">--</span>}
+                        </td>
                         <td className="whitespace-nowrap px-5 py-3">
                           <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${UNFULFILLED_DEMAND_STATUS_STYLES[demand.status] ?? "bg-gray-100 text-gray-500"}`}>
                             {UNFULFILLED_DEMAND_STATUS_LABELS[demand.status] ?? demand.status}

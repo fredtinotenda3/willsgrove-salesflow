@@ -130,7 +130,9 @@ export function TrendTooltipContent({
         </p>
       )}
       <SummaryRow label="Requested" value={formatQty(point.requestedQuantity, point.quantityUnitCode)} />
+      <SummaryRow label="Requested value" value={formatPlainAmount(point.requestedValue)} />
       <SummaryRow label="Found" value={formatQty(point.foundQuantity, point.quantityUnitCode)} />
+      <SummaryRow label="Found value" value={formatPlainAmount(point.foundValue)} />
       <SummaryRow label="Unavailable" value={formatQty(point.unavailableQuantity, point.quantityUnitCode)} />
       <SummaryRow label="Availability rate" value={formatPercent(point.availabilityRatePercent)} />
       <SummaryRow label="Shortage rate" value={formatPercent(point.shortageRatePercent)} />
@@ -205,7 +207,9 @@ export function ProductBarTooltipContent({
       {product.sapItemCodeSnapshot && <p className="text-[10px] text-muted-foreground">{product.sapItemCodeSnapshot}</p>}
       <div className="mt-1.5">
         <SummaryRow label="Requested" value={formatQty(product.requestedQuantity, product.unitOfMeasure)} />
+        <SummaryRow label="Requested value" value={formatPlainAmount(product.requestedValue)} />
         <SummaryRow label="Found" value={formatQty(product.foundQuantity, product.unitOfMeasure)} />
+        <SummaryRow label="Found value" value={formatPlainAmount(product.foundValue)} />
         <SummaryRow label="Unavailable" value={formatQty(product.unavailableQuantity, product.unitOfMeasure)} />
         <SummaryRow label="Shortage rate" value={formatPercent(product.shortageRatePercent)} />
         <SummaryRow label="Estimated lost value" value={formatPlainAmount(product.estimatedValue)} />
@@ -255,7 +259,9 @@ export function CustomerBarTooltipContent({
       <p className="font-semibold text-foreground">{customer.customerName}</p>
       <div className="mt-1.5">
         <SummaryRow label="Requested" value={formatQty(customer.requestedQuantity, null)} />
+        <SummaryRow label="Requested value" value={formatPlainAmount(customer.requestedValue)} />
         <SummaryRow label="Found" value={formatQty(customer.foundQuantity, null)} />
+        <SummaryRow label="Found value" value={formatPlainAmount(customer.foundValue)} />
         <SummaryRow label="Unavailable" value={formatQty(customer.unavailableQuantity, null)} />
         <SummaryRow label="Shortage rate" value={formatPercent(customer.shortageRatePercent)} />
         <SummaryRow label="Estimated lost value" value={formatPlainAmount(customer.estimatedValue)} />

@@ -85,7 +85,7 @@ export default async function ProductProfilePage({ params, searchParams }: Route
     currency: null,
     lostSalesReason: null,
     unfulfilledDemandStatus: null,
-    customerDecisionType: null,
+    lostSaleSource: null,
     includeDemo: false,
     productCategory: null,
     productSearch: null,

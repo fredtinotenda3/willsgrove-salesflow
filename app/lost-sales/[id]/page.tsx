@@ -6,24 +6,28 @@ import { getUnfulfilledDemandDetail } from "@/lib/lost-sales/queries";
 import {
   UNFULFILLED_DEMAND_STATUS_LABELS,
   UNFULFILLED_DEMAND_STATUS_STYLES,
-  DECISION_TYPE_LABELS,
   DECISION_SOURCE_LABELS,
   LOST_SALE_REASON_LABELS,
 } from "@/lib/lost-sales/display";
 import { initialsFor, avatarColorFor, formatOrderDateTime } from "@/lib/order-display";
 import Sidebar from "../../components/sidebar";
 import { ArrowLeft } from "lucide-react";
-import DecisionPanel from "./decision-panel";
 
 /**
  * Milestone 4 (Lost-Sales Management). One UnfulfilledDemand record, its
- * full traceability chain, and its complete decision/lost-sale history --
- * spec section 6. DecisionPanel is the one client-rendered island here
- * (record-decision form only -- see its own comment for why the manual
- * confirm-lost-sale form was removed per Additional Implementation
- * Requirements spec section 2).
+ * full traceability chain, and its confirmed-lost-sale history -- spec
+ * section 6.
  *
- * This page now also surfaces the AUTOMATIC lost-sales estimate
+ * Real Business Data Onboarding round (spec PART A): there is no longer a
+ * DecisionPanel or "Decision History" section on this page -- the
+ * Customer Decision workflow was removed outright. The moment a shortage
+ * is recorded, it is automatically both cancelled AND confirmed lost in
+ * the same transaction (see lib/lost-sales/create-unfulfilled-demand.ts),
+ * so "Confirmed Lost Sales" below is now populated automatically, with
+ * decisionSource "AUTOMATIC_SYSTEM_RECORDED" on every entry, rather than
+ * waiting on a human decision step this page used to collect.
+ *
+ * This page still surfaces the AUTOMATIC lost-sales estimate
  * (demand.estimatedValue/estimatedUnitPrice/estimatedValueSource, spec
  * section 1) and, when this record was superseded by or itself
  * supersedes another one (a re-pick/correction on the same order line --
@@ -159,8 +163,8 @@ export default async function LostSaleDetailPage({ params }: RouteParams) {
             <h2 className="text-sm font-bold text-[#17251E]">Estimated Lost Sales (automatic)</h2>
             <p className="mt-1 text-[11px] text-gray-400">
               Calculated automatically the moment this shortage was recorded -- Unavailable Quantity x Applicable
-              Selling Price. Never shown as a confirmed loss; see Confirmed Lost Sales below for records a manager
-              has actually confirmed.
+              Selling Price. This is the same quantity that was automatically cancelled and confirmed lost below --
+              see Confirmed Lost Sales for the actually-confirmed record.
             </p>
             <p className="mt-3 text-sm font-semibold text-[#17251E]">
               {demand.estimatedValue !== null
@@ -173,54 +177,14 @@ export default async function LostSaleDetailPage({ params }: RouteParams) {
             </p>
           </section>
 
-          <DecisionPanel
-            unfulfilledDemandId={demand.id}
-            unavailableQuantity={demand.unavailableQuantity}
-            outstandingQuantity={demand.outstandingQuantity}
-            cancelledQuantity={demand.cancelledQuantity}
-            substitutedQuantity={demand.substitutedQuantity}
-          />
-
           <section className="overflow-hidden rounded-xl border border-[#E8EBE6] bg-white">
             <div className="border-b border-gray-100 px-6 py-4">
-              <h2 className="text-sm font-bold text-[#17251E]">Decision History</h2>
-            </div>
-            {demand.decisionEvents.length === 0 ? (
-              <p className="px-6 py-8 text-center text-xs text-gray-400">No customer decision has been recorded yet.</p>
-            ) : (
-              <ul className="divide-y divide-gray-50">
-                {demand.decisionEvents.map((event) => (
-                  <li key={event.id} className="px-6 py-4">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-xs font-semibold text-[#17251E]">
-                        {DECISION_TYPE_LABELS[event.decisionType] ?? event.decisionType} -- {event.quantity}
-                      </p>
-                      <p className="text-[10px] text-gray-400">{formatOrderDateTime(event.decidedAt)}</p>
-                    </div>
-                    <p className="mt-1 text-[11px] text-gray-500">
-                      Source: {DECISION_SOURCE_LABELS[event.source] ?? event.source} · Recorded by {event.recordedByName}
-                      {event.customerContactName ? ` · Contact: ${event.customerContactName}` : ""}
-                    </p>
-                    {event.substituteProductDescriptionSnapshot && (
-                      <p className="mt-1 text-[11px] text-gray-500">
-                        Substitute: {event.substituteProductDescriptionSnapshot}
-                        {event.substituteSapItemCodeSnapshot ? ` (${event.substituteSapItemCodeSnapshot})` : ""}
-                      </p>
-                    )}
-                    {event.reason && <p className="mt-1 text-[11px] text-gray-500">Reason: {event.reason}</p>}
-                    {event.remarks && <p className="mt-1 text-[11px] text-gray-400">{event.remarks}</p>}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <section className="overflow-hidden rounded-xl border border-[#E8EBE6] bg-white">
-            <div className="border-b border-gray-100 px-6 py-4">
-              <h2 className="text-sm font-bold text-[#17251E]">Confirmed Lost Sales</h2>
+              <h2 className="text-sm font-bold text-[#17251E]">Confirmed Lost Sales (automatic)</h2>
             </div>
             {demand.lostSaleRecords.length === 0 ? (
-              <p className="px-6 py-8 text-center text-xs text-gray-400">No lost sale has been confirmed for this record.</p>
+              <p className="px-6 py-8 text-center text-xs text-gray-400">
+                No lost sale was recorded for this shortage -- see Estimated Lost Sales above if a price could not be resolved.
+              </p>
             ) : (
               <ul className="divide-y divide-gray-50">
                 {demand.lostSaleRecords.map((record) => (

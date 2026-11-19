@@ -2,10 +2,11 @@ import { NextRequest } from "next/server";
 import { verifyCsrfOrigin } from "@/lib/auth/csrf";
 import { requireUserOrResponse } from "@/lib/auth/current-user";
 import { parseSapPriceListCsv } from "@/lib/sap-price-list-csv";
+import { parseSapPriceListXlsxBuffer } from "@/lib/sap-price-list-xlsx";
 import {
   executePriceListImport,
   planPriceListImport,
-  readPriceListCsvUpload,
+  readPriceListFileUpload,
 } from "@/lib/price-list-import";
 
 function readCount(value: FormDataEntryValue | null): number | null {
@@ -37,17 +38,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const upload = await readPriceListCsvUpload(formData);
+    const upload = await readPriceListFileUpload(formData);
     if (!upload.ok) {
       return Response.json({ success: false, message: upload.message }, { status: upload.status });
     }
 
-    const parsed = parseSapPriceListCsv(upload.csvText);
+    // See the preview route's identical comment: both parsers return the
+    // same {success, rows, errors, totalRows} shape, so everything below
+    // this point is format-agnostic.
+    const parsed = upload.kind === "csv" ? parseSapPriceListCsv(upload.csvText) : await parseSapPriceListXlsxBuffer(upload.buffer);
     if (!parsed.success) {
       return Response.json(
         {
           success: false,
-          message: "The price-list CSV file contains validation errors. Nothing was imported.",
+          message:
+            upload.kind === "csv"
+              ? "The price-list CSV file contains validation errors. Nothing was imported."
+              : "The price-list Excel file contains validation errors. Nothing was imported.",
           errorCount: parsed.errors.length,
           errors: parsed.errors,
         },

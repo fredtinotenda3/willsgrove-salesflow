@@ -4,7 +4,8 @@ import { ORDER_STATUSES } from "@/lib/order-display";
 import { QUOTATION_STATUS_LABELS } from "@/lib/quotations/display";
 import { CLAIM_STATUS_LABELS } from "@/lib/invoice-claims/display";
 import { LOST_SALE_REASON_LABELS } from "@/lib/lost-sales/display";
-import { unfulfilledDemandStatusValues, customerDecisionTypeValues } from "@/lib/lost-sales/validation";
+import { unfulfilledDemandStatusValues } from "@/lib/lost-sales/validation";
+import { LOST_SALE_SOURCE_VALUES } from "@/lib/lost-sales/display";
 import { DECISION_CATEGORIES, DECISION_PRIORITIES, DECISION_RECOMMENDATION_STATUSES } from "@/lib/reporting/decision-types";
 import type { ReportFilters, PaginationParams } from "@/lib/reporting/types";
 
@@ -163,22 +164,30 @@ export function parseReportFilters(params: URLSearchParams): ParsedReportFilters
   if (!recommendationStatusResult.ok) return recommendationStatusResult;
 
   // Additional Implementation Requirements (spec section 3: "Lost Sales
-  // Analytics Overhaul"). Each maps onto exactly one schema enum
-  // (UnfulfilledDemandStatus/CustomerDecisionType), so -- like
-  // orderStatus/quotationStatus/claimStatus/lostSalesReason above -- both
-  // ARE centrally validated here.
+  // Analytics Overhaul"). Maps onto exactly one schema enum
+  // (UnfulfilledDemandStatus), so -- like orderStatus/quotationStatus/
+  // claimStatus/lostSalesReason above -- it IS centrally validated here.
+  //
+  // Real Business Data Onboarding round (spec PART A): there is no longer
+  // a customerDecisionType filter at all -- the UI/API surface for the
+  // Customer Decision workflow it filtered is deleted outright (see
+  // lib/lost-sales/validation.ts's module comment; the CustomerDecisionType
+  // enum itself is kept at the schema level only for historical-data
+  // safety). Removed here, not just defaulted to null, per the spec's
+  // own instruction to remove every trace of the workflow from the
+  // actual UX, not merely hide it.
   const unfulfilledDemandStatusResult = readEnumFilter(
     params.get("unfulfilledDemandStatus"),
     unfulfilledDemandStatusValues,
     "unfulfilledDemandStatus"
   );
   if (!unfulfilledDemandStatusResult.ok) return unfulfilledDemandStatusResult;
-  const customerDecisionTypeResult = readEnumFilter(
-    params.get("customerDecisionType"),
-    customerDecisionTypeValues,
-    "customerDecisionType"
-  );
-  if (!customerDecisionTypeResult.ok) return customerDecisionTypeResult;
+
+  // Follow-up fix ("add source filters" for the consolidated lost-sales
+  // view). Maps onto exactly one new fixed set (LostSaleSource), so --
+  // like unfulfilledDemandStatus above -- it IS centrally validated here.
+  const lostSaleSourceResult = readEnumFilter(params.get("lostSaleSource"), LOST_SALE_SOURCE_VALUES, "lostSaleSource");
+  if (!lostSaleSourceResult.ok) return lostSaleSourceResult;
 
   return {
     ok: true,
@@ -208,7 +217,7 @@ export function parseReportFilters(params: URLSearchParams): ParsedReportFilters
       priority: decisionPriorityResult.value,
       recommendationStatus: recommendationStatusResult.value,
       unfulfilledDemandStatus: unfulfilledDemandStatusResult.value,
-      customerDecisionType: customerDecisionTypeResult.value,
+      lostSaleSource: lostSaleSourceResult.value,
     },
   };
 }
