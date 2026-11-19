@@ -155,9 +155,14 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Follow-up fix: consolidated lost-sal
         customerId,
         createdById: adminId,
         source: "MANUAL",
-        status: "INVOICED",
+        // OrderStatus has no "INVOICED" value -- it stops at
+        // READY_TO_INVOICE/REJECTED/CANCELLED (see the enum's own schema
+        // comment); invoicing itself is tracked by the separate
+        // invoicedAt timestamp below, not by status.
+        status: "READY_TO_INVOICE",
         currency: "USD",
         receivedAt: new Date(),
+        invoicedAt: new Date(),
         isDemo: true,
         lines: {
           create: [
