@@ -176,6 +176,25 @@ export default function PriceListImportPage() {
         return;
       }
 
+      // Large-file reliability fix: an import can now commit some rows
+      // and stop partway through (see app/api/price-lists/import/
+      // route.ts's own comment) rather than always being all-or-nothing.
+      // The preview this screen is holding no longer matches reality --
+      // some "new"/"changed" rows it counted are now already imported --
+      // so it's cleared the same way a 409 clears it, forcing a fresh
+      // preview rather than letting a stale "Confirm import" click send
+      // counts the server will just reject again.
+      if (response.status === 207 && body?.partial) {
+        setPreview(null);
+        setConfirmed(false);
+        setNotice(
+          body?.message ??
+            "The import was interrupted partway through. Some price entries were already imported. Please select the file again to re-check and finish the import.",
+        );
+        setStage("idle");
+        return;
+      }
+
       setNotice(body?.message ?? "The import failed. No changes were saved.");
       setStage("previewed");
     } catch {
@@ -205,9 +224,12 @@ export default function PriceListImportPage() {
         </header>
 
         <div className="mx-auto max-w-[1100px] p-5 md:p-9">
-          <Link href="/products" className="mb-5 inline-flex items-center gap-2 text-sm text-[#5E7366] hover:text-[#315C43]">
+          {/* Follow-up fix ("Price should also have its own page too"):
+              this pointed at /products before the /price-lists landing
+              page existed to point back to. */}
+          <Link href="/price-lists" className="mb-5 inline-flex items-center gap-2 text-sm text-[#5E7366] hover:text-[#315C43]">
             <ArrowLeft size={15} />
-            Back to workspace
+            Back to price lists
           </Link>
 
           <div className="mb-7">

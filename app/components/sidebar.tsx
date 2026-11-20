@@ -37,6 +37,7 @@ import {
   Menu,
   X,
   DollarSign,
+  BadgeDollarSign,
 } from "lucide-react";
 import NotificationBell from "./notification-bell";
 
@@ -277,6 +278,16 @@ const navigation = [
         name: "Item Master Import",
         href: "/item-master/import",
         icon: Boxes,
+      },
+      // Follow-up fix ("Price should also have its own page too... like
+      // customer and products pages") -- the landing page (stats, table,
+      // Add + Import buttons); "Price Lists Import" below stays as its
+      // own direct link too, same precedent "Customer Master Import"
+      // already sets alongside the Customers landing page.
+      {
+        name: "Price Lists",
+        href: "/price-lists",
+        icon: BadgeDollarSign,
       },
       {
         name: "Price Lists Import",

@@ -268,7 +268,47 @@ export interface PriceListImportResult {
   entriesUpdated: number;
   entriesUnchanged: number;
   auditEventId: string;
+  partial: boolean;
+  partialReason?: string;
 }
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
+}
+
+// Real-world incident fix, same diagnosis and same fix shape as
+// lib/customer-master-import.ts's own module comment documents for that
+// file's identical prior bug: the real business-data/Prices.xlsx workbook
+// has thousands of entry rows across its 7 sheets. This function used to
+// push ONE Prisma operation per new/changed entry into a single flat
+// array and run it as one prisma.$transaction(operations) batch-array
+// call. Two compounding problems, either one enough on its own to make
+// "Confirm and import" never complete for a file this size:
+//   1. The array form of $transaction defaults to a 5s `timeout`/2s
+//      `maxWait` with no override here, and a transaction holding
+//      thousands of sequential round trips open reliably exceeds that.
+//   2. lib/prisma.ts's exported client is always extended (the
+//      query-concurrency gate), and the array form of $transaction is a
+//      documented source of batch-transaction incompatibility with an
+//      extended client (see
+//      https://github.com/prisma/prisma/issues/20738) -- independent of
+//      size or timeout.
+// Fixed the same way lib/customer-master-import.ts already fixed the
+// identical bug for its own large-file case: new entries are bulk-
+// inserted with createMany in bounded chunks (one SQL statement per
+// chunk, no transaction wrapper needed -- already atomic on its own, and
+// never the array form), and changed entries are chunked into small
+// interactive (callback-form, never array-form) transactions. No single
+// database call's duration can scale with the whole file's size any
+// more. The lists step above stays a single interactive transaction too
+// (never the array form) -- it is bounded by the distinct price-list
+// codes in one file (typically a handful), nowhere near any timeout, but
+// correctness under the extended client is the same concern regardless
+// of size.
+const NEW_ENTRY_CREATE_MANY_CHUNK_SIZE = 500;
+const CHANGED_ENTRY_UPDATE_CHUNK_SIZE = 50;
 
 export async function executePriceListImport(
   plan: PriceListImportPlan,
@@ -278,27 +318,28 @@ export async function executePriceListImport(
 
   // Lists must exist (created or confirmed) before entries can reference
   // them by id, and entry creation needs to know each list's id -- so
-  // this runs as two sequential transactions rather than one, as a single
-  // $transaction([...]) array can't use the id a prior operation in the
-  // same array produced. Not fully atomic end-to-end, but each half is;
-  // a failure between them leaves price lists created with zero entries
-  // yet, which is a safe, visible, re-importable state, not a silent
-  // partial write.
-  await prisma.$transaction([
-    ...plan.newLists.map((def) =>
-      prisma.priceList.upsert({
-        where: { code: def.code },
-        create: { code: def.code, name: def.name, currencyCode: def.currencyCode },
-        update: {},
-      })
-    ),
-    ...plan.changedLists.map((change) =>
-      prisma.priceList.update({
-        where: { code: change.code },
-        data: { name: change.incoming.name, currencyCode: change.incoming.currencyCode },
-      })
-    ),
-  ]);
+  // this runs as two sequential steps rather than one. Not fully atomic
+  // end-to-end, but each half is; a failure between them leaves price
+  // lists created with zero entries yet, which is a safe, visible,
+  // re-importable state, not a silent partial write.
+  await prisma.$transaction(
+    async (tx) => {
+      for (const def of plan.newLists) {
+        await tx.priceList.upsert({
+          where: { code: def.code },
+          create: { code: def.code, name: def.name, currencyCode: def.currencyCode },
+          update: {},
+        });
+      }
+      for (const change of plan.changedLists) {
+        await tx.priceList.update({
+          where: { code: change.code },
+          data: { name: change.incoming.name, currencyCode: change.incoming.currencyCode },
+        });
+      }
+    },
+    { maxWait: 10000, timeout: 20000 }
+  );
 
   const allListCodes = [
     ...new Set([
@@ -324,40 +365,73 @@ export async function executePriceListImport(
   });
   const productIdByCode = new Map(products.map((p) => [p.sapItemCode, p.id]));
 
-  const operations: Prisma.PrismaPromise<unknown>[] = [];
+  let entriesCreated = 0;
+  let entriesUpdated = 0;
+  const appliedEntryChanges: ChangedEntry[] = [];
+  let partialReason: string | undefined;
 
-  for (const { row } of plan.newEntries) {
-    const priceListId = listIdByCode.get(row.priceListCode);
-    if (!priceListId) continue; // defensive; should be unreachable
+  try {
+    // New entries: createMany in bounded chunks -- one SQL statement per
+    // chunk, no transaction wrapper needed (createMany is already atomic
+    // on its own, and this never uses the array form of $transaction).
+    for (const batch of chunk(plan.newEntries, NEW_ENTRY_CREATE_MANY_CHUNK_SIZE)) {
+      const data = batch
+        .map(({ row }) => {
+          const priceListId = listIdByCode.get(row.priceListCode);
+          if (!priceListId) return null; // defensive; should be unreachable
+          return {
+            priceListId,
+            productId: productIdByCode.get(row.itemCode) ?? null,
+            sapItemCodeSnapshot: row.itemCode,
+            unitPrice: row.unitPrice,
+            validFrom: dateOnlyStringToUtcDate(row.validFrom)!,
+            validTo: dateOnlyStringToUtcDate(row.validTo),
+          };
+        })
+        .filter((d): d is NonNullable<typeof d> => d !== null);
 
-    operations.push(
-      prisma.priceListEntry.create({
-        data: {
-          priceListId,
-          productId: productIdByCode.get(row.itemCode) ?? null,
-          sapItemCodeSnapshot: row.itemCode,
-          unitPrice: row.unitPrice,
-          validFrom: dateOnlyStringToUtcDate(row.validFrom)!,
-          validTo: dateOnlyStringToUtcDate(row.validTo),
+      if (data.length > 0) {
+        await prisma.priceListEntry.createMany({ data });
+        entriesCreated += data.length;
+      }
+    }
+
+    // Changed entries: chunked into small interactive transactions (never
+    // the array form), same reasoning and chunk size as
+    // lib/customer-master-import.ts's own changed-row path.
+    for (const batch of chunk(plan.changedEntries, CHANGED_ENTRY_UPDATE_CHUNK_SIZE)) {
+      await prisma.$transaction(
+        async (tx) => {
+          for (const change of batch) {
+            await tx.priceListEntry.update({
+              where: { id: change.entryId },
+              data: {
+                unitPrice: change.incoming.unitPrice,
+                validTo: dateOnlyStringToUtcDate(change.incoming.validTo),
+              },
+            });
+          }
         },
-      })
-    );
-  }
-
-  for (const change of plan.changedEntries) {
-    operations.push(
-      prisma.priceListEntry.update({
-        where: { id: change.entryId },
-        data: {
-          unitPrice: change.incoming.unitPrice,
-          validTo: dateOnlyStringToUtcDate(change.incoming.validTo),
-        },
-      })
-    );
+        { maxWait: 10000, timeout: 20000 }
+      );
+      appliedEntryChanges.push(...batch);
+      entriesUpdated += batch.length;
+    }
+  } catch (error) {
+    // A chunk failed partway through. Everything counted in
+    // entriesCreated/appliedEntryChanges above already committed
+    // (createMany and each interactive-transaction batch are
+    // independently atomic) -- record exactly that much, truthfully,
+    // rather than throwing the partial progress away or claiming it
+    // didn't happen. Same recovery story as
+    // lib/customer-master-import.ts's identical case: re-running the
+    // exact same file is safe (already-imported rows are detected as
+    // unchanged on the next plan, never duplicated).
+    partialReason = error instanceof Error ? error.message : "An unexpected error interrupted the import.";
   }
 
   const recordedListChanges = plan.changedLists.slice(0, AUDIT_CHANGE_LIMIT);
-  const recordedEntryChanges = plan.changedEntries.slice(0, AUDIT_CHANGE_LIMIT).map((c) => ({
+  const recordedEntryChanges = appliedEntryChanges.slice(0, AUDIT_CHANGE_LIMIT).map((c) => ({
     priceListCode: c.key.priceListCode,
     itemCode: c.key.itemCode,
     validFrom: c.key.validFrom,
@@ -365,39 +439,50 @@ export async function executePriceListImport(
     after: { unitPrice: c.incoming.unitPrice, validTo: c.incoming.validTo },
   }));
 
-  operations.push(
-    prisma.auditEvent.create({
-      data: {
-        actorId: null,
-        action: "PRICE_LIST_IMPORT",
-        entityType: "PriceListImport",
-        entityId: importId,
-        afterData: {
-          fileName,
-          listsCreated: plan.newLists.length,
-          listsUpdated: plan.changedLists.length,
-          listChanges: recordedListChanges,
-          entriesCreated: plan.newEntries.length,
-          entriesUpdated: plan.changedEntries.length,
-          entriesUnchanged: plan.unchangedEntryCount,
-          unmatchedItemCodes: plan.unmatchedItemCodes,
-          entryChangesRecorded: recordedEntryChanges.length,
-          entryChangesTruncated: plan.changedEntries.length > recordedEntryChanges.length,
-          entryChanges: recordedEntryChanges,
-        },
+  // One audit event per import attempt, written after the fact so it
+  // reflects actual outcome (partial or complete) -- never inside the
+  // entry-writing loop above, and never claiming more than
+  // entriesCreated/entriesUpdated actually recorded.
+  await prisma.auditEvent.create({
+    data: {
+      actorId: null,
+      action: "PRICE_LIST_IMPORT",
+      entityType: "PriceListImport",
+      entityId: importId,
+      afterData: {
+        fileName,
+        listsCreated: plan.newLists.length,
+        listsUpdated: plan.changedLists.length,
+        listChanges: recordedListChanges,
+        entriesCreated,
+        entriesUpdated,
+        entriesUnchanged: plan.unchangedEntryCount,
+        unmatchedItemCodes: plan.unmatchedItemCodes,
+        entryChangesRecorded: recordedEntryChanges.length,
+        entryChangesTruncated: appliedEntryChanges.length > recordedEntryChanges.length,
+        entryChanges: recordedEntryChanges,
+        partial: partialReason !== undefined,
+        partialReason: partialReason ?? null,
+        plannedEntriesCreated: plan.newEntries.length,
+        plannedEntriesUpdated: plan.changedEntries.length,
       },
-    })
-  );
+    },
+  });
 
-  const audit = await prisma.$transaction(operations);
-  const auditEvent = audit[audit.length - 1] as { id: string };
+  const auditEvent = await prisma.auditEvent.findFirst({
+    where: { entityType: "PriceListImport", entityId: importId },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
 
   return {
     listsCreated: plan.newLists.length,
     listsUpdated: plan.changedLists.length,
-    entriesCreated: plan.newEntries.length,
-    entriesUpdated: plan.changedEntries.length,
+    entriesCreated,
+    entriesUpdated,
     entriesUnchanged: plan.unchangedEntryCount,
-    auditEventId: auditEvent.id,
+    auditEventId: auditEvent?.id ?? "",
+    partial: partialReason !== undefined,
+    partialReason,
   };
 }

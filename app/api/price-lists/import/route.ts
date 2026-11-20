@@ -98,6 +98,41 @@ export async function POST(request: NextRequest) {
 
     const result = await executePriceListImport(plan, upload.fileName);
 
+    // Real-world incident fix: a large price-list file is now imported
+    // in bounded chunks (see lib/price-list-import.ts's own module
+    // comment -- this is the same fix, and the same reporting
+    // convention, as app/api/customers/master-import/route.ts's identical
+    // case), which means a failure partway through is possible and must
+    // be reported honestly -- never as "completed" and never as the old
+    // catch-all's misleading "No changes were saved" (some chunks may
+    // well have committed). Re-running the exact same file is safe and
+    // will pick up where it left off (already-imported lists/entries
+    // show as unchanged, never duplicated).
+    if (result.partial) {
+      return Response.json(
+        {
+          success: false,
+          partial: true,
+          message:
+            `The import was interrupted after committing ${result.entriesCreated} new and ${result.entriesUpdated} updated ` +
+            `price entry(ies) -- some rows were not yet processed. It is safe to re-run this exact file: already-imported ` +
+            `entries will be detected as unchanged, not duplicated.`,
+          fileName: upload.fileName,
+          summary: {
+            listsCreated: result.listsCreated,
+            listsUpdated: result.listsUpdated,
+            entriesCreated: result.entriesCreated,
+            entriesUpdated: result.entriesUpdated,
+            entriesUnchanged: result.entriesUnchanged,
+          },
+          auditEventId: result.auditEventId,
+          importExecuted: true,
+          failureReason: result.partialReason,
+        },
+        { status: 207 }
+      );
+    }
+
     return Response.json({
       success: true,
       message: "Price list import completed.",

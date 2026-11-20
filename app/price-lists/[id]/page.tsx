@@ -151,9 +151,13 @@ export default function PriceListDetailPage({ params }: { params: Promise<{ id: 
         </header>
 
         <div className="mx-auto max-w-[1100px] p-5 md:p-9">
-          <Link href="/price-lists/customers" className="mb-5 inline-flex items-center gap-2 text-sm text-[#5E7366] hover:text-[#315C43]">
+          {/* Follow-up fix ("Price should also have its own page too"):
+              now that /price-lists exists as this page's real parent in
+              the nav, this points there instead of the unrelated
+              Customer Pricing (assignment) tool. */}
+          <Link href="/price-lists" className="mb-5 inline-flex items-center gap-2 text-sm text-[#5E7366] hover:text-[#315C43]">
             <ArrowLeft size={15} />
-            Back to Customer Pricing
+            Back to price lists
           </Link>
 
           {notFound && (

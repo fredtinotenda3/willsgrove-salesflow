@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -240,4 +241,135 @@ export async function resolveCustomerPriceListUnitPrice(
     priceListCode: entry.priceList.code,
     priceListName: entry.priceList.name,
   };
+}
+
+export type PriceListStats = {
+  totalLists: number;
+  totalEntries: number;
+  customersAssigned: number;
+  currencyCount: number;
+  lastImportedAt: string | null;
+};
+
+/**
+ * Follow-up fix ("Price should also have its own page too with its stats
+ * card and other necessary info") -- backs the new /price-lists landing
+ * page's stat cards, same role lib/product-queries.ts's own stats
+ * aggregation plays for /products.
+ */
+export async function getPriceListStats(): Promise<PriceListStats> {
+  const [totalLists, totalEntries, customersAssigned, currencies, lastImport] = await Promise.all([
+    prisma.priceList.count(),
+    prisma.priceListEntry.count(),
+    prisma.customer.count({ where: { priceListId: { not: null } } }),
+    prisma.priceList.findMany({ distinct: ["currencyCode"], select: { currencyCode: true } }),
+    prisma.auditEvent.findFirst({
+      where: { action: "PRICE_LIST_IMPORT" },
+      orderBy: { createdAt: "desc" },
+      select: { createdAt: true },
+    }),
+  ]);
+
+  return {
+    totalLists,
+    totalEntries,
+    customersAssigned,
+    currencyCount: currencies.length,
+    lastImportedAt: lastImport ? lastImport.createdAt.toISOString() : null,
+  };
+}
+
+export type MutationFailure = {
+  ok: false;
+  status: number;
+  message: string;
+  fieldErrors?: Record<string, string>;
+};
+
+export type CreatePriceListResult = { ok: true; id: string } | MutationFailure;
+
+export type CreatePriceListInput = {
+  code: string;
+  name: string;
+  currencyCode: string;
+};
+
+// Mirrors lib/customers.ts's own local isUniqueViolation -- deliberately
+// its own small copy here rather than a shared import, same "mirror the
+// convention, don't force a shared abstraction across genuinely
+// different call sites" choice that file's own precedent follows.
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+}
+
+const duplicateCodeFailure: MutationFailure = {
+  ok: false,
+  status: 409,
+  message: "A price list with this code already exists.",
+  fieldErrors: { code: "This price-list code is already used." },
+};
+
+// PriceList.currencyCode's own schema comment: "USD" | "ZWG" -- the only
+// two currencies this business actually operates in (see
+// prisma/schema.prisma's PriceList model). Not an enum column (kept a
+// plain string so a future currency doesn't need a migration), but a
+// hand-created price list is validated against the same known set an
+// imported one is always drawn from.
+const VALID_CURRENCY_CODES = ["USD", "ZWG"];
+
+/**
+ * Follow-up fix ("price page should also have button to add... like
+ * customer and products pages") -- creates a single PriceList by hand,
+ * with no entries (entries are added via the Price Lists Import flow or
+ * the per-list entry editor), mirroring lib/customers.ts's createCustomer
+ * (validate, create, audit, translate a unique-code violation into a
+ * clean 409 rather than a 500).
+ */
+export async function createPriceList(input: CreatePriceListInput, actorId: string): Promise<CreatePriceListResult> {
+  const fieldErrors: Record<string, string> = {};
+
+  const code = input.code.trim().toUpperCase();
+  if (!code) fieldErrors.code = "Code is required.";
+  else if (code.length > 50) fieldErrors.code = "Code must be at most 50 characters.";
+
+  const name = input.name.trim();
+  if (!name) fieldErrors.name = "Name is required.";
+  else if (name.length > 200) fieldErrors.name = "Name must be at most 200 characters.";
+
+  const currencyCode = input.currencyCode.trim().toUpperCase();
+  if (!VALID_CURRENCY_CODES.includes(currencyCode)) {
+    fieldErrors.currencyCode = `Currency must be one of: ${VALID_CURRENCY_CODES.join(", ")}.`;
+  }
+
+  if (Object.keys(fieldErrors).length > 0) {
+    return { ok: false, status: 400, message: "Validation failed.", fieldErrors };
+  }
+
+  try {
+    const created = await prisma.$transaction(async (tx) => {
+      const list = await tx.priceList.create({
+        data: { code, name, currencyCode },
+        select: { id: true },
+      });
+
+      await tx.auditEvent.create({
+        data: {
+          actorId,
+          action: "PRICE_LIST_CREATE",
+          entityType: "PriceList",
+          entityId: list.id,
+          afterData: { code, name, currencyCode },
+        },
+      });
+
+      return list;
+    });
+
+    return { ok: true, id: created.id };
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      return duplicateCodeFailure;
+    }
+    throw error;
+  }
 }
