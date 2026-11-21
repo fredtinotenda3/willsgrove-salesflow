@@ -5,7 +5,9 @@ import NewClaimForm from "./new-claim-form";
 
 /**
  * Milestone 6A. /invoice-claims/new -- the claim creation workflow (spec
- * section 2): pick the SAP invoice, select which of its lines are being
+ * section 2): pick what the claim is raised against -- this business's
+ * own order (the default; see new-claim-form.tsx's own comment) or a
+ * real, reconciled SAP invoice -- select which of its lines are being
  * disputed and how, then the claim-level detail. Open to any
  * authenticated user.
  *

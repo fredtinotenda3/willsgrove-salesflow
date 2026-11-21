@@ -98,12 +98,25 @@ export async function computeClaimFinancialSummary(claimId: string): Promise<Cla
     where: { id: claimId },
     select: {
       sapInvoice: { select: { currencyCode: true, total: true } },
+      // Real-world fix (native Invoice Claims): a native claim has no
+      // sapInvoice -- its currency comes from its own order instead
+      // (CustomerOrder.currency, never null). No native equivalent of
+      // SapInvoice.total exists, so originalInvoiceValue stays null for
+      // a native claim -- never invented.
+      order: { select: { currency: true } },
       lines: {
         select: {
           disputeType: true,
           rejectedQuantity: true,
           disputedAmount: true,
           sapInvoiceLine: { select: { unitPrice: true } },
+          // Real-world fix (native Invoice Claims): the real agreed
+          // price for a native line -- preferring the approved price
+          // once set, falling back to the customer price the order was
+          // raised at, same fallback app/orders/[id]/page.tsx's Approved
+          // Price column already established for the same reason (never
+          // disputedUnitPrice, the customer's own claimed figure).
+          orderLine: { select: { approvedUnitPrice: true, customerUnitPrice: true } },
         },
       },
       resolutions: {
@@ -121,7 +134,10 @@ export async function computeClaimFinancialSummary(claimId: string): Promise<Cla
   let claimedValueIncomplete = false;
 
   for (const line of claim.lines) {
-    const value = computeClaimLineDisputedValue(line, line.sapInvoiceLine);
+    const realUnitPrice = line.sapInvoiceLine
+      ? line.sapInvoiceLine.unitPrice
+      : line.orderLine?.approvedUnitPrice ?? line.orderLine?.customerUnitPrice ?? null;
+    const value = computeClaimLineDisputedValue(line, { unitPrice: realUnitPrice });
     if (value === null) {
       claimedValueIncomplete = true;
       continue;
@@ -155,8 +171,8 @@ export async function computeClaimFinancialSummary(claimId: string): Promise<Cla
   const actualExceedsApproved = actualCreditedScaled > approvedCreditScaled;
 
   return {
-    currencyCode: claim.sapInvoice.currencyCode,
-    originalInvoiceValue: claim.sapInvoice.total ? claim.sapInvoice.total.toString() : null,
+    currencyCode: claim.sapInvoice?.currencyCode ?? claim.order?.currency ?? null,
+    originalInvoiceValue: claim.sapInvoice?.total ? claim.sapInvoice.total.toString() : null,
     claimedValue: formatSignedScaled(claimedValueScaled),
     claimedValueIncomplete,
     potentialCreditExposure: formatSignedScaled(claimedValueScaled),

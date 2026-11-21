@@ -102,9 +102,10 @@ export default async function InvoiceClaimsPage({ searchParams }: RouteParams) {
           <section>
             <h1 className="text-2xl font-bold tracking-tight text-[#17251E]">Claims Queue</h1>
             <p className="mt-1 text-sm text-gray-500">
-              Customer complaints, disputed quantities, pricing disputes and quality issues raised against SAP
-              invoices -- distinct from a physical return or an issued SAP credit note, which are tracked once
-              a claim&rsquo;s resolution is approved (Milestone 6B). {total} claim{total === 1 ? "" : "s"} total.
+              Customer complaints, disputed quantities, pricing disputes and quality issues raised against this
+              business&rsquo;s own orders -- or, once a real SAP invoice exists, against that invoice directly.
+              Distinct from a physical return or an issued SAP credit note, which are tracked once a
+              claim&rsquo;s resolution is approved (Milestone 6B). {total} claim{total === 1 ? "" : "s"} total.
             </p>
           </section>
 
@@ -144,7 +145,7 @@ export default async function InvoiceClaimsPage({ searchParams }: RouteParams) {
                     <tr className="border-y border-gray-100 bg-gray-50/70">
                       <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Claim</th>
                       <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Customer</th>
-                      <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">SAP invoice</th>
+                      <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Invoice / Order</th>
                       <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Category</th>
                       <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Priority</th>
                       <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Lines</th>
@@ -167,7 +168,10 @@ export default async function InvoiceClaimsPage({ searchParams }: RouteParams) {
                             <span className="text-xs font-medium text-gray-700">{claim.customer.name}</span>
                           </div>
                         </td>
-                        <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">{claim.sapInvoice.sapDocNum}</td>
+                        {/* Real-world fix (native Invoice Claims): claim.sapInvoice is null for a claim raised against this business's own order instead -- show claim.order.reference then, never a bare crash on a null dereference. */}
+                        <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">
+                          {claim.sapInvoice?.sapDocNum ?? claim.order?.reference ?? "—"}
+                        </td>
                         <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">{CLAIM_CATEGORY_LABELS[claim.category] ?? claim.category}</td>
                         <td className="whitespace-nowrap px-6 py-4">
                           <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-semibold ${CLAIM_PRIORITY_STYLES[claim.priority] ?? "bg-gray-100 text-gray-500"}`}>

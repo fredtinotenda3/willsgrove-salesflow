@@ -70,7 +70,8 @@ export type ReturnedProductLostSaleRow = {
   /** Via InvoiceClaim.orderId -- null when the claim was never matched to an order (InvoiceClaim.orderId's own documented case: an invoice Milestone 5 never matched). */
   orderId: string | null;
   orderReference: string | null;
-  sapInvoiceId: string;
+  /** Null for a native claim (no SapInvoice at all) -- see InvoiceClaim.sapInvoiceId's own schema comment. */
+  sapInvoiceId: string | null;
   salespersonId: string | null;
   recordedAt: Date;
   isDemo: boolean;
@@ -105,7 +106,18 @@ export async function listReturnedProductLostSaleRows(
     // match and is correctly excluded by this filter, never force-
     // included.
     ...(filters.productId
-      ? { claimLine: { sapInvoiceLine: { matchedOrderLine: { productId: filters.productId } } } }
+      ? {
+          claimLine: {
+            OR: [
+              { sapInvoiceLine: { matchedOrderLine: { productId: filters.productId } } },
+              // Real-world fix (native Invoice Claims): a native claim
+              // line's product is its own orderLine.productId directly
+              // -- no matchedOrderLine indirection needed, since there's
+              // no SapInvoiceLine in the picture at all.
+              { orderLine: { productId: filters.productId } },
+            ],
+          },
+        }
       : {}),
     ...(filters.salespersonId ? { claim: { order: { salespersonId: filters.salespersonId } } } : {}),
   };
@@ -147,6 +159,9 @@ export async function listReturnedProductLostSaleRows(
                 matchedOrderLine: { select: { productId: true } },
               },
             },
+            // Real-world fix (native Invoice Claims): the order-line
+            // equivalent, populated only for a native claim line.
+            orderLine: { select: { productId: true, requestedUnitCode: true } },
           },
         },
       },
@@ -161,10 +176,10 @@ export async function listReturnedProductLostSaleRows(
     claimLineId: row.claimLineId,
     customerId: row.customerId,
     customerName: row.customer.name,
-    productId: row.claimLine?.sapInvoiceLine.matchedOrderLine?.productId ?? null,
+    productId: row.claimLine?.sapInvoiceLine?.matchedOrderLine?.productId ?? row.claimLine?.orderLine?.productId ?? null,
     sapItemCodeSnapshot: row.sapItemCodeSnapshot,
     productDescriptionSnapshot: row.sapItemDescriptionSnapshot,
-    unitOfMeasure: row.claimLine?.sapInvoiceLine.unitOfMeasure ?? null,
+    unitOfMeasure: row.claimLine?.sapInvoiceLine?.unitOfMeasure ?? row.claimLine?.orderLine?.requestedUnitCode ?? null,
     quantity: row.claimReturn.receivedQuantity.toString(),
     unitPrice: row.estimatedUnitPrice?.toString() ?? null,
     totalValue: row.estimatedValue?.toString() ?? null,

@@ -114,7 +114,18 @@ export async function getClaimReasonAnalytics(filters: Pick<ReportFilters, "incl
       disputedUnitPrice: true,
       sapItemCodeSnapshot: true,
       sapItemDescriptionSnapshot: true,
-      claim: { select: { id: true, customerId: true, status: true, customer: { select: { name: true } }, sapInvoice: { select: { currencyCode: true } } } },
+      // Real-world fix (native Invoice Claims): order.currency is the
+      // fallback currency source for a claim with no sapInvoice.
+      claim: {
+        select: {
+          id: true,
+          customerId: true,
+          status: true,
+          customer: { select: { name: true } },
+          sapInvoice: { select: { currencyCode: true } },
+          order: { select: { currency: true } },
+        },
+      },
     },
   });
 
@@ -161,7 +172,7 @@ export async function getClaimReasonAnalytics(filters: Pick<ReportFilters, "incl
           ? quantity * Number(line.disputedUnitPrice)
           : 0;
     if (exposure !== 0) {
-      const currency = line.claim.sapInvoice.currencyCode ?? "UNKNOWN";
+      const currency = line.claim.sapInvoice?.currencyCode ?? line.claim.order?.currency ?? "UNKNOWN";
       bucket.informationalExposureByCurrency.set(currency, (bucket.informationalExposureByCurrency.get(currency) ?? 0) + exposure);
     }
 

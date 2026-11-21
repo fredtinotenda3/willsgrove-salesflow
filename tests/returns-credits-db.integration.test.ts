@@ -50,6 +50,13 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 6B: returns & credit notes
 
   let adminId: string;
   let customerId: string;
+  // Real-world fix (native Invoice Claims): fixtures for the order ->
+  // pick -> authorize -> dispatch pipeline a native claim's lines
+  // require -- same fixtures tests/invoice-claims-db.integration.test.ts
+  // already establishes for the identical reason.
+  let driverId: string;
+  let assistantId: string;
+  let vehicleId: string;
   const uniqueSuffix = `rc6btest-${Date.now()}`;
   let invoiceCounter = 0;
 
@@ -59,6 +66,9 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 6B: returns & credit notes
   const createdClaimIds: string[] = [];
   const createdClaimReturnIds: string[] = [];
   const createdCreditNoteIds: string[] = [];
+  const createdOrderIds: string[] = [];
+  const createdPersonnelIds: string[] = [];
+  const createdVehicleIds: string[] = [];
 
   beforeAll(async () => {
     const { prisma } = await import("@/lib/prisma");
@@ -77,6 +87,26 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 6B: returns & credit notes
 
     adminId = admin.id;
     customerId = customer.id;
+
+    const driver = await prisma.personnel.create({
+      data: { name: `RC6B Test Driver ${uniqueSuffix}`, role: "DRIVER", createdById: adminId, isDemo: true },
+      select: { id: true },
+    });
+    createdPersonnelIds.push(driver.id);
+    const assistant = await prisma.personnel.create({
+      data: { name: `RC6B Test Assistant ${uniqueSuffix}`, role: "DRIVER_ASSISTANT", createdById: adminId, isDemo: true },
+      select: { id: true },
+    });
+    createdPersonnelIds.push(assistant.id);
+    const vehicle = await prisma.vehicle.create({
+      data: { registrationNumber: `RC6BTEST-${uniqueSuffix}`, createdById: adminId, isDemo: true },
+      select: { id: true },
+    });
+    createdVehicleIds.push(vehicle.id);
+
+    driverId = driver.id;
+    assistantId = assistant.id;
+    vehicleId = vehicle.id;
   });
 
   afterAll(async () => {
@@ -103,10 +133,134 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 6B: returns & credit notes
       await prisma.sapInvoiceLine.deleteMany({ where: { sapInvoiceId: { in: createdSapInvoiceIds } } });
       await prisma.sapInvoice.deleteMany({ where: { id: { in: createdSapInvoiceIds } } });
       await prisma.sapInvoiceImportBatch.deleteMany({ where: { id: { in: createdImportBatchIds } } });
+
+      // Real-world fix (native Invoice Claims): tear down the order ->
+      // pick -> dispatch fixtures, same leaves-first order
+      // tests/invoice-claims-db.integration.test.ts's own afterAll
+      // already establishes.
+      for (const orderId of createdOrderIds) {
+        const dispatchRecordIds: { id: string }[] = await prisma.dispatchRecord.findMany({ where: { orderId }, select: { id: true } });
+        await prisma.deliveryRecord.deleteMany({ where: { dispatchRecordId: { in: dispatchRecordIds.map((d: { id: string }) => d.id) } } });
+        await prisma.dispatchRecord.deleteMany({ where: { orderId } });
+        await prisma.pickingSession.deleteMany({ where: { orderId } });
+        await prisma.orderStatusHistory.deleteMany({ where: { orderId } });
+        await prisma.auditEvent.deleteMany({
+          where: { entityType: { in: ["CustomerOrder", "PickingSession", "PickingLine", "DispatchRecord", "DeliveryRecord"] } },
+        });
+        await prisma.orderLine.deleteMany({ where: { orderId } });
+      }
+      for (const orderId of createdOrderIds) {
+        await prisma.customerOrder.delete({ where: { id: orderId } }).catch(() => undefined);
+      }
+      await prisma.personnel.deleteMany({ where: { id: { in: createdPersonnelIds } } });
+      await prisma.vehicle.deleteMany({ where: { id: { in: createdVehicleIds } } });
     } finally {
       await prisma.$disconnect();
     }
   });
+
+  /** Real-world fix (native Invoice Claims): a fresh order with one
+   * already-dispatched line, carrying a known approvedUnitPrice -- the
+   * order-anchored equivalent of createSapInvoice below. Mirrors
+   * tests/invoice-claims-db.integration.test.ts's own
+   * createDispatchedOrderLine helper. */
+  async function createDispatchedOrderLine(requestedQuantity: string, approvedUnitPrice: string) {
+    const { prisma } = await import("@/lib/prisma");
+    const { generateOrderReference } = await import("@/lib/orders");
+    const { startPickingSession } = await import("@/lib/picking/start-picking");
+    const { recordPickedLine } = await import("@/lib/picking/record-picked-line");
+    const { completePickingSession } = await import("@/lib/picking/complete-picking");
+    const { authorizePickingSession } = await import("@/lib/picking/authorize-picking");
+    const { createDispatchRecord } = await import("@/lib/fulfilment/dispatch");
+
+    invoiceCounter += 1;
+    const order = await prisma.customerOrder.create({
+      data: {
+        reference: generateOrderReference(),
+        customerId,
+        createdById: adminId,
+        source: "MANUAL",
+        status: "RECEIVED",
+        currency: "USD",
+        receivedAt: new Date(),
+        isDemo: true,
+        lines: {
+          create: [
+            {
+              lineNumber: 1,
+              originalProductDescription: `6B native claim test item ${uniqueSuffix}-${invoiceCounter}`,
+              requestedQuantity,
+              requestedUnitCode: "EA",
+              approvedUnitPrice,
+              isDemo: true,
+            },
+          ],
+        },
+      },
+      select: { id: true, lines: { select: { id: true }, orderBy: { lineNumber: "asc" } } },
+    });
+    createdOrderIds.push(order.id);
+    const orderLineId = order.lines[0]!.id;
+
+    const started = await startPickingSession(order.id, adminId);
+    if (!started.ok) throw new Error(started.message);
+    await recordPickedLine(started.session.id, orderLineId, requestedQuantity, "0.0000", undefined, adminId);
+    const completed = await completePickingSession(started.session.id, adminId);
+    if (!completed.ok) throw new Error(completed.message);
+    const authorized = await authorizePickingSession(started.session.id, adminId);
+    if (!authorized.ok) throw new Error(authorized.message);
+
+    const dispatched = await createDispatchRecord(order.id, adminId, {
+      lines: [{ orderLineId, quantity: requestedQuantity }],
+      driverId,
+      assistantId,
+      vehicleId,
+    });
+    if (!dispatched.ok) throw new Error(dispatched.message);
+
+    return { orderId: order.id, orderLineId };
+  }
+
+  /** Real-world fix (native Invoice Claims): the order-anchored
+   * equivalent of createApprovedClaim below -- creates a native claim
+   * against the given order/order line, records the given resolution,
+   * and approves it, driving the claim to APPROVED through the same
+   * real 6A lifecycle. */
+  async function createApprovedNativeClaim(
+    orderId: string,
+    orderLineId: string,
+    decision: string,
+    approvedCreditAmount: string | undefined
+  ): Promise<string> {
+    const { createInvoiceClaim } = await import("@/lib/invoice-claims/create-claim");
+    const { recordClaimResolution, approveClaimResolution } = await import("@/lib/invoice-claims/claim-resolution");
+
+    const created = await createInvoiceClaim(
+      {
+        orderId,
+        customerId,
+        category: "QUALITY_ISSUE",
+        description: "6B native claim test",
+        claimDate: new Date().toISOString().slice(0, 10),
+        lines: [{ orderLineId, disputeType: "AMOUNT_ONLY", disputedAmount: "1.0000", reason: "6B native test" }],
+      },
+      adminId
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error("setup failed: createInvoiceClaim (native)");
+    createdClaimIds.push(created.id);
+
+    const resolution = await recordClaimResolution(created.id, { decision, findings: "6B native test findings" } as never, adminId);
+    expect(resolution.ok).toBe(true);
+    if (!resolution.ok) throw new Error("setup failed: recordClaimResolution (native)");
+
+    const approved = await approveClaimResolution(created.id, resolution.id, approvedCreditAmount, adminId);
+    expect(approved.ok).toBe(true);
+    if (!approved.ok) throw new Error("setup failed: approveClaimResolution (native)");
+    expect(approved.claimStatus).toBe("APPROVED");
+
+    return created.id;
+  }
 
   /** One SAP invoice with one line -- built directly, same shape as
    * tests/invoice-claims-db.integration.test.ts's own helper, but with
@@ -273,6 +427,42 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 6B: returns & credit notes
     // the actual returned quantity, rounded to this project's money
     // scale.
     expect(lostSale?.estimatedValue?.toString()).toBe("27.0000");
+    expect(lostSale?.currencyCode).toBe("USD");
+  });
+
+  it("Real-world fix (native Invoice Claims): a return against a native (order-anchored) claim line resolves its real price via the order line's approved unit price, and its currency from the order rather than a non-existent SapInvoice", async () => {
+    if (skipAll) return;
+    const { recordClaimReturn } = await import("@/lib/returns-credits/returns");
+    const { prisma } = await import("@/lib/prisma");
+
+    const { orderId, orderLineId } = await createDispatchedOrderLine("10.0000", "4.5000");
+    const claimId = await createApprovedNativeClaim(orderId, orderLineId, "PHYSICAL_RETURN_REQUIRED", undefined);
+    const claimLine = await prisma.invoiceClaimLine.findFirstOrThrow({ where: { claimId, orderLineId } });
+
+    // Same "actually received, not originally disputed" distinction the
+    // SAP-anchored test above makes: 6.0000 received back, independent
+    // of whatever the original dispute claimed.
+    const result = await recordClaimReturn(
+      claimId,
+      { claimLineId: claimLine.id, receivedQuantity: "6.0000", condition: "EXPIRED", receivedDate: new Date().toISOString().slice(0, 10) } as never,
+      adminId
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    createdClaimReturnIds.push(result.id);
+
+    const lostSale = await prisma.claimReturnLostSale.findUnique({ where: { claimReturnId: result.id } });
+    expect(lostSale).not.toBeNull();
+    expect(lostSale?.claimLineId).toBe(claimLine.id);
+    // No SapInvoiceLine exists for a native claim line -- the order
+    // line's own approvedUnitPrice is the real price source instead.
+    expect(lostSale?.estimatedUnitPrice?.toString()).toBe("4.5000");
+    // 6.0000 * 4.5000 = 27.0000, exactly -- same computation as the
+    // SAP-anchored path, just priced from the order line instead of a
+    // SapInvoiceLine.
+    expect(lostSale?.estimatedValue?.toString()).toBe("27.0000");
+    // Currency comes from CustomerOrder.currency, never left null just
+    // because there's no SapInvoice.
     expect(lostSale?.currencyCode).toBe("USD");
   });
 

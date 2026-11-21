@@ -14,7 +14,14 @@ export async function listClaimReturns(claimId: string) {
   return prisma.claimReturn.findMany({
     where: { claimId },
     include: {
-      claimLine: { select: { id: true, sapInvoiceLine: { select: { sapItemCode: true, sapItemDescription: true } } } },
+      // Real-world fix (native Invoice Claims): sapItemCodeSnapshot is
+      // populated on the claim line itself at creation time for BOTH a
+      // SAP-anchored and a native claim line (see
+      // lib/invoice-claims/create-claim.ts's createNativeAnchoredClaimCore),
+      // so it's selected as the primary display source; sapInvoiceLine
+      // stays only as a fallback for an older row that predates the
+      // backfill, and is null for a native line.
+      claimLine: { select: { id: true, sapItemCodeSnapshot: true, sapInvoiceLine: { select: { sapItemCode: true, sapItemDescription: true } } } },
       receivedBy: { select: { id: true, name: true } },
       creditNote: { select: { id: true, sapCreditNoteDocNum: true, amount: true } },
       // Real Business Data Onboarding round, Phase 6 (Returned-claim

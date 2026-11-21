@@ -309,13 +309,20 @@ export default async function Home() {
               </p>
             </div>
 
-            <Link
+            {/* Real-world bug fix: a plain <a>, not next/link's <Link>,
+                so this always forces a full browser navigation -- see
+                app/orders/new/page.tsx's comment above its createdOrder
+                state for the full root-cause writeup (Next's client
+                Router Cache was reusing that page's stale "Order
+                Received" screen on soft navigation back to it). */}
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- deliberate: a full navigation is the fix, see the comment above */}
+            <a
               href="/orders/new"
               className="flex items-center gap-2 rounded-lg bg-[#173D2E] px-4 py-3 text-xs font-semibold text-white shadow-sm transition hover:bg-[#24543F]"
             >
               <Plus size={16} />
               Create New Order
-            </Link>
+            </a>
 
           </section>
 

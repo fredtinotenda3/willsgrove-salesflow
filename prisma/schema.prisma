@@ -905,6 +905,17 @@ model OrderLine {
   // comment for how outstanding quantity is derived.
   dispatchLines DispatchLine[]
 
+  // Real-world fix (native Invoice Claims). Zero, one, or several claim
+  // lines raised directly against this order line when there is no SAP
+  // invoice to link to instead -- see InvoiceClaimLine.orderLineId's own
+  // comment. A claim may only target a line that has at least one
+  // DispatchLine (lib/invoice-claims/create-claim.ts enforces this, not a
+  // schema constraint): the same "already went out" fact that makes a
+  // SAP-linked claim's targeted SapInvoiceLine disjoint from Source B
+  // (UnfulfilledDemand, "never dispatched or invoiced") in
+  // lib/reporting/financial-exposure.ts's exposure accounting.
+  claimLines InvoiceClaimLine[]
+
   @@unique([orderId, lineNumber])
   @@index([productId])
   @@index([verificationStatus])
@@ -2260,12 +2271,25 @@ model InvoiceClaim {
   id             String @id @default(cuid())
   claimReference String @unique // human-facing, e.g. "CLM-20261111-A1B2C3D4" -- same date+random shape as generateOrderReference()/generateHandoverReference()
 
-  // Required: "A claim must always be linked to the relevant SAP
-  // invoice" (spec section 1). orderId is nullable: "and, where
-  // possible, the original SalesFlow order and invoice line" -- an
-  // invoice that Milestone 5 never matched to an order can still have a
-  // claim raised against it.
-  sapInvoiceId String
+  // Real-world fix (native Invoice Claims): originally "always linked to
+  // the relevant SAP invoice" (spec section 1), required unconditionally.
+  // This business has no automatic SAP invoice feed -- "invoices that
+  // have products that have been returned... not a file to be imported,
+  // nothing is coming from SAP" -- so a claim with NO SapInvoice at all
+  // must now be expressible. sapInvoiceId is therefore nullable, and
+  // orderId (already nullable, already meaning "the original SalesFlow
+  // order, where possible" for a SAP-linked claim) becomes DUAL-PURPOSE:
+  // for a SAP-linked claim it stays the optional courtesy cross-reference
+  // it always was; for a claim with no SapInvoice, it is the claim's
+  // REQUIRED, sole anchor. Enforced by the
+  // InvoiceClaim_sap_or_order_required CHECK constraint (see this
+  // migration), never by application code alone -- AT LEAST one of
+  // sapInvoiceId/orderId must be set (both may legitimately be set at
+  // once, for a SAP-linked claim that also carries the optional
+  // cross-reference described above; only "neither" is invalid). No
+  // existing row is affected: every row created before this fix already
+  // has sapInvoiceId NOT NULL, so it trivially satisfies the new check.
+  sapInvoiceId String?
   orderId      String?
 
   // Required, and NOT always the same as sapInvoice.matchedCustomerId:
@@ -2310,7 +2334,7 @@ model InvoiceClaim {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  sapInvoice             SapInvoice             @relation(fields: [sapInvoiceId], references: [id], onDelete: Restrict)
+  sapInvoice             SapInvoice?            @relation(fields: [sapInvoiceId], references: [id], onDelete: Restrict)
   order                  CustomerOrder?         @relation(fields: [orderId], references: [id], onDelete: Restrict)
   customer               Customer               @relation(fields: [customerId], references: [id], onDelete: Restrict)
   reportedBy             User                   @relation("ClaimReporter", fields: [reportedById], references: [id], onDelete: Restrict)
@@ -2354,7 +2378,20 @@ model InvoiceClaimLine {
   id      String @id @default(cuid())
   claimId String
 
-  sapInvoiceLineId String
+  // Real-world fix (native Invoice Claims): sapInvoiceLineId is nullable
+  // for the same reason InvoiceClaim.sapInvoiceId now is -- see that
+  // field's own comment. orderLineId is the native equivalent, pointing
+  // directly at this business's own OrderLine instead of a SapInvoiceLine
+  // that may never exist. Enforced by the
+  // createClaimLine_sap_or_order_xor CHECK constraint (this migration):
+  // exactly one of the two must be set per line, and it must match
+  // whichever one the parent InvoiceClaim itself uses (never a line
+  // pointing at a SapInvoiceLine under an order-anchored claim, or vice
+  // versa) -- the latter half enforced in lib/invoice-claims/validation.ts
+  // (createInvoiceClaimSchema's refine), since a cross-row check spanning
+  // two tables cannot be expressed as a single-table CHECK constraint.
+  sapInvoiceLineId String?
+  orderLineId      String?
 
   // Snapshotted at creation time for display without a join -- NEVER
   // used for quantity/financial math, which always re-reads the live
@@ -2407,8 +2444,9 @@ model InvoiceClaimLine {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  claim          InvoiceClaim   @relation(fields: [claimId], references: [id], onDelete: Restrict)
-  sapInvoiceLine SapInvoiceLine @relation(fields: [sapInvoiceLineId], references: [id], onDelete: Restrict)
+  claim          InvoiceClaim    @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  sapInvoiceLine SapInvoiceLine? @relation(fields: [sapInvoiceLineId], references: [id], onDelete: Restrict)
+  orderLine      OrderLine?      @relation(fields: [orderLineId], references: [id], onDelete: Restrict)
 
   attachments InvoiceClaimAttachment[]
 
@@ -2424,13 +2462,19 @@ model InvoiceClaimLine {
   // comment.
   returnLostSales ClaimReturnLostSale[]
 
-  // Prevents the same invoice line being listed twice within the SAME
-  // claim by mistake -- a genuinely new dispute about an already-claimed
-  // line is always a new ClaimLine on a new or existing claim with its
-  // own reason, never a silent duplicate row.
+  // Prevents the same invoice line (or, for a native claim, the same
+  // order line) being listed twice within the SAME claim by mistake -- a
+  // genuinely new dispute about an already-claimed line is always a new
+  // ClaimLine on a new or existing claim with its own reason, never a
+  // silent duplicate row. Two separate unique indexes, not one compound
+  // one, because Postgres treats NULL as distinct from NULL in a unique
+  // index -- each index is therefore a no-op across every row using the
+  // OTHER linkage (its own column is NULL there), exactly as intended.
   @@unique([claimId, sapInvoiceLineId])
+  @@unique([claimId, orderLineId])
   @@index([claimId])
   @@index([sapInvoiceLineId])
+  @@index([orderLineId])
   @@index([reasonCategory])
   @@index([isDemo])
 }

@@ -13,6 +13,8 @@ import {
   CLAIM_LINE_REASON_CATEGORIES,
   CLAIM_LINE_REASON_CATEGORY_LABELS,
   claimLineInputSchema,
+  createInvoiceClaimSchema,
+  isNativeClaimInput,
 } from "@/lib/invoice-claims/validation";
 
 /**
@@ -328,5 +330,143 @@ describe("Management Analytics spec Part 4: CLAIM_LINE_REASON_CATEGORIES", () =>
         reasonCategory: "PRODUCT_NOT_DELIVERED",
       }).success
     ).toBe(false);
+  });
+});
+
+/**
+ * Real-world fix (native Invoice Claims): Willsgrove doesn't yet have
+ * real reconciled SAP invoices, so a claim must be filable against this
+ * business's own order/order-line data directly, with no SapInvoice in
+ * the picture at all. These tests cover the two new, purely structural
+ * rules this requires -- claimLineInputSchema's sapInvoiceLineId/
+ * orderLineId XOR, and createInvoiceClaimSchema's matching header/line
+ * linkage check -- without touching the database (both schemas, and
+ * isNativeClaimInput, have no @prisma/client import).
+ */
+describe("Real-world fix (native Invoice Claims): claimLineInputSchema's sapInvoiceLineId/orderLineId XOR", () => {
+  const base = {
+    disputeType: "QUANTITY" as const,
+    acceptedQuantity: "8",
+    rejectedQuantity: "2",
+    reason: "2 short",
+  };
+
+  it("accepts a line with only orderLineId set (a native claim line)", () => {
+    expect(claimLineInputSchema.safeParse({ ...base, orderLineId: "order-line-1" }).success).toBe(true);
+  });
+
+  it("accepts a line with only sapInvoiceLineId set (the pre-existing SAP-anchored path)", () => {
+    expect(claimLineInputSchema.safeParse({ ...base, sapInvoiceLineId: "sap-line-1" }).success).toBe(true);
+  });
+
+  it("rejects a line with neither sapInvoiceLineId nor orderLineId set", () => {
+    expect(claimLineInputSchema.safeParse({ ...base }).success).toBe(false);
+  });
+
+  it("rejects a line with BOTH sapInvoiceLineId and orderLineId set -- a line never has dual linkage, unlike the claim header", () => {
+    expect(
+      claimLineInputSchema.safeParse({ ...base, sapInvoiceLineId: "sap-line-1", orderLineId: "order-line-1" }).success
+    ).toBe(false);
+  });
+
+  it("also applies the XOR to an AMOUNT_ONLY line", () => {
+    const amountOnlyBase = { disputeType: "AMOUNT_ONLY" as const, disputedAmount: "10", reason: "Wrong price" };
+    expect(claimLineInputSchema.safeParse({ ...amountOnlyBase, orderLineId: "order-line-1" }).success).toBe(true);
+    expect(claimLineInputSchema.safeParse({ ...amountOnlyBase }).success).toBe(false);
+    expect(
+      claimLineInputSchema.safeParse({ ...amountOnlyBase, sapInvoiceLineId: "sap-line-1", orderLineId: "order-line-1" })
+        .success
+    ).toBe(false);
+  });
+});
+
+describe("Real-world fix (native Invoice Claims): createInvoiceClaimSchema's header/line linkage", () => {
+  const header = {
+    customerId: "customer-1",
+    category: "SHORT_DELIVERY" as const,
+    description: "3 cases short on delivery",
+    claimDate: "2026-11-20",
+  };
+
+  it("accepts a fully native claim: orderId set, every line carries orderLineId, no sapInvoiceId at all", () => {
+    const result = createInvoiceClaimSchema.safeParse({
+      ...header,
+      orderId: "order-1",
+      lines: [
+        { disputeType: "QUANTITY", orderLineId: "order-line-1", acceptedQuantity: "7", rejectedQuantity: "3", reason: "3 short" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts the pre-existing SAP-anchored shape unchanged: sapInvoiceId set, every line carries sapInvoiceLineId", () => {
+    const result = createInvoiceClaimSchema.safeParse({
+      ...header,
+      sapInvoiceId: "invoice-1",
+      lines: [
+        { disputeType: "QUANTITY", sapInvoiceLineId: "sap-line-1", acceptedQuantity: "7", rejectedQuantity: "3", reason: "3 short" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a claim with neither sapInvoiceId nor orderId set at the header level", () => {
+    const result = createInvoiceClaimSchema.safeParse({
+      ...header,
+      lines: [
+        { disputeType: "QUANTITY", orderLineId: "order-line-1", acceptedQuantity: "7", rejectedQuantity: "3", reason: "3 short" },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a native (orderId-anchored) claim whose line uses sapInvoiceLineId instead of orderLineId -- header and line linkage must match", () => {
+    const result = createInvoiceClaimSchema.safeParse({
+      ...header,
+      orderId: "order-1",
+      lines: [
+        { disputeType: "QUANTITY", sapInvoiceLineId: "sap-line-1", acceptedQuantity: "7", rejectedQuantity: "3", reason: "3 short" },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a SAP-anchored claim whose line uses orderLineId instead of sapInvoiceLineId -- same mismatch, opposite direction", () => {
+    const result = createInvoiceClaimSchema.safeParse({
+      ...header,
+      sapInvoiceId: "invoice-1",
+      lines: [
+        { disputeType: "QUANTITY", orderLineId: "order-line-1", acceptedQuantity: "7", rejectedQuantity: "3", reason: "3 short" },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a claim with BOTH sapInvoiceId and orderId set (the pre-existing optional cross-reference case) as long as every line still uses sapInvoiceLineId", () => {
+    // InvoiceClaim.orderId predates this round as an optional
+    // cross-reference on a SAP-anchored claim ("where possible, the
+    // original SalesFlow order") -- the header check only requires
+    // sapInvoiceId's own branch to hold when sapInvoiceId is set, so
+    // orderId may additionally be present without changing what the
+    // lines must carry.
+    const result = createInvoiceClaimSchema.safeParse({
+      ...header,
+      sapInvoiceId: "invoice-1",
+      orderId: "order-1",
+      lines: [
+        { disputeType: "QUANTITY", sapInvoiceLineId: "sap-line-1", acceptedQuantity: "7", rejectedQuantity: "3", reason: "3 short" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("Real-world fix (native Invoice Claims): isNativeClaimInput", () => {
+  it("is true when sapInvoiceId is absent", () => {
+    expect(isNativeClaimInput({ sapInvoiceId: undefined })).toBe(true);
+  });
+
+  it("is false when sapInvoiceId is set, even if orderId is also set", () => {
+    expect(isNativeClaimInput({ sapInvoiceId: "invoice-1" })).toBe(false);
   });
 });

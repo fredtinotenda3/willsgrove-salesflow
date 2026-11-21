@@ -59,6 +59,15 @@ type LineDraft = {
   suggestions: ProductSuggestion[];
   showSuggestions: boolean;
   error: string | null;
+  // Real-world fix ("customer price should automatically fil[l] with
+  // customer price (Unit price)"): when the selected customer has a
+  // price list carrying an entry for this line's product,
+  // customerUnitPrice above is prefilled from it (still fully editable --
+  // never silently/invisibly applied) and this note is shown next to the
+  // field so the operator knows WHY it's already filled in and can judge
+  // whether to change it. Mirrors app/quotations/new/new-quotation-form.
+  // tsx's own identical priceListHint field + lookupPriceListPrice below.
+  priceListHint: string | null;
 };
 
 // `key` is an explicit parameter (rather than always generating one
@@ -87,7 +96,44 @@ function newLine(key?: string): LineDraft {
     suggestions: [],
     showSuggestions: false,
     error: null,
+    priceListHint: null,
   };
+}
+
+// Live "Total" preview shown next to each line while filling the form
+// (quantity x unit price) -- purely a client-side display convenience,
+// NEVER sent to the server and with no bearing on OrderLine.lineTotal,
+// which remains the APPROVED amount set later by the price-decision
+// workflow (see createOrderCore's own comment in lib/orders.ts). Showing
+// staff the arithmetic as they type is not the same as treating it as
+// approved. Uses the same scaled-bigint decimal-string arithmetic this
+// codebase always uses for money (never floats) -- mirrors lib/picking/
+// validation.ts's parseScaledDecimal/lib/fulfilment/decimal.ts's
+// formatScaledDecimal locally rather than importing across domains, this
+// codebase's own established convention (see lib/customers.ts's
+// isUniqueViolation).
+const LINE_PREVIEW_DECIMAL_PATTERN = /^\d+(\.\d{1,4})?$/;
+
+function parsePreviewScaledDecimal(value: string): bigint | null {
+  const trimmed = value.trim();
+  if (!LINE_PREVIEW_DECIMAL_PATTERN.test(trimmed)) return null;
+  const [intPart, fracPartRaw = ""] = trimmed.split(".");
+  return BigInt(intPart) * BigInt(10_000) + BigInt(fracPartRaw.padEnd(4, "0"));
+}
+
+function formatPreviewScaledDecimal(scaled: bigint): string {
+  const intPart = scaled / BigInt(10_000);
+  const fracPart = scaled % BigInt(10_000);
+  const fracText = fracPart.toString().padStart(4, "0").replace(/0+$/, "");
+  return fracText.length > 0 ? `${intPart}.${fracText}` : `${intPart}`;
+}
+
+function computeLinePreviewTotal(quantityRaw: string, unitPriceRaw: string): string | null {
+  const quantity = parsePreviewScaledDecimal(quantityRaw);
+  const unitPrice = parsePreviewScaledDecimal(unitPriceRaw);
+  if (quantity === null || unitPrice === null) return null;
+  const product = (quantity * unitPrice) / BigInt(10_000);
+  return formatPreviewScaledDecimal(product);
 }
 
 // A line counts as "started" only once the staff member has typed or
@@ -199,6 +245,30 @@ export default function NewOrderPage() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  // Real-world bug fix ("New Order and Repeat Order are navigating to
+  // created order id instead [of a blank form]"): once an order was
+  // submitted, this state correctly shows the "Order Received" screen
+  // below -- but Next's client Router Cache (this app runs with
+  // cacheComponents: true, see next.config.ts) can reuse THIS component
+  // instance, createdOrder and all, on a soft client-side <Link>
+  // navigation back to /orders/new, instead of giving the page a fresh
+  // mount. A staff member who had just submitted order A, then later
+  // clicked "New Order" (sidebar / Orders page / dashboard) or "Repeat
+  // this order" on a completely different order B, would land straight
+  // back on order A's stale confirmation screen -- never seeing a blank
+  // form, and never getting order B's lines pre-filled.
+  //
+  // The fix is NOT in this file: it's at every entry point that
+  // navigates here (app/components/sidebar.tsx's "New Order" item,
+  // app/orders/page.tsx's "Receive New Order" button, app/page.tsx's
+  // "Create New Order" button, and app/orders/[id]/page.tsx's "Repeat
+  // this order" button), each changed from next/link's <Link> to a
+  // plain <a>. A full browser navigation always discards all client
+  // state and gives this component a genuinely fresh mount, which is
+  // what makes createdOrder (and the one-shot repeatFrom-prefill effect
+  // below, guarded by repeatFromAppliedRef) safe to model as "only ever
+  // set once per page visit" the way they're written here -- that
+  // assumption only holds with a real fresh mount on every visit.
   const [createdOrder, setCreatedOrder] = useState<{ id: string; reference: string } | null>(null);
   const [documentUploads, setDocumentUploads] = useState<DocumentUploadState[]>([]);
 
@@ -437,10 +507,47 @@ export default function NewOrderPage() {
                 : product.itemName,
               suggestions: [],
               showSuggestions: false,
+              priceListHint: null,
             }
           : line
       )
     );
+
+    // Real-world fix: customer price should auto-fill from Willsgrove's
+    // own price list, not require the operator to type/guess it. Mirrors
+    // app/quotations/new/new-quotation-form.tsx's identical
+    // selectProduct + lookupPriceListPrice pair exactly.
+    if (selectedCustomer) {
+      lookupPriceListPrice(key, selectedCustomer.id, product.id);
+    }
+  }
+
+  // Only fills a BLANK price, so re-selecting a product (or picking a
+  // customer after lines are already started) never clobbers a value
+  // the operator already typed for this line. "No price found" is a
+  // routine, expected outcome (see app/api/price-lists/lookup/route.ts's
+  // own comment) -- the field is simply left for manual entry, same as
+  // before this lookup existed.
+  function lookupPriceListPrice(key: string, customerId: string, productId: string) {
+    fetch(`/api/price-lists/lookup?customerId=${encodeURIComponent(customerId)}&productId=${encodeURIComponent(productId)}`, {
+      cache: "no-store",
+    })
+      .then((res) => res.json())
+      .then((data: { success?: boolean; price?: { unitPrice: string; currencyCode: string; priceListCode: string } | null }) => {
+        if (!data.success || !data.price) return;
+        setLines((prev) =>
+          prev.map((line) =>
+            line.key === key && line.productId === productId && line.customerUnitPrice.trim() === ""
+              ? {
+                  ...line,
+                  customerUnitPrice: data.price!.unitPrice,
+                  priceListHint: `Prefilled from ${data.price!.priceListCode} price list (${data.price!.currencyCode})`,
+                }
+              : line
+          )
+        );
+      })
+      .catch(() => {});
   }
 
   function handleFilesPicked(picked: File[]) {
@@ -876,6 +983,17 @@ export default function NewOrderPage() {
                           onClick={() => {
                             setSelectedCustomer(customer);
                             setShowCustomerResults(false);
+                            // Real-world fix: a line can be started (a
+                            // product already picked) before a customer
+                            // is -- once the customer IS picked, look up
+                            // its price-list price for every such line
+                            // that doesn't already have one. Mirrors
+                            // new-quotation-form.tsx's identical handler.
+                            for (const line of lines) {
+                              if (line.productId && line.customerUnitPrice.trim() === "") {
+                                lookupPriceListPrice(line.key, customer.id, line.productId);
+                              }
+                            }
                           }}
                           className="block w-full px-4 py-3 text-left text-xs hover:bg-gray-50"
                         >
@@ -1131,18 +1249,45 @@ export default function NewOrderPage() {
                     </div>
 
                     <div>
-                      <label className="text-[10px] font-semibold text-gray-400">Customer&apos;s Price</label>
+                      {/* Real-world fix ("customer price should
+                          automatically fil[l] with customer price (Unit
+                          price)... remove this column: Customer Price"):
+                          renamed from "Customer's Price" now that it's
+                          prefilled from Willsgrove's own price list
+                          (lookupPriceListPrice above) rather than always
+                          requiring the operator to type a figure copied
+                          from the customer's PO -- still fully editable,
+                          and still submitted as the same
+                          customerUnitPrice field as before. */}
+                      <label className="text-[10px] font-semibold text-gray-400">Unit Price</label>
                       <input
                         type="text"
                         inputMode="decimal"
                         value={line.customerUnitPrice}
-                        onChange={(event) => updateLine(line.key, { customerUnitPrice: event.target.value })}
+                        onChange={(event) =>
+                          updateLine(line.key, { customerUnitPrice: event.target.value, priceListHint: null })
+                        }
                         placeholder="Optional"
                         className="mt-1 h-9 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
                       />
+                      {line.priceListHint && (
+                        <p className="mt-1 text-[10px] text-green-600">{line.priceListHint}</p>
+                      )}
                     </div>
 
                     <div>
+                      {/* Real-world fix: live qty x unit price preview,
+                          added alongside the Unit Price field above --
+                          see computeLinePreviewTotal's own comment for
+                          why this is a client-side-only display value,
+                          never OrderLine.lineTotal itself. */}
+                      <label className="text-[10px] font-semibold text-gray-400">Total</label>
+                      <div className="mt-1 flex h-9 w-full items-center rounded-lg border border-gray-100 bg-gray-50 px-3 text-xs text-gray-600">
+                        {computeLinePreviewTotal(line.requestedQuantity, line.customerUnitPrice) ?? "--"}
+                      </div>
+                    </div>
+
+                    <div className="col-span-4">
                       <label className="text-[10px] font-semibold text-gray-400">Notes</label>
                       <input
                         type="text"

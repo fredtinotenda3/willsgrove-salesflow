@@ -10,7 +10,7 @@ import {
   orderSourceLabel,
   type OrderStatusValue,
   formatOrderDate as formatDate,
-  formatOrderAmount as formatAmount,
+  formatOrderAmountWithEstimate,
   initialsFor,
   avatarColorFor,
 } from "@/lib/order-display";
@@ -46,6 +46,11 @@ type ApiOrderSummary = {
   orderDate: string | null;
   requestedDeliveryDate: string | null;
   total: string | null;
+  /** Real-world fix ("Pending pricing must populate with price... Amount column"): a
+   *  best-effort sum of each line's own customerUnitPrice x requestedQuantity, used
+   *  only while `total` itself is still null (see lib/order-queries.ts's estimateOrderTotal). */
+  estimatedTotal: string | null;
+  estimatedTotalIsPartial: boolean;
   currency: string;
   isDemo: boolean;
   createdAt: string;
@@ -234,13 +239,20 @@ export default function OrdersPage() {
               </p>
             </div>
 
-            <Link
+            {/* Real-world bug fix: a plain <a>, not next/link's <Link>,
+                so this always forces a full browser navigation -- see
+                app/orders/new/page.tsx's comment above its createdOrder
+                state for the full root-cause writeup (Next's client
+                Router Cache was reusing that page's stale "Order
+                Received" screen on soft navigation back to it). */}
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- deliberate: a full navigation is the fix, see the comment above */}
+            <a
               href="/orders/new"
               className="flex items-center gap-2 rounded-lg bg-[#173D2E] px-4 py-3 text-xs font-semibold text-white shadow-sm transition hover:bg-[#24543F]"
             >
               <Plus size={16} />
               Receive New Order
-            </Link>
+            </a>
           </section>
 
           {/* Summary cards */}
@@ -424,7 +436,28 @@ export default function OrdersPage() {
                           </td>
 
                           <td className="whitespace-nowrap px-6 py-4 text-xs font-semibold text-gray-700">
-                            {formatAmount(order.total, order.currency)}
+                            {(() => {
+                              const amount = formatOrderAmountWithEstimate(
+                                order.total,
+                                order.estimatedTotal,
+                                order.estimatedTotalIsPartial,
+                                order.currency
+                              );
+                              return (
+                                <span
+                                  className={amount.isEstimate ? "font-medium text-amber-700" : undefined}
+                                  title={
+                                    amount.isEstimate
+                                      ? amount.isPartialEstimate
+                                        ? "Estimated from the lines that have a price so far -- not every line is priced yet, and not the approved total."
+                                        : "Estimated from each line's price at order entry -- not yet the approved total."
+                                      : undefined
+                                  }
+                                >
+                                  {amount.text}
+                                </span>
+                              );
+                            })()}
                           </td>
 
                           <td className="whitespace-nowrap px-6 py-4">

@@ -41,11 +41,22 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 6A: invoice claims managem
 
   let adminId: string;
   let customerId: string;
+  // Real-world fix (native Invoice Claims): fixtures for the order ->
+  // pick -> authorize -> dispatch pipeline a native claim's "already
+  // dispatched" rule depends on -- same driver/assistant/vehicle
+  // registered-Settings-record fixtures tests/fulfilment-db.integration.test.ts
+  // already establishes for createDispatchRecord.
+  let driverId: string;
+  let assistantId: string;
+  let vehicleId: string;
   const uniqueSuffix = `claimtest-${Date.now()}`;
 
   const createdImportBatchIds: string[] = [];
   const createdSapInvoiceIds: string[] = [];
   const createdClaimIds: string[] = [];
+  const createdOrderIds: string[] = [];
+  const createdPersonnelIds: string[] = [];
+  const createdVehicleIds: string[] = [];
 
   beforeAll(async () => {
     const { prisma } = await import("@/lib/prisma");
@@ -64,6 +75,26 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 6A: invoice claims managem
 
     adminId = admin.id;
     customerId = customer.id;
+
+    const driver = await prisma.personnel.create({
+      data: { name: `Claim Test Driver ${uniqueSuffix}`, role: "DRIVER", createdById: adminId, isDemo: true },
+      select: { id: true },
+    });
+    createdPersonnelIds.push(driver.id);
+    const assistant = await prisma.personnel.create({
+      data: { name: `Claim Test Assistant ${uniqueSuffix}`, role: "DRIVER_ASSISTANT", createdById: adminId, isDemo: true },
+      select: { id: true },
+    });
+    createdPersonnelIds.push(assistant.id);
+    const vehicle = await prisma.vehicle.create({
+      data: { registrationNumber: `CLAIMTEST-${uniqueSuffix}`, createdById: adminId, isDemo: true },
+      select: { id: true },
+    });
+    createdVehicleIds.push(vehicle.id);
+
+    driverId = driver.id;
+    assistantId = assistant.id;
+    vehicleId = vehicle.id;
   });
 
   afterAll(async () => {
@@ -79,10 +110,139 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 6A: invoice claims managem
       await prisma.sapInvoiceLine.deleteMany({ where: { sapInvoiceId: { in: createdSapInvoiceIds } } });
       await prisma.sapInvoice.deleteMany({ where: { id: { in: createdSapInvoiceIds } } });
       await prisma.sapInvoiceImportBatch.deleteMany({ where: { id: { in: createdImportBatchIds } } });
+
+      // Real-world fix (native Invoice Claims): tear down the order ->
+      // pick -> dispatch fixtures used by the native-claim tests below,
+      // in the same leaves-first order
+      // tests/fulfilment-db.integration.test.ts's own afterAll already
+      // establishes (every InvoiceClaimLine referencing one of these
+      // order lines is already gone from the block above, so
+      // OrderLine's onDelete: Restrict on InvoiceClaimLine.orderLineId
+      // is already satisfied by the time we reach it here).
+      for (const orderId of createdOrderIds) {
+        const dispatchRecordIds: { id: string }[] = await prisma.dispatchRecord.findMany({ where: { orderId }, select: { id: true } });
+        await prisma.deliveryRecord.deleteMany({ where: { dispatchRecordId: { in: dispatchRecordIds.map((d: { id: string }) => d.id) } } });
+        await prisma.dispatchRecord.deleteMany({ where: { orderId } });
+        await prisma.pickingSession.deleteMany({ where: { orderId } });
+        await prisma.orderStatusHistory.deleteMany({ where: { orderId } });
+        await prisma.auditEvent.deleteMany({
+          where: { entityType: { in: ["CustomerOrder", "PickingSession", "PickingLine", "DispatchRecord", "DeliveryRecord"] } },
+        });
+        await prisma.orderLine.deleteMany({ where: { orderId } });
+      }
+      for (const orderId of createdOrderIds) {
+        await prisma.customerOrder.delete({ where: { id: orderId } }).catch(() => undefined);
+      }
+      await prisma.personnel.deleteMany({ where: { id: { in: createdPersonnelIds } } });
+      await prisma.vehicle.deleteMany({ where: { id: { in: createdVehicleIds } } });
     } finally {
       await prisma.$disconnect();
     }
   });
+
+  /**
+   * Real-world fix (native Invoice Claims): a fresh order with ONE line,
+   * fully picked, authorized, and dispatched -- i.e. the real-world
+   * precondition createNativeAnchoredClaimCore requires before a claim
+   * may target it at all ("a claim may only target an already-dispatched
+   * line"). Mirrors tests/fulfilment-db.integration.test.ts's own
+   * createReadyToInvoiceOrder helper, reused here rather than
+   * reinvented, down to a single line since a native claim test only
+   * ever needs one order line to dispute.
+   */
+  async function createDispatchedOrderLine(options?: { customerUnitPrice?: string; approvedUnitPrice?: string }) {
+    const { prisma } = await import("@/lib/prisma");
+    const { generateOrderReference } = await import("@/lib/orders");
+    const { startPickingSession } = await import("@/lib/picking/start-picking");
+    const { recordPickedLine } = await import("@/lib/picking/record-picked-line");
+    const { completePickingSession } = await import("@/lib/picking/complete-picking");
+    const { authorizePickingSession } = await import("@/lib/picking/authorize-picking");
+    const { createDispatchRecord } = await import("@/lib/fulfilment/dispatch");
+
+    const order = await prisma.customerOrder.create({
+      data: {
+        reference: generateOrderReference(),
+        customerId,
+        createdById: adminId,
+        source: "MANUAL",
+        status: "RECEIVED",
+        orderDate: new Date("2026-11-01T00:00:00.000Z"),
+        currency: "USD",
+        receivedAt: new Date(),
+        isDemo: true,
+        lines: {
+          create: [
+            {
+              lineNumber: 1,
+              originalProductDescription: `Native claim test item ${uniqueSuffix}`,
+              requestedQuantity: "50.0000",
+              requestedUnitCode: "EA",
+              customerUnitPrice: options?.customerUnitPrice ?? "9.0000",
+              approvedUnitPrice: options?.approvedUnitPrice,
+              isDemo: true,
+            },
+          ],
+        },
+      },
+      select: { id: true, lines: { select: { id: true }, orderBy: { lineNumber: "asc" } } },
+    });
+    createdOrderIds.push(order.id);
+    const orderLineId = order.lines[0]!.id;
+
+    const started = await startPickingSession(order.id, adminId);
+    if (!started.ok) throw new Error(started.message);
+    await recordPickedLine(started.session.id, orderLineId, "50.0000", "0.0000", undefined, adminId);
+    const completed = await completePickingSession(started.session.id, adminId);
+    if (!completed.ok) throw new Error(completed.message);
+    const authorized = await authorizePickingSession(started.session.id, adminId);
+    if (!authorized.ok) throw new Error(authorized.message);
+
+    const dispatched = await createDispatchRecord(order.id, adminId, {
+      lines: [{ orderLineId, quantity: "50.0000" }],
+      driverId,
+      assistantId,
+      vehicleId,
+    });
+    if (!dispatched.ok) throw new Error(dispatched.message);
+
+    return { orderId: order.id, orderLineId };
+  }
+
+  /** A plain order + single line with NO picking/dispatch at all -- used
+   * only to prove createNativeAnchoredClaimCore refuses a claim against
+   * a line that has never actually gone out. */
+  async function createUndispatchedOrderLine() {
+    const { prisma } = await import("@/lib/prisma");
+    const { generateOrderReference } = await import("@/lib/orders");
+
+    const order = await prisma.customerOrder.create({
+      data: {
+        reference: generateOrderReference(),
+        customerId,
+        createdById: adminId,
+        source: "MANUAL",
+        status: "RECEIVED",
+        currency: "USD",
+        receivedAt: new Date(),
+        isDemo: true,
+        lines: {
+          create: [
+            {
+              lineNumber: 1,
+              originalProductDescription: `Undispatched native claim test item ${uniqueSuffix}`,
+              requestedQuantity: "10.0000",
+              requestedUnitCode: "EA",
+              customerUnitPrice: "4.0000",
+              isDemo: true,
+            },
+          ],
+        },
+      },
+      select: { id: true, lines: { select: { id: true }, orderBy: { lineNumber: "asc" } } },
+    });
+    createdOrderIds.push(order.id);
+    return { orderId: order.id, orderLineId: order.lines[0]!.id };
+  }
 
   /** One SAP invoice with N lines, each with a known unitPrice -- built
    * directly rather than through the CSV pipeline, since this file is
@@ -178,7 +338,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 6A: invoice claims managem
     expect(detail?.lines[0]?.rejectedQuantity?.toString()).toBe("15.0000");
     // The original SAP invoice line's own quantityInvoiced is NEVER
     // touched by filing a claim.
-    expect(detail?.lines[0]?.sapInvoiceLine.quantityInvoiced.toString()).toBe("100.0000");
+    expect(detail?.lines[0]?.sapInvoiceLine?.quantityInvoiced.toString()).toBe("100.0000");
   });
 
   it("rejects a second claim against the same invoice line once the remaining quantity is exhausted (live aggregate across claims, not per-claim)", async () => {
@@ -442,5 +602,196 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 6A: invoice claims managem
 
     const detail = await getClaimDetail(result.id);
     expect(detail?.lines[0]?.reasonCategory).toBeNull();
+  });
+
+  /**
+   * Real-world fix (native Invoice Claims): Willsgrove doesn't yet have
+   * real reconciled SAP invoices, so a claim must be filable directly
+   * against this business's own order/order-line data, with no
+   * SapInvoice anywhere in the picture. These tests exercise
+   * createNativeAnchoredClaimCore end to end against a REAL database --
+   * the structural (schema-independent) rules are already covered by
+   * tests/invoice-claims.test.ts's validation-only tests above.
+   */
+  describe("Real-world fix (native Invoice Claims): claims anchored directly to this business's own order", () => {
+    it("creates a native claim with no SAP invoice at all, anchored to the order and its already-dispatched line", async () => {
+      if (skipAll) return;
+      const { createInvoiceClaim } = await import("@/lib/invoice-claims/create-claim");
+      const { getClaimDetail } = await import("@/lib/invoice-claims/queries");
+
+      const { orderId, orderLineId } = await createDispatchedOrderLine();
+
+      const result = await createInvoiceClaim(
+        {
+          orderId,
+          customerId,
+          category: "SHORT_DELIVERY",
+          description: "10 units short on this native (no-SAP-invoice) order",
+          claimDate: new Date().toISOString().slice(0, 10),
+          lines: [{ orderLineId, disputeType: "QUANTITY", acceptedQuantity: "40.0000", rejectedQuantity: "10.0000", reason: "10 short" }],
+        },
+        adminId
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      createdClaimIds.push(result.id);
+
+      const detail = await getClaimDetail(result.id);
+      expect(detail?.status).toBe("OPEN");
+      // The one load-bearing structural fact of this whole fix: a native
+      // claim carries NO SapInvoice linkage at all, anchored instead via
+      // orderId/orderLineId.
+      expect(detail?.sapInvoiceId).toBeNull();
+      expect(detail?.sapInvoice).toBeNull();
+      expect(detail?.orderId).toBe(orderId);
+      expect(detail?.order?.id).toBe(orderId);
+      expect(detail?.lines).toHaveLength(1);
+      expect(detail?.lines[0]?.sapInvoiceLineId).toBeNull();
+      expect(detail?.lines[0]?.sapInvoiceLine).toBeNull();
+      expect(detail?.lines[0]?.orderLineId).toBe(orderLineId);
+      expect(detail?.lines[0]?.orderLine?.id).toBe(orderLineId);
+      expect(detail?.lines[0]?.acceptedQuantity?.toString()).toBe("40.0000");
+      expect(detail?.lines[0]?.rejectedQuantity?.toString()).toBe("10.0000");
+      // The original order line's own requestedQuantity is NEVER touched
+      // by filing a claim -- same invariant the SAP-anchored path's own
+      // test above asserts for SapInvoiceLine.quantityInvoiced.
+      expect(detail?.lines[0]?.orderLine?.requestedQuantity.toString()).toBe("50.0000");
+    });
+
+    it("refuses a native claim line targeting an order line that has never actually been dispatched -- the structural invariant financial-exposure reporting relies on to stay disjoint from Source B", async () => {
+      if (skipAll) return;
+      const { createInvoiceClaim } = await import("@/lib/invoice-claims/create-claim");
+
+      const { orderId, orderLineId } = await createUndispatchedOrderLine();
+
+      const result = await createInvoiceClaim(
+        {
+          orderId,
+          customerId,
+          category: "QUALITY_ISSUE",
+          description: "Trying to claim against a line that never went out",
+          claimDate: new Date().toISOString().slice(0, 10),
+          lines: [{ orderLineId, disputeType: "AMOUNT_ONLY", disputedAmount: "5.0000", reason: "Should be refused" }],
+        },
+        adminId
+      );
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.status).toBe(400);
+      expect(result.message).toMatch(/not been dispatched/i);
+    });
+
+    it("refuses a claim whose orderId belongs to a different customer than the claim's own customerId", async () => {
+      if (skipAll) return;
+      const { prisma } = await import("@/lib/prisma");
+      const { createInvoiceClaim } = await import("@/lib/invoice-claims/create-claim");
+
+      const otherCustomer = await prisma.customer.findFirst({
+        where: { sapCustomerCode: { not: "DEMO-CUST-001" } },
+        select: { id: true },
+      });
+      if (!otherCustomer) {
+        console.log("Skipping cross-customer refusal test: need a second seeded customer besides DEMO-CUST-001.");
+        return;
+      }
+
+      const { orderId, orderLineId } = await createDispatchedOrderLine();
+
+      const result = await createInvoiceClaim(
+        {
+          orderId,
+          customerId: otherCustomer.id,
+          category: "OTHER",
+          categoryDetail: "Mismatched customer",
+          description: "This order belongs to DEMO-CUST-001, not otherCustomer",
+          claimDate: new Date().toISOString().slice(0, 10),
+          lines: [{ orderLineId, disputeType: "AMOUNT_ONLY", disputedAmount: "5.0000", reason: "Should be refused" }],
+        },
+        adminId
+      );
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.status).toBe(409);
+    });
+
+    it("enforces the live already-claimed aggregate across claims for a native (order-line-anchored) claim, same as the SAP-anchored path", async () => {
+      if (skipAll) return;
+      const { createInvoiceClaim } = await import("@/lib/invoice-claims/create-claim");
+
+      const { orderId, orderLineId } = await createDispatchedOrderLine();
+
+      const first = await createInvoiceClaim(
+        {
+          orderId,
+          customerId,
+          category: "SHORT_DELIVERY",
+          description: "First native claim: 40 units short",
+          claimDate: new Date().toISOString().slice(0, 10),
+          lines: [{ orderLineId, disputeType: "QUANTITY", acceptedQuantity: "10.0000", rejectedQuantity: "40.0000", reason: "Short delivery" }],
+        },
+        adminId
+      );
+      expect(first.ok).toBe(true);
+      if (first.ok) createdClaimIds.push(first.id);
+
+      // Only 0 remains available (10 accepted + 40 rejected == 50
+      // requested) -- a second native claim disputing even 1 more unit
+      // on the same order line must fail, the exact same live-aggregate
+      // rule validateClaimLineQuantities already enforces for the
+      // SAP-anchored path.
+      const second = await createInvoiceClaim(
+        {
+          orderId,
+          customerId,
+          category: "QUALITY_ISSUE",
+          description: "Second native claim: found more damage later",
+          claimDate: new Date().toISOString().slice(0, 10),
+          lines: [{ orderLineId, disputeType: "QUANTITY", acceptedQuantity: "0.0000", rejectedQuantity: "1.0000", reason: "Additional damage noticed" }],
+        },
+        adminId
+      );
+      expect(second.ok).toBe(false);
+    });
+
+    it("financial summary for a native claim prices lines via the order line's own approved/customer unit price fallback, and takes its currency and originalInvoiceValue from the order rather than a non-existent SapInvoice", async () => {
+      if (skipAll) return;
+      const { createInvoiceClaim } = await import("@/lib/invoice-claims/create-claim");
+      const { computeClaimFinancialSummary } = await import("@/lib/invoice-claims/financial");
+
+      // No approvedUnitPrice set -- the fallback must reach all the way
+      // to customerUnitPrice, same column-fallback order
+      // app/orders/[id]/page.tsx's own Approved Price column already
+      // establishes.
+      const { orderId, orderLineId } = await createDispatchedOrderLine({ customerUnitPrice: "9.0000" });
+
+      const created = await createInvoiceClaim(
+        {
+          orderId,
+          customerId,
+          category: "QUALITY_ISSUE",
+          description: "Native claim for financial summary pricing",
+          claimDate: new Date().toISOString().slice(0, 10),
+          lines: [{ orderLineId, disputeType: "QUANTITY", acceptedQuantity: "40.0000", rejectedQuantity: "10.0000", reason: "10 units damaged" }],
+        },
+        adminId
+      );
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      createdClaimIds.push(created.id);
+
+      const summary = await computeClaimFinancialSummary(created.id);
+      expect(summary).not.toBeNull();
+      // 10 rejected units * 9.00 customerUnitPrice fallback = 90.00.
+      expect(summary?.claimedValue).toBe("90.0000");
+      expect(summary?.claimedValueIncomplete).toBe(false);
+      // No SapInvoice exists for a native claim -- never invented.
+      expect(summary?.originalInvoiceValue).toBeNull();
+      // Currency comes from the order (CustomerOrder.currency), never
+      // left null just because there's no SapInvoice.
+      expect(summary?.currencyCode).toBe("USD");
+    });
   });
 });

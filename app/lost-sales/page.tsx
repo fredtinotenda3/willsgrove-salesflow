@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { listUnfulfilledDemands } from "@/lib/lost-sales/queries";
-import { getLostSalesReportSummary } from "@/lib/lost-sales/queries";
+import { getLostSalesReportSummary, getAutomaticLostSalesValue } from "@/lib/lost-sales/queries";
 import {
   UNFULFILLED_DEMAND_STATUS_LABELS,
   UNFULFILLED_DEMAND_STATUS_STYLES,
@@ -54,9 +54,19 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
       ? resolved.status
       : undefined;
 
-  const [{ demands, pagination }, summary] = await Promise.all([
+  const [{ demands, pagination }, summary, automaticValue] = await Promise.all([
     listUnfulfilledDemands({ page, pageSize: PAGE_SIZE, status }),
     getLostSalesReportSummary(),
+    // Real-world fix ("lost sales will also have prices not just
+    // quantity... PRICE RECORD SHOULD ALSO BE THERE ON ALL NECESSARY
+    // PLACES, EG LOST SALES"): this function already existed (built for
+    // the spec's required automatic-estimate KPI) and is already used by
+    // the Lost Sales Analytics page -- this plain list page just never
+    // called it. Reusing it here, rather than adding a new value sum
+    // into getLostSalesReportSummary, keeps the same "never blend a
+    // money figure into the quantity-only summary" rule that function's
+    // own comment documents.
+    getAutomaticLostSalesValue(),
   ]);
 
   const statusQuery = (targetStatus: string | undefined) => (targetStatus ? `&status=${targetStatus}` : "");
@@ -94,7 +104,7 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
             </p>
           </section>
 
-          <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <div className="flex items-center gap-3 rounded-xl border border-[#E8EBE6] bg-white p-4">
               <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-50 text-amber-600">
                 <PackageX size={18} />
@@ -120,6 +130,26 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
               <div>
                 <p className="text-lg font-bold text-[#17251E]">{summary.totalConfirmedLostQuantity}</p>
                 <p className="text-xs text-gray-400">Confirmed lost quantity (all time)</p>
+              </div>
+            </div>
+            {/* Real-world fix: quantity alone doesn't tell a manager how
+                much money is at stake. Deliberately labelled "estimated"
+                and caveated, never blended with the quantity tiles above
+                -- same "never invent/blend a value" discipline as every
+                other money figure in this module (see
+                getAutomaticLostSalesValue's own comment). */}
+            <div className="flex items-center gap-3 rounded-xl border border-[#E8EBE6] bg-white p-4">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600">
+                <TrendingDown size={18} />
+              </div>
+              <div>
+                <p className="text-lg font-bold text-[#17251E]">{automaticValue.estimatedValue}</p>
+                <p className="text-xs text-gray-400">
+                  Estimated lost value (current)
+                  {automaticValue.demandsWithoutEstimate > 0
+                    ? ` -- excludes ${automaticValue.demandsWithoutEstimate} demand(s) with no resolvable price`
+                    : ""}
+                </p>
               </div>
             </div>
           </section>
@@ -168,6 +198,7 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
                       <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Unavailable</th>
                       <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Outstanding</th>
                       <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Lost</th>
+                      <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Est. Value</th>
                       <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Status</th>
                       <th className="px-6 py-3" />
                     </tr>
@@ -198,6 +229,9 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{demand.unavailableQuantity}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{demand.outstandingQuantity}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{demand.confirmedLostQuantity}</td>
+                        <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">
+                          {demand.estimatedValue !== null ? demand.estimatedValue : <span className="text-gray-300">--</span>}
+                        </td>
                         <td className="whitespace-nowrap px-6 py-4">
                           <span
                             className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${

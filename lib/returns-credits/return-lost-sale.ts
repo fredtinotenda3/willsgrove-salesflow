@@ -83,13 +83,22 @@ export async function recordClaimReturnLostSaleIfLoss(
         sapItemCodeSnapshot: true,
         sapItemDescriptionSnapshot: true,
         sapInvoiceLine: { select: { unitPrice: true } },
+        // Real-world fix (native Invoice Claims): the real price source
+        // for a line claimed natively (no SapInvoiceLine at all) --
+        // same approvedUnitPrice-then-customerUnitPrice fallback
+        // lib/invoice-claims/financial.ts's computeClaimFinancialSummary
+        // already uses, for the same reason.
+        orderLine: { select: { approvedUnitPrice: true, customerUnitPrice: true } },
       },
     });
     if (line) {
       sapItemCodeSnapshot = line.sapItemCodeSnapshot;
       sapItemDescriptionSnapshot = line.sapItemDescriptionSnapshot;
-      if (line.sapInvoiceLine.unitPrice !== null) {
-        estimatedUnitPrice = line.sapInvoiceLine.unitPrice;
+      const realUnitPrice = line.sapInvoiceLine
+        ? line.sapInvoiceLine.unitPrice
+        : line.orderLine?.approvedUnitPrice ?? line.orderLine?.customerUnitPrice ?? null;
+      if (realUnitPrice !== null) {
+        estimatedUnitPrice = realUnitPrice;
         // Both operands are @db.Decimal(18,4); round to this project's
         // money scale rather than leaving full intermediate precision or
         // truncating via a float conversion -- same convention
@@ -102,9 +111,14 @@ export async function recordClaimReturnLostSaleIfLoss(
 
   const claim = await tx.invoiceClaim.findUnique({
     where: { id: params.claimId },
-    select: { sapInvoice: { select: { currencyCode: true } } },
+    select: {
+      sapInvoice: { select: { currencyCode: true } },
+      // Real-world fix (native Invoice Claims): currency fallback for a
+      // claim with no sapInvoice.
+      order: { select: { currency: true } },
+    },
   });
-  const currencyCode = claim?.sapInvoice.currencyCode ?? null;
+  const currencyCode = claim?.sapInvoice?.currencyCode ?? claim?.order?.currency ?? null;
 
   const created = await tx.claimReturnLostSale.create({
     data: {

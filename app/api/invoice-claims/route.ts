@@ -24,6 +24,9 @@ export async function GET(request: NextRequest) {
   const priority = url.searchParams.get("priority") ?? undefined;
   const customerId = url.searchParams.get("customerId") ?? undefined;
   const sapInvoiceId = url.searchParams.get("sapInvoiceId") ?? undefined;
+  // Real-world fix (native Invoice Claims): the order-anchored equivalent
+  // of the sapInvoiceId filter above.
+  const orderId = url.searchParams.get("orderId") ?? undefined;
   const assignedToId = url.searchParams.get("assignedToId") ?? undefined;
   const search = url.searchParams.get("search") ?? undefined;
   const page = Number(url.searchParams.get("page") ?? "1");
@@ -32,6 +35,7 @@ export async function GET(request: NextRequest) {
   for (const [label, value] of [
     ["customerId", customerId],
     ["sapInvoiceId", sapInvoiceId],
+    ["orderId", orderId],
     ["assignedToId", assignedToId],
   ] as const) {
     if (value && !isValidId(value)) {
@@ -40,7 +44,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const result = await listInvoiceClaims({ status, category, priority, customerId, sapInvoiceId, assignedToId, search }, page, pageSize);
+    const result = await listInvoiceClaims({ status, category, priority, customerId, sapInvoiceId, orderId, assignedToId, search }, page, pageSize);
     return NextResponse.json({ success: true, ...result }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Invoice claim list failed:", error);

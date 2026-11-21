@@ -206,14 +206,26 @@ const navigation = [
         href: "/deliveries",
         icon: Truck,
       },
-      // Management Analytics spec, Part 6 (prior round) / this round's
-      // Part 2: the single, authoritative, permanent home for every
-      // order whose invoice has a recorded delivery outcome -- see
-      // lib/order-queries.ts's EXCLUDE_DELIVERED_ORDERS and
-      // lib/delivered-orders/queries.ts for how the two stay consistent.
+      // Real-world fix ("the page delivered-orders is not showing
+      // delivered orders... nothing is coming from sap, so records are of
+      // this system"): this nav item used to point at /delivered-orders,
+      // which lib/delivered-orders/queries.ts builds entirely from
+      // InvoiceDeliveryRecord -> SapInvoice -- rows that only exist after
+      // a manual "Import SAP invoices" CSV run, which this business
+      // doesn't do. That page is, by design, always empty here; it was
+      // never the bug, it was just the wrong link. The native equivalent
+      // -- an order whose own DispatchRecord(s) actually reached DELIVERED,
+      // zero SAP/invoice data involved -- already exists at
+      // /deliveries/history (see lib/fulfilment/queries.ts's own
+      // listDeliveredOrders, "Final completion phase, section 7"), and is
+      // already linked from the Dispatch Queue page as "Delivered
+      // History." Pointing the main nav item there instead is the fix:
+      // same label, same icon, now backed by real data. /delivered-orders
+      // itself is left in place (not deleted) pending a decision on the
+      // wider SAP-invoice-reconciliation question.
       {
         name: "Delivered Orders",
-        href: "/delivered-orders",
+        href: "/deliveries/history",
         icon: PackageCheck,
       },
       // Real Business Data Onboarding round, Phase 8: moved here from
@@ -546,26 +558,47 @@ export default function Sidebar() {
               {visibleItems.map((item) => {
                 const Icon = item.icon;
                 const active = isActivePath(pathname, item.href);
+                const linkClassName = `group flex items-center justify-between rounded-lg px-3 py-2.5 text-[13px] font-medium transition-all ${
+                  active
+                    ? "bg-[#D7F36B] text-[#10271F] shadow-sm"
+                    : "text-white/65 hover:bg-white/[0.07] hover:text-white"
+                }`;
+                const linkContent = (
+                  <span className="flex items-center gap-3">
+                    <Icon size={17} strokeWidth={1.9} />
+                    {item.name}
+                  </span>
+                );
+
+                // Real-world bug fix: "New Order and Repeat Order are
+                // navigating to created order id instead" of opening a
+                // blank form. Root cause: Next's client Router Cache
+                // (this app runs with cacheComponents: true, see
+                // next.config.ts) can reuse the PREVIOUSLY rendered
+                // /orders/new component instance -- including its
+                // createdOrder "success screen" state -- on a soft
+                // client-side <Link> navigation back to it, so a staff
+                // member who had just submitted an order saw THAT old
+                // order's "Order Received" confirmation again instead of
+                // a blank form, every time they came back to start
+                // another one. A plain <a> forces a full browser
+                // navigation, which always discards all client state --
+                // the one guaranteed-correct fix regardless of exactly
+                // which Next.js caching layer was reusing the instance.
+                // Full writeup + the three other entry points this same
+                // fix had to be applied to: app/orders/new/page.tsx's own
+                // comment above its `createdOrder` state.
+                if (item.href === "/orders/new") {
+                  return (
+                    <a key={item.name} href={item.href} className={linkClassName}>
+                      {linkContent}
+                    </a>
+                  );
+                }
 
                 return (
-                  <Link
-                    key={item.name}
-                    href={item.href}
-                    className={`group flex items-center justify-between rounded-lg px-3 py-2.5 text-[13px] font-medium transition-all ${
-                      active
-                        ? "bg-[#D7F36B] text-[#10271F] shadow-sm"
-                        : "text-white/65 hover:bg-white/[0.07] hover:text-white"
-                    }`}
-                  >
-
-                    <span className="flex items-center gap-3">
-
-                      <Icon size={17} strokeWidth={1.9} />
-
-                      {item.name}
-
-                    </span>
-
+                  <Link key={item.name} href={item.href} className={linkClassName}>
+                    {linkContent}
                   </Link>
                 );
               })}

@@ -76,12 +76,22 @@ export type ReturnsAndCreditNotesSummary = {
  *     lib/lost-sales/queries.ts's getSupplyShortageLostSalesValue(),
  *     likewise unchanged/reused.
  *
- * These cannot double-count by construction, not merely by convention:
- * Source A requires an actual SapInvoiceLine to dispute (InvoiceClaim is
- * always linked to one), while Source B's quantity is, by
- * UnfulfilledDemand's own definition, exactly the portion that was NEVER
- * dispatched or invoiced in the first place. The same physical units can
- * therefore never appear in both sources at once. Source A is
+ * These cannot double-count by construction, not merely by convention.
+ * Real-world fix (native Invoice Claims) generalized this invariant
+ * without weakening it: Source A no longer requires an actual
+ * SapInvoiceLine specifically -- a claim line may instead target this
+ * business's own OrderLine directly when there is no SAP invoice at all
+ * (lib/invoice-claims/create-claim.ts's createNativeAnchoredClaimCore) --
+ * but EITHER way, the targeted line must have already been dispatched
+ * (enforced at creation: a SapInvoiceLine can only exist for a line SAP
+ * itself has already invoiced; a native claim line's OrderLine is
+ * required to carry at least one DispatchLine). Source B's quantity is,
+ * by UnfulfilledDemand's own definition, exactly the portion that was
+ * NEVER dispatched or invoiced in the first place. A line that has been
+ * dispatched (claimable, Source A) and a line that never was (Source B)
+ * are therefore always disjoint sets, regardless of which of the two
+ * claim-linkage paths Source A's figure happens to be drawn from. Source
+ * A is
  * per-currency (claims can span multiple SAP invoice currencies); Source
  * B is reported as a single total because lib/lost-sales/estimate-value.ts
  * itself never records a currency (same scope this project's Milestone 4

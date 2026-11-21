@@ -8,8 +8,9 @@ import {
   validateClaimLineQuantities,
   validateDisputedAmount,
   claimCategoryRequiresDetail,
+  isNativeClaimInput,
 } from "@/lib/invoice-claims/validation";
-import { getAlreadyClaimedTotal } from "@/lib/invoice-claims/queries";
+import { getAlreadyClaimedTotal, getAlreadyClaimedTotalForOrderLine } from "@/lib/invoice-claims/queries";
 
 /**
  * Milestone 6A. Any authenticated user may create a claim (spec's
@@ -73,13 +74,40 @@ export async function createInvoiceClaimCore(
   reportedById: string,
   invoiceDeliveryRecordId?: string
 ): Promise<CreateInvoiceClaimResult> {
-  // "Other requires detail" -- category.
+  // "Other requires detail" -- category. Shared by both linkage paths.
   if (claimCategoryRequiresDetail(input.category) && !input.categoryDetail?.trim()) {
     return { ok: false, status: 400, message: "A detail is required when category is OTHER.", fieldErrors: { categoryDetail: "Required when category is OTHER." } };
   }
 
+  // Real-world fix (native Invoice Claims): createInvoiceClaimSchema's
+  // own refine() already guarantees input.orderId is set whenever
+  // input.sapInvoiceId is absent, and that every line's linkage matches
+  // -- see that schema's comment. Dispatching here, rather than
+  // interleaving two branches through one long function, keeps each
+  // path's SAP-specific or order-specific lookups/validation together
+  // and readable, the same way this project has always preferred a
+  // small duplicated helper over one shared function straining to cover
+  // two genuinely different shapes (lib/customers.ts's isUniqueViolation
+  // precedent).
+  if (isNativeClaimInput(input)) {
+    return createNativeAnchoredClaimCore(tx, input, reportedById, invoiceDeliveryRecordId);
+  }
+  return createSapAnchoredClaimCore(tx, input, reportedById, invoiceDeliveryRecordId);
+}
+
+async function createSapAnchoredClaimCore(
+  tx: PrismaTransactionClient,
+  input: CreateInvoiceClaimInput,
+  reportedById: string,
+  invoiceDeliveryRecordId?: string
+): Promise<CreateInvoiceClaimResult> {
+  // Non-null: createInvoiceClaimSchema's refine() guarantees sapInvoiceId
+  // is set whenever this branch (dispatched from createInvoiceClaimCore
+  // via isNativeClaimInput) is reached.
+  const sapInvoiceId = input.sapInvoiceId!;
+
   const sapInvoice = await tx.sapInvoice.findUnique({
-    where: { id: input.sapInvoiceId },
+    where: { id: sapInvoiceId },
     select: { id: true, matchedCustomerId: true, isCancelledOrReversed: true },
   });
   if (!sapInvoice) {
@@ -124,14 +152,14 @@ export async function createInvoiceClaimCore(
     }
   }
 
-  const sapInvoiceLineIds = input.lines.map((line) => line.sapInvoiceLineId);
+  const sapInvoiceLineIds = input.lines.map((line) => line.sapInvoiceLineId!);
   const uniqueLineIds = new Set(sapInvoiceLineIds);
   if (uniqueLineIds.size !== sapInvoiceLineIds.length) {
     return { ok: false, status: 400, message: "Each invoice line may only be listed once per claim.", fieldErrors: { lines: "Duplicate invoice line in this claim." } };
   }
 
   const sapInvoiceLines = await tx.sapInvoiceLine.findMany({
-    where: { id: { in: sapInvoiceLineIds }, sapInvoiceId: input.sapInvoiceId },
+    where: { id: { in: sapInvoiceLineIds }, sapInvoiceId },
     select: { id: true, quantityInvoiced: true, lineTotal: true },
   });
   if (sapInvoiceLines.length !== uniqueLineIds.size) {
@@ -146,11 +174,11 @@ export async function createInvoiceClaimCore(
   // concurrent claims against the same invoice line (not merely "checking
   // twice").
   for (const [index, line] of input.lines.entries()) {
-    const sapLine = lineById.get(line.sapInvoiceLineId);
+    const sapLine = lineById.get(line.sapInvoiceLineId!);
     if (!sapLine) continue; // already reported above via the count mismatch
 
     if (line.disputeType === "QUANTITY") {
-      const alreadyClaimed = await getAlreadyClaimedTotal(tx, line.sapInvoiceLineId);
+      const alreadyClaimed = await getAlreadyClaimedTotal(tx, line.sapInvoiceLineId!);
       const result = validateClaimLineQuantities(sapLine.quantityInvoiced.toString(), alreadyClaimed, line.acceptedQuantity, line.rejectedQuantity);
       if (!result.ok) {
         return { ok: false, status: 400, message: result.message, fieldErrors: { [`lines.${index}`]: result.message } };
@@ -173,7 +201,7 @@ export async function createInvoiceClaimCore(
   const created = await tx.invoiceClaim.create({
     data: {
       claimReference,
-      sapInvoiceId: input.sapInvoiceId,
+      sapInvoiceId,
       orderId: input.orderId ?? null,
       customerId: input.customerId,
       customerComplaintReference: input.customerComplaintReference ?? null,
@@ -191,7 +219,7 @@ export async function createInvoiceClaimCore(
       invoiceDeliveryRecordId: invoiceDeliveryRecordId ?? null,
       lines: {
         create: input.lines.map((line) => ({
-          sapInvoiceLineId: line.sapInvoiceLineId,
+          sapInvoiceLineId: line.sapInvoiceLineId!,
           // sapItemCodeSnapshot/sapItemDescriptionSnapshot: left null
           // here and filled in by the batch update just below, once
           // every line has a real id -- simpler than denormalizing
@@ -246,7 +274,197 @@ export async function createInvoiceClaimCore(
       entityId: created.id,
       afterData: {
         claimReference: created.claimReference,
-        sapInvoiceId: input.sapInvoiceId,
+        sapInvoiceId,
+        customerId: input.customerId,
+        category: input.category,
+        priority: input.priority ?? "MEDIUM",
+        lineCount: input.lines.length,
+        invoiceDeliveryRecordId: invoiceDeliveryRecordId ?? null,
+      },
+    },
+  });
+
+  return { ok: true, id: created.id, claimReference: created.claimReference };
+}
+
+/**
+ * Real-world fix (native Invoice Claims): the order-anchored twin of
+ * createSapAnchoredClaimCore above, for a claim with no SapInvoice at
+ * all -- "Invoice Claims Management are invoices that have products that
+ * have been return[ed]... not a file to be imported[,] nothing is coming
+ * from sap." Mirrors that function's structure and every one of its
+ * guarantees (role-agnostic, snapshot-for-display, same-transaction
+ * already-claimed check, audit event) against this business's own
+ * CustomerOrder/OrderLine data instead of SapInvoice/SapInvoiceLine.
+ *
+ * The one new substantive rule (not present on the SAP path, which
+ * implicitly gets this for free -- a SapInvoiceLine can only exist for a
+ * line SAP itself has already invoiced): a targeted OrderLine must have
+ * at least one DispatchLine, i.e. it must have actually been dispatched.
+ * This is what keeps lib/reporting/financial-exposure.ts's Source A
+ * (claims) and Source B (UnfulfilledDemand, "never dispatched or
+ * invoiced") disjoint for a native claim exactly the way the schema
+ * itself already guarantees it for a SAP-anchored one -- see that file's
+ * own updated module comment.
+ */
+async function createNativeAnchoredClaimCore(
+  tx: PrismaTransactionClient,
+  input: CreateInvoiceClaimInput,
+  reportedById: string,
+  invoiceDeliveryRecordId?: string
+): Promise<CreateInvoiceClaimResult> {
+  // Non-null: createInvoiceClaimSchema's refine() guarantees orderId is
+  // set whenever this branch (dispatched from createInvoiceClaimCore via
+  // isNativeClaimInput) is reached.
+  const orderId = input.orderId!;
+
+  const order = await tx.customerOrder.findUnique({
+    where: { id: orderId },
+    select: { id: true, customerId: true },
+  });
+  if (!order) {
+    return { ok: false, status: 404, message: "Order not found." };
+  }
+
+  // Unlike SapInvoice.matchedCustomerId (nullable -- an invoice Milestone
+  // 5 never matched), CustomerOrder.customerId is never null: this
+  // business always knows who its own order belongs to, so this check is
+  // unconditional, not an `if (set && differs)` guard.
+  if (order.customerId !== input.customerId) {
+    return {
+      ok: false,
+      status: 409,
+      message: "This order belongs to a different customer; the claim's customer must match the order's own customer.",
+      fieldErrors: { customerId: "Must match this order's own customer." },
+    };
+  }
+
+  const customer = await tx.customer.findUnique({ where: { id: input.customerId }, select: { id: true } });
+  if (!customer) {
+    return { ok: false, status: 404, message: "Customer not found." };
+  }
+
+  if (input.assignedToId) {
+    const assignee = await tx.user.findUnique({ where: { id: input.assignedToId }, select: { id: true } });
+    if (!assignee) {
+      return { ok: false, status: 404, message: "Assigned user not found." };
+    }
+  }
+
+  const orderLineIds = input.lines.map((line) => line.orderLineId!);
+  const uniqueLineIds = new Set(orderLineIds);
+  if (uniqueLineIds.size !== orderLineIds.length) {
+    return { ok: false, status: 400, message: "Each order line may only be listed once per claim.", fieldErrors: { lines: "Duplicate order line in this claim." } };
+  }
+
+  const orderLines = await tx.orderLine.findMany({
+    where: { id: { in: orderLineIds }, orderId },
+    select: {
+      id: true,
+      requestedQuantity: true,
+      lineTotal: true,
+      // A claim may only target a line that has actually gone out --
+      // see this function's own module comment.
+      dispatchLines: { select: { id: true }, take: 1 },
+    },
+  });
+  if (orderLines.length !== uniqueLineIds.size) {
+    return { ok: false, status: 400, message: "One or more order lines do not belong to the specified order.", fieldErrors: { lines: "Invalid order line reference." } };
+  }
+  const lineById = new Map(orderLines.map((line) => [line.id, line]));
+
+  for (const [index, line] of input.lines.entries()) {
+    const orderLine = lineById.get(line.orderLineId!);
+    if (!orderLine) continue; // already reported above via the count mismatch
+
+    if (orderLine.dispatchLines.length === 0) {
+      return {
+        ok: false,
+        status: 400,
+        message: "This order line has not been dispatched yet; a claim can only be raised against a line that has actually gone out.",
+        fieldErrors: { [`lines.${index}`]: "This order line has not been dispatched yet." },
+      };
+    }
+
+    if (line.disputeType === "QUANTITY") {
+      const alreadyClaimed = await getAlreadyClaimedTotalForOrderLine(tx, line.orderLineId!);
+      const result = validateClaimLineQuantities(orderLine.requestedQuantity.toString(), alreadyClaimed, line.acceptedQuantity, line.rejectedQuantity);
+      if (!result.ok) {
+        return { ok: false, status: 400, message: result.message, fieldErrors: { [`lines.${index}`]: result.message } };
+      }
+    } else {
+      const result = validateDisputedAmount(line.disputedAmount, orderLine.lineTotal ? orderLine.lineTotal.toString() : null);
+      if (!result.ok) {
+        return { ok: false, status: 400, message: result.message, fieldErrors: { [`lines.${index}`]: result.message } };
+      }
+    }
+  }
+
+  const claimReference = generateClaimReference();
+  const claimDate = dateOnlyStringToUtcDate(input.claimDate)!;
+
+  const created = await tx.invoiceClaim.create({
+    data: {
+      claimReference,
+      sapInvoiceId: null,
+      orderId,
+      customerId: input.customerId,
+      customerComplaintReference: input.customerComplaintReference ?? null,
+      category: input.category,
+      description: claimCategoryRequiresDetail(input.category) ? `${input.description}\n\n[OTHER category detail]: ${input.categoryDetail}` : input.description,
+      reportedById,
+      assignedToId: input.assignedToId ?? null,
+      priority: input.priority ?? "MEDIUM",
+      claimDate,
+      customerCommunicationNotes: input.customerCommunicationNotes ?? null,
+      invoiceDeliveryRecordId: invoiceDeliveryRecordId ?? null,
+      lines: {
+        create: input.lines.map((line) => ({
+          orderLineId: line.orderLineId!,
+          // sapItemCodeSnapshot/sapItemDescriptionSnapshot: reused for a
+          // native line too (never a second pair of columns) -- filled
+          // in by the batch update just below from the order line's own
+          // sapItemCodeSnapshot/originalProductDescription, same
+          // "snapshot for display, re-read live for math" split as the
+          // SAP path.
+          disputeType: line.disputeType,
+          acceptedQuantity: line.disputeType === "QUANTITY" ? line.acceptedQuantity : null,
+          rejectedQuantity: line.disputeType === "QUANTITY" ? line.rejectedQuantity : null,
+          disputedAmount: line.disputeType === "AMOUNT_ONLY" ? line.disputedAmount : null,
+          disputedUnitPrice: line.disputedUnitPrice ?? null,
+          reason: line.reason,
+          reasonCategory: line.reasonCategory ?? null,
+          evidenceNotes: line.evidenceNotes ?? null,
+        })),
+      },
+    },
+    select: { id: true, claimReference: true },
+  });
+
+  const createdLines = await tx.invoiceClaimLine.findMany({ where: { claimId: created.id }, select: { id: true, orderLineId: true } });
+  const orderLineDetails = await tx.orderLine.findMany({
+    where: { id: { in: createdLines.map((l) => l.orderLineId!) } },
+    select: { id: true, sapItemCodeSnapshot: true, originalProductDescription: true },
+  });
+  const orderLineDetailById = new Map(orderLineDetails.map((d) => [d.id, d]));
+  for (const createdLine of createdLines) {
+    const detail = createdLine.orderLineId ? orderLineDetailById.get(createdLine.orderLineId) : undefined;
+    if (!detail) continue;
+    await tx.invoiceClaimLine.update({
+      where: { id: createdLine.id },
+      data: { sapItemCodeSnapshot: detail.sapItemCodeSnapshot, sapItemDescriptionSnapshot: detail.originalProductDescription },
+    });
+  }
+
+  await tx.auditEvent.create({
+    data: {
+      actorId: reportedById,
+      action: "INVOICE_CLAIM_CREATED",
+      entityType: "InvoiceClaim",
+      entityId: created.id,
+      afterData: {
+        claimReference: created.claimReference,
+        orderId,
         customerId: input.customerId,
         category: input.category,
         priority: input.priority ?? "MEDIUM",

@@ -81,7 +81,10 @@ export default async function InvoiceClaimDetailPage({ params }: RouteParams) {
 
           <section className="grid grid-cols-1 gap-4 rounded-xl border border-[#E8EBE6] bg-white p-5 sm:grid-cols-4">
             <Field label="Customer" value={claim.customer.name} sub={claim.customer.sapCustomerCode} />
-            <Field label="SAP invoice" value={claim.sapInvoice.sapDocNum} link={`/invoice-reconciliation/${claim.sapInvoice.id}`} />
+            {/* Real-world fix (native Invoice Claims): claim.sapInvoice is null for a native claim (raised against this business's own order directly) -- the "SalesFlow order" field below already covers that case, so this field simply doesn't render rather than crashing on a null dereference. */}
+            {claim.sapInvoice && (
+              <Field label="SAP invoice" value={claim.sapInvoice.sapDocNum} link={`/invoice-reconciliation/${claim.sapInvoice.id}`} />
+            )}
             <Field label="Category" value={CLAIM_CATEGORY_LABELS[claim.category] ?? claim.category} />
             <Field label="Priority" value={CLAIM_PRIORITY_LABELS[claim.priority] ?? claim.priority} badgeClass={CLAIM_PRIORITY_STYLES[claim.priority]} />
             <Field label="Claim date" value={new Date(claim.claimDate).toLocaleDateString()} />
@@ -130,7 +133,8 @@ export default async function InvoiceClaimDetailPage({ params }: RouteParams) {
                     <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">SAP item</th>
                     <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Dispute type</th>
                     <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Reason category</th>
-                    <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Invoiced</th>
+                    {/* Real-world fix (native Invoice Claims): for a native line there's no "invoiced" quantity -- the order line's own requestedQuantity is the closest equivalent, shown in the same column rather than adding a second one. */}
+                    <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Invoiced / Ordered</th>
                     <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Accepted</th>
                     <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Rejected/disputed</th>
                     <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Claimed value</th>
@@ -139,20 +143,37 @@ export default async function InvoiceClaimDetailPage({ params }: RouteParams) {
                 </thead>
                 <tbody>
                   {claim.lines.map((line) => {
-                    const value = computeClaimLineDisputedValue(line, line.sapInvoiceLine);
+                    // Real-world fix (native Invoice Claims): the real
+                    // unit price source -- the SAP invoice line's own
+                    // unitPrice when one exists, otherwise the order
+                    // line's approved price (falling back to the
+                    // customer's own price), the same fallback
+                    // lib/invoice-claims/financial.ts's
+                    // computeClaimFinancialSummary already uses.
+                    const realUnitPrice = line.sapInvoiceLine
+                      ? line.sapInvoiceLine.unitPrice
+                      : line.orderLine?.approvedUnitPrice ?? line.orderLine?.customerUnitPrice ?? null;
+                    const value = computeClaimLineDisputedValue(line, { unitPrice: realUnitPrice });
+                    const itemCode = line.sapItemCodeSnapshot ?? line.sapInvoiceLine?.sapItemCode ?? line.orderLine?.sapItemCodeSnapshot ?? "-";
+                    const itemDescription = line.sapItemDescriptionSnapshot ?? line.sapInvoiceLine?.sapItemDescription ?? line.orderLine?.originalProductDescription;
+                    const invoicedOrOrderedQuantity = line.sapInvoiceLine
+                      ? line.sapInvoiceLine.quantityInvoiced.toString()
+                      : line.orderLine
+                        ? line.orderLine.requestedQuantity.toString()
+                        : "-";
                     return (
                       <tr key={line.id} className="border-b border-gray-50 align-top">
                         <td className="px-6 py-4 text-xs text-gray-600">
-                          <p className="font-mono font-medium text-gray-700">{line.sapItemCodeSnapshot ?? line.sapInvoiceLine.sapItemCode ?? "-"}</p>
-                          {(line.sapItemDescriptionSnapshot ?? line.sapInvoiceLine.sapItemDescription) && (
-                            <p className="text-[10px] text-gray-400">{line.sapItemDescriptionSnapshot ?? line.sapInvoiceLine.sapItemDescription}</p>
+                          <p className="font-mono font-medium text-gray-700">{itemCode}</p>
+                          {itemDescription && (
+                            <p className="text-[10px] text-gray-400">{itemDescription}</p>
                           )}
                         </td>
                         <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">{CLAIM_LINE_DISPUTE_TYPE_LABELS[line.disputeType] ?? line.disputeType}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">
                           {line.reasonCategory ? (CLAIM_LINE_REASON_CATEGORY_LABELS[line.reasonCategory as keyof typeof CLAIM_LINE_REASON_CATEGORY_LABELS] ?? line.reasonCategory) : "—"}
                         </td>
-                        <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{line.sapInvoiceLine.quantityInvoiced.toString()}</td>
+                        <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{invoicedOrOrderedQuantity}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{line.acceptedQuantity?.toString() ?? "-"}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{line.disputeType === "QUANTITY" ? (line.rejectedQuantity?.toString() ?? "-") : (line.disputedAmount?.toString() ?? "-")}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{value ?? "unpriced"}</td>
@@ -245,7 +266,8 @@ export default async function InvoiceClaimDetailPage({ params }: RouteParams) {
                         {RETURN_CONDITION_LABELS[ret.condition] ?? ret.condition}
                       </span>
                     </div>
-                    <p className="mt-1 text-gray-600">Received quantity: {ret.receivedQuantity.toString()}{ret.claimLine && <> · {ret.claimLine.sapInvoiceLine.sapItemCode ?? "line"}</>}</p>
+                    {/* Real-world fix (native Invoice Claims): ret.claimLine.sapInvoiceLine is null for a native claim line -- fall back to the claim line's own sapItemCodeSnapshot (populated at creation for both paths). */}
+                    <p className="mt-1 text-gray-600">Received quantity: {ret.receivedQuantity.toString()}{ret.claimLine && <> · {ret.claimLine.sapItemCodeSnapshot ?? ret.claimLine.sapInvoiceLine?.sapItemCode ?? "line"}</>}</p>
                     {ret.conditionDetail && <p className="mt-1 text-gray-600">Detail: {ret.conditionDetail}</p>}
                     {ret.conditionNotes && <p className="mt-1 text-gray-600">Notes: {ret.conditionNotes}</p>}
                     {ret.creditNote && <p className="mt-1 text-[10px] text-cyan-700">Linked to credit note {ret.creditNote.sapCreditNoteDocNum}</p>}
@@ -301,7 +323,7 @@ export default async function InvoiceClaimDetailPage({ params }: RouteParams) {
             canRecordCreditNote={canApprove}
             claimLines={claim.lines.map((line) => ({
               id: line.id,
-              label: `${line.sapItemCodeSnapshot ?? line.sapInvoiceLine.sapItemCode ?? "line"} -- ${CLAIM_LINE_DISPUTE_TYPE_LABELS[line.disputeType] ?? line.disputeType}`,
+              label: `${line.sapItemCodeSnapshot ?? line.sapInvoiceLine?.sapItemCode ?? line.orderLine?.sapItemCodeSnapshot ?? "line"} -- ${CLAIM_LINE_DISPUTE_TYPE_LABELS[line.disputeType] ?? line.disputeType}`,
             }))}
           />
 

@@ -55,7 +55,18 @@ async function loadClaimAttribution(filters: Pick<ReportFilters, "includeDemo">)
   const demo = demoWhere(filters);
   const lines = await prisma.invoiceClaimLine.findMany({
     where: { claim: { ...demo } },
-    select: { claimId: true, sapInvoiceLine: { select: { sapItemCode: true } }, claim: { select: { claimDate: true, closedAt: true } } },
+    select: {
+      claimId: true,
+      sapInvoiceLine: { select: { sapItemCode: true } },
+      // Real-world fix (native Invoice Claims): sapInvoiceLine is null
+      // for a claim line raised directly against this business's own
+      // order (no SAP invoice in the picture at all) -- orderLine's own
+      // sapItemCodeSnapshot is the equivalent item-code source for that
+      // case, the same fallback already applied in
+      // lib/returns-credits/lost-sale-rows.ts for the identical reason.
+      orderLine: { select: { sapItemCodeSnapshot: true } },
+      claim: { select: { claimDate: true, closedAt: true } },
+    },
   });
 
   const itemCodesByClaim = new Map<string, Set<string>>();
@@ -63,7 +74,8 @@ async function loadClaimAttribution(filters: Pick<ReportFilters, "includeDemo">)
   const closedAtByClaim = new Map<string, Date | null>();
   for (const line of lines) {
     const set = itemCodesByClaim.get(line.claimId) ?? new Set<string>();
-    if (line.sapInvoiceLine.sapItemCode) set.add(itemKey(line.sapInvoiceLine.sapItemCode));
+    const sapItemCode = line.sapInvoiceLine?.sapItemCode ?? line.orderLine?.sapItemCodeSnapshot ?? null;
+    if (sapItemCode) set.add(itemKey(sapItemCode));
     itemCodesByClaim.set(line.claimId, set);
     claimDateByClaim.set(line.claimId, line.claim.claimDate);
     closedAtByClaim.set(line.claimId, line.claim.closedAt);

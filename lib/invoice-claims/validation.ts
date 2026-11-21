@@ -382,8 +382,16 @@ function formatNonNegativeScaled(scaled: bigint): string {
 // Zod input schemas.
 // ---------------------------------------------------------------------------
 
+// Real-world fix (native Invoice Claims): sapInvoiceLineId and
+// orderLineId are both optional on the wire, but exactly one must be
+// present -- enforced below by claimLineInputSchema's own `.refine()`,
+// run AFTER the discriminated union rather than folded into each branch,
+// since z.discriminatedUnion requires each member to be a plain
+// ZodObject (wrapping one in `.refine()` first turns it into a
+// ZodEffects, which the union can no longer discriminate against).
 const quantityLineSchema = z.object({
-  sapInvoiceLineId: z.string().min(1),
+  sapInvoiceLineId: z.string().min(1).optional(),
+  orderLineId: z.string().min(1).optional(),
   disputeType: z.literal("QUANTITY"),
   acceptedQuantity: decimalStringSchema,
   rejectedQuantity: decimalStringSchema,
@@ -397,7 +405,8 @@ const quantityLineSchema = z.object({
 });
 
 const amountOnlyLineSchema = z.object({
-  sapInvoiceLineId: z.string().min(1),
+  sapInvoiceLineId: z.string().min(1).optional(),
+  orderLineId: z.string().min(1).optional(),
   disputeType: z.literal("AMOUNT_ONLY"),
   disputedAmount: decimalStringSchema,
   disputedUnitPrice: decimalStringSchema.optional(),
@@ -406,24 +415,58 @@ const amountOnlyLineSchema = z.object({
   evidenceNotes: z.string().max(4000).optional(),
 });
 
-export const claimLineInputSchema = z.discriminatedUnion("disputeType", [quantityLineSchema, amountOnlyLineSchema]);
+export const claimLineInputSchema = z
+  .discriminatedUnion("disputeType", [quantityLineSchema, amountOnlyLineSchema])
+  .refine((line) => Boolean(line.sapInvoiceLineId) !== Boolean(line.orderLineId), {
+    message: "Each claim line must reference exactly one of a SAP invoice line or one of this business's own order lines.",
+  });
 export type ClaimLineInput = z.infer<typeof claimLineInputSchema>;
 
-export const createInvoiceClaimSchema = z.object({
-  sapInvoiceId: z.string().min(1),
-  orderId: z.string().min(1).optional(),
-  customerId: z.string().min(1),
-  customerComplaintReference: z.string().max(200).optional(),
-  category: z.enum(CLAIM_CATEGORIES),
-  categoryDetail: z.string().max(2000).optional(),
-  description: z.string().min(1).max(4000),
-  assignedToId: z.string().min(1).optional(),
-  priority: z.enum(CLAIM_PRIORITIES).optional(),
-  claimDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "claimDate must be YYYY-MM-DD"),
-  customerCommunicationNotes: z.string().max(4000).optional(),
-  lines: z.array(claimLineInputSchema).min(1, "A claim must have at least one disputed line."),
-});
+// Real-world fix (native Invoice Claims): sapInvoiceId is now optional --
+// a claim with no SAP invoice at all must be anchored instead to
+// orderId (this business's own CustomerOrder), matching
+// prisma/schema.prisma's InvoiceClaim_sap_or_order_required CHECK
+// constraint. The refine below also requires every line's own linkage to
+// match the claim header's: a SAP-anchored claim's lines all carry
+// sapInvoiceLineId, a native (order-anchored) claim's lines all carry
+// orderLineId -- never mixed within one claim.
+export const createInvoiceClaimSchema = z
+  .object({
+    sapInvoiceId: z.string().min(1).optional(),
+    orderId: z.string().min(1).optional(),
+    customerId: z.string().min(1),
+    customerComplaintReference: z.string().max(200).optional(),
+    category: z.enum(CLAIM_CATEGORIES),
+    categoryDetail: z.string().max(2000).optional(),
+    description: z.string().min(1).max(4000),
+    assignedToId: z.string().min(1).optional(),
+    priority: z.enum(CLAIM_PRIORITIES).optional(),
+    claimDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "claimDate must be YYYY-MM-DD"),
+    customerCommunicationNotes: z.string().max(4000).optional(),
+    lines: z.array(claimLineInputSchema).min(1, "A claim must have at least one disputed line."),
+  })
+  .refine(
+    (data) => {
+      if (data.sapInvoiceId) {
+        return data.lines.every((line) => Boolean(line.sapInvoiceLineId));
+      }
+      if (data.orderId) {
+        return data.lines.every((line) => Boolean(line.orderLineId));
+      }
+      return false;
+    },
+    {
+      message:
+        "A claim must be linked to either a SAP invoice or one of this business's own orders, and every line must use that same linkage.",
+      path: ["sapInvoiceId"],
+    }
+  );
 export type CreateInvoiceClaimInput = z.infer<typeof createInvoiceClaimSchema>;
+
+/** True when this input has no SapInvoice linkage at all -- anchored instead to this business's own CustomerOrder/OrderLine data. */
+export function isNativeClaimInput(input: Pick<CreateInvoiceClaimInput, "sapInvoiceId">): boolean {
+  return !input.sapInvoiceId;
+}
 
 export const recordClaimResolutionSchema = z.object({
   findings: z.string().max(4000).optional(),

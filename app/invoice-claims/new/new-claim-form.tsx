@@ -7,13 +7,54 @@ import { CLAIM_CATEGORY_LABELS, CLAIM_PRIORITY_LABELS } from "@/lib/invoice-clai
 import { CLAIM_LINE_REASON_CATEGORIES, CLAIM_LINE_REASON_CATEGORY_LABELS } from "@/lib/invoice-claims/validation";
 
 /**
- * Milestone 6A. Claim creation workflow: pick a SAP invoice, select
- * which of its lines are disputed and how (quantity vs. amount-only),
- * then the claim-level detail. POSTs to /api/invoice-claims, whose
- * validation (lib/invoice-claims/validation.ts, lib/invoice-claims/
- * create-claim.ts) is the real authority -- this form's own checks are
- * only to avoid an obviously-invalid round trip.
+ * Milestone 6A. Claim creation workflow: pick what the claim is raised
+ * against, select which of its lines are disputed and how (quantity vs.
+ * amount-only), then the claim-level detail. POSTs to
+ * /api/invoice-claims, whose validation (lib/invoice-claims/
+ * validation.ts, lib/invoice-claims/create-claim.ts) is the real
+ * authority -- this form's own checks are only to avoid an
+ * obviously-invalid round trip.
+ *
+ * Real-world fix (native Invoice Claims): this business does not yet
+ * have any real, reconciled SAP invoices (see
+ * lib/invoice-claims/validation.ts's own comment on
+ * InvoiceClaim_sap_or_order_required), so step 1 now offers TWO ways to
+ * anchor a claim -- directly against one of this business's own orders
+ * (the default, since that's what actually exists today), or against a
+ * SAP invoice for the day real reconciled invoices exist. Both reuse
+ * already-existing, already-tested endpoints: GET /api/orders (search)
+ * + GET /api/orders/[id] (detail) for the order path, exactly mirroring
+ * the pre-existing GET /api/invoice-reconciliation (+ /[id]) pair for
+ * the SAP-invoice path. No new backend endpoint was needed for this.
  */
+
+type OrderSummary = {
+  id: string;
+  reference: string;
+  customerPoReference: string | null;
+  status: string;
+  customer: { id: string; name: string } | null;
+};
+
+type OrderLine = {
+  id: string;
+  lineNumber: number;
+  originalProductDescription: string;
+  sapItemCodeSnapshot: string | null;
+  product: { sapItemCode: string | null; itemName: string | null } | null;
+  requestedQuantity: string;
+  requestedUnitCode: string;
+  customerUnitPrice: string | null;
+  approvedUnitPrice: string | null;
+};
+
+type OrderDetail = {
+  id: string;
+  reference: string;
+  currency: string;
+  customer: { id: string; name: string } | null;
+  lines: OrderLine[];
+};
 
 type InvoiceSummary = {
   id: string;
@@ -60,13 +101,18 @@ type LineDraft = {
   disputedAmount: string;
   disputedUnitPrice: string;
   reason: string;
-  // Final Operational Enhancements (spec Part 6): one of the 10 named
+  // Final Operational Enhancements (spec Part 6): one of the 8 named
   // claim reasons, required per disputed line (never free-typed) --
   // distinct from the free-text `reason` above and from the claim-level
   // `category` below.
   reasonCategory: string;
   evidenceNotes: string;
 };
+
+// Real-world fix (native Invoice Claims): which of the two mutually
+// exclusive ways to anchor this claim is active. "ORDER" is the
+// default -- see this file's own top comment for why.
+type ClaimAnchorMode = "ORDER" | "SAP_INVOICE";
 
 const CATEGORY_VALUES = Object.keys(CLAIM_CATEGORY_LABELS);
 const PRIORITY_VALUES = Object.keys(CLAIM_PRIORITY_LABELS);
@@ -87,6 +133,16 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
 export default function NewClaimForm() {
   const router = useRouter();
 
+  const [anchorMode, setAnchorMode] = useState<ClaimAnchorMode>("ORDER");
+
+  // Real-world fix (native Invoice Claims): the order-anchored path.
+  const [orderSearch, setOrderSearch] = useState("");
+  const [orderResults, setOrderResults] = useState<OrderSummary[]>([]);
+  const [searchingOrders, setSearchingOrders] = useState(false);
+  const [order, setOrder] = useState<OrderDetail | null>(null);
+  const [loadingOrder, setLoadingOrder] = useState(false);
+
+  // The pre-existing SAP-invoice-anchored path, unchanged.
   const [invoiceSearch, setInvoiceSearch] = useState("");
   const [invoiceResults, setInvoiceResults] = useState<InvoiceSummary[]>([]);
   const [searchingInvoices, setSearchingInvoices] = useState(false);
@@ -113,6 +169,58 @@ export default function NewClaimForm() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  // Whichever anchor is actually selected right now, regardless of mode
+  // (used by the shared steps below -- lines/customer/claim details).
+  const anchored = anchorMode === "ORDER" ? order : invoice;
+
+  function resetAnchors() {
+    setOrder(null);
+    setInvoice(null);
+    setLineDrafts({});
+    setCustomerId("");
+  }
+
+  function switchAnchorMode(mode: ClaimAnchorMode) {
+    setAnchorMode(mode);
+    resetAnchors();
+  }
+
+  async function searchOrders() {
+    setSearchingOrders(true);
+    try {
+      const response = await fetch(`/api/orders?search=${encodeURIComponent(orderSearch)}&pageSize=10`, { cache: "no-store" });
+      const data = await readJson(response);
+      setOrderResults(Array.isArray(data.orders) ? (data.orders as OrderSummary[]) : []);
+    } finally {
+      setSearchingOrders(false);
+    }
+  }
+
+  async function selectOrder(id: string) {
+    setLoadingOrder(true);
+    setOrder(null);
+    setLineDrafts({});
+    setCustomerId("");
+    try {
+      const response = await fetch(`/api/orders/${id}`, { cache: "no-store" });
+      const data = await readJson(response);
+      const loaded = data.order as OrderDetail | undefined;
+      if (loaded) {
+        setOrder(loaded);
+        // Unlike a SAP invoice's matchedCustomerId (which may be
+        // unresolved), CustomerOrder.customerId is a required field --
+        // every order has a real, known customer, so there is never a
+        // "search for the customer" fallback needed in this mode.
+        if (loaded.customer) setCustomerId(loaded.customer.id);
+        const drafts: Record<string, LineDraft> = {};
+        for (const line of loaded.lines) drafts[line.id] = emptyLineDraft();
+        setLineDrafts(drafts);
+      }
+    } finally {
+      setLoadingOrder(false);
+    }
+  }
 
   async function searchInvoices() {
     setSearchingInvoices(true);
@@ -167,8 +275,8 @@ export default function NewClaimForm() {
     setError(null);
     setFieldErrors({});
 
-    if (!invoice) {
-      setError("Choose a SAP invoice first.");
+    if (!order && !invoice) {
+      setError(anchorMode === "ORDER" ? "Choose an order first." : "Choose a SAP invoice first.");
       return;
     }
     if (!customerId) {
@@ -182,10 +290,15 @@ export default function NewClaimForm() {
 
     const lines = Object.entries(lineDrafts)
       .filter(([, draft]) => draft.disputed)
-      .map(([sapInvoiceLineId, draft]) => {
+      .map(([lineId, draft]) => {
+        // Real-world fix (native Invoice Claims): the same per-line
+        // shape either way, keyed by orderLineId in ORDER mode and
+        // sapInvoiceLineId in SAP_INVOICE mode -- never both, matching
+        // claimLineInputSchema's own XOR.
+        const linkage = order ? { orderLineId: lineId } : { sapInvoiceLineId: lineId };
         if (draft.disputeType === "QUANTITY") {
           return {
-            sapInvoiceLineId,
+            ...linkage,
             disputeType: "QUANTITY" as const,
             acceptedQuantity: draft.acceptedQuantity || "0",
             rejectedQuantity: draft.rejectedQuantity || "0",
@@ -196,7 +309,7 @@ export default function NewClaimForm() {
           };
         }
         return {
-          sapInvoiceLineId,
+          ...linkage,
           disputeType: "AMOUNT_ONLY" as const,
           disputedAmount: draft.disputedAmount || "0",
           disputedUnitPrice: draft.disputedUnitPrice || undefined,
@@ -207,7 +320,7 @@ export default function NewClaimForm() {
       });
 
     if (lines.length === 0) {
-      setError("Select at least one invoice line to dispute.");
+      setError(order ? "Select at least one order line to dispute." : "Select at least one invoice line to dispute.");
       return;
     }
     if (lines.some((line) => !line.reason.trim())) {
@@ -225,7 +338,10 @@ export default function NewClaimForm() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          sapInvoiceId: invoice.id,
+          // Real-world fix (native Invoice Claims): exactly one of
+          // orderId/sapInvoiceId, matching createInvoiceClaimSchema's
+          // own header-level refine.
+          ...(order ? { orderId: order.id } : { sapInvoiceId: invoice!.id }),
           customerId,
           customerComplaintReference: customerComplaintReference || undefined,
           category,
@@ -255,10 +371,80 @@ export default function NewClaimForm() {
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
-        <h3 className="text-sm font-bold text-[#17251E]">1. SAP invoice</h3>
-        <p className="mt-1 text-xs text-gray-500">A claim must always link to the relevant SAP invoice.</p>
+        <h3 className="text-sm font-bold text-[#17251E]">1. Order or SAP invoice</h3>
+        <p className="mt-1 text-xs text-gray-500">
+          A claim is raised either directly against one of this business&rsquo;s own orders (the normal case today), or
+          against a real, reconciled SAP invoice once one exists. Exactly one is required -- never both.
+        </p>
 
-        {!invoice ? (
+        {!order && !invoice && (
+          <div className="mt-4 flex gap-2">
+            <button
+              onClick={() => switchAnchorMode("ORDER")}
+              className={`rounded-lg px-4 py-2 text-xs font-semibold ${anchorMode === "ORDER" ? "bg-[#173D2E] text-white" : "border border-gray-200 text-gray-600 hover:bg-gray-50"}`}
+            >
+              This business&rsquo;s own order
+            </button>
+            <button
+              onClick={() => switchAnchorMode("SAP_INVOICE")}
+              className={`rounded-lg px-4 py-2 text-xs font-semibold ${anchorMode === "SAP_INVOICE" ? "bg-[#173D2E] text-white" : "border border-gray-200 text-gray-600 hover:bg-gray-50"}`}
+            >
+              SAP invoice
+            </button>
+          </div>
+        )}
+
+        {anchorMode === "ORDER" ? (
+          !order ? (
+            <div className="mt-4">
+              <div className="flex gap-2">
+                <input
+                  value={orderSearch}
+                  onChange={(event) => setOrderSearch(event.target.value)}
+                  onKeyDown={(event) => event.key === "Enter" && searchOrders()}
+                  placeholder="Order reference, customer PO reference, or customer name"
+                  className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                />
+                <button onClick={searchOrders} disabled={searchingOrders} className="flex items-center gap-1.5 rounded-lg bg-[#173D2E] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">
+                  {searchingOrders ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+                  Search
+                </button>
+              </div>
+              {orderResults.length > 0 && (
+                <ul className="mt-3 divide-y divide-gray-100 rounded-lg border border-gray-100">
+                  {orderResults.map((result) => (
+                    <li key={result.id} className="flex items-center justify-between px-3 py-2.5 text-xs">
+                      <div>
+                        <p className="font-semibold text-[#173D2E]">{result.reference}</p>
+                        <p className="text-gray-500">
+                          {result.customer?.name ?? "Unknown customer"}
+                          {result.customerPoReference ? ` · PO ${result.customerPoReference}` : ""} · {result.status}
+                        </p>
+                      </div>
+                      <button onClick={() => selectOrder(result.id)} className="rounded-lg border border-gray-200 px-3 py-1.5 font-semibold text-gray-600 hover:bg-gray-50">
+                        Select
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : loadingOrder ? (
+            <p className="mt-4 text-xs text-gray-400">Loading order…</p>
+          ) : (
+            <div className="mt-4 rounded-lg bg-gray-50 p-3 text-xs">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-semibold text-[#173D2E]">{order.reference}</p>
+                  <p className="text-gray-500">{order.customer?.name ?? "Unresolved customer"} · {order.currency}</p>
+                </div>
+                <button onClick={resetAnchors} className="font-semibold text-gray-500 hover:underline">
+                  Change
+                </button>
+              </div>
+            </div>
+          )
+        ) : !invoice ? (
           <div className="mt-4">
             <div className="flex gap-2">
               <input
@@ -302,7 +488,7 @@ export default function NewClaimForm() {
                 <p className="font-semibold text-[#173D2E]">{invoice.sapDocNum}</p>
                 <p className="text-gray-500">{invoice.matchedCustomerName ?? "Unresolved customer"} · {invoice.currencyCode ?? "no currency"}</p>
               </div>
-              <button onClick={() => { setInvoice(null); setLineDrafts({}); }} className="font-semibold text-gray-500 hover:underline">
+              <button onClick={resetAnchors} className="font-semibold text-gray-500 hover:underline">
                 Change
               </button>
             </div>
@@ -316,11 +502,13 @@ export default function NewClaimForm() {
         )}
       </section>
 
-      {invoice && (
+      {anchored && (
         <>
           <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
             <h3 className="text-sm font-bold text-[#17251E]">2. Customer</h3>
-            {invoice.matchedCustomerId ? (
+            {order ? (
+              <p className="mt-2 text-xs text-gray-600">{order.customer?.name ?? "Unresolved customer"} (this order&rsquo;s own customer; cannot be changed here)</p>
+            ) : invoice?.matchedCustomerId ? (
               <p className="mt-2 text-xs text-gray-600">{invoice.matchedCustomerName} (resolved from the invoice; cannot be changed here)</p>
             ) : (
               <div className="mt-3">
@@ -354,20 +542,27 @@ export default function NewClaimForm() {
           </section>
 
           <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
-            <h3 className="text-sm font-bold text-[#17251E]">3. Disputed invoice lines</h3>
+            <h3 className="text-sm font-bold text-[#17251E]">3. Disputed {order ? "order" : "invoice"} lines</h3>
             <p className="mt-1 text-xs text-gray-500">
-              Select each disputed line and whether this is a quantity dispute (accepted vs. rejected quantity) or an amount-only dispute (e.g. pricing). Accepted + rejected can never exceed the invoiced quantity, after accounting for any earlier claim already filed against the same line.
+              Select each disputed line and whether this is a quantity dispute (accepted vs. rejected quantity) or an amount-only dispute (e.g. pricing). Accepted + rejected can never exceed the {order ? "ordered" : "invoiced"} quantity, after accounting for any earlier claim already filed against the same line.
+              {order && " A line can only be disputed once it has actually been dispatched -- a line still awaiting dispatch has nothing to claim against yet."}
             </p>
             <div className="mt-4 space-y-3">
-              {invoice.lines.map((line) => {
+              {(order ? order.lines : invoice!.lines).map((line) => {
                 const draft = lineDrafts[line.id] ?? emptyLineDraft();
+                const itemCode = order ? (line as OrderLine).sapItemCodeSnapshot ?? (line as OrderLine).product?.sapItemCode ?? "?" : (line as InvoiceLine).sapItemCode ?? "?";
+                const itemDescription = order ? (line as OrderLine).originalProductDescription : (line as InvoiceLine).sapItemDescription;
+                const quantityLabel = order ? "Ordered" : "Invoiced";
+                const quantity = order ? (line as OrderLine).requestedQuantity : (line as InvoiceLine).quantityInvoiced;
+                const unitCode = order ? (line as OrderLine).requestedUnitCode : (line as InvoiceLine).unitOfMeasure ?? "";
+                const unitPrice = order ? (line as OrderLine).approvedUnitPrice ?? (line as OrderLine).customerUnitPrice : (line as InvoiceLine).unitPrice;
                 return (
                   <div key={line.id} className={`rounded-lg border p-3 ${draft.disputed ? "border-[#173D2E]/30 bg-[#173D2E]/[0.02]" : "border-gray-100"}`}>
                     <label className="flex items-center gap-2 text-xs font-semibold text-gray-700">
                       <input type="checkbox" checked={draft.disputed} onChange={(event) => updateLine(line.id, { disputed: event.target.checked })} />
-                      Line {line.lineNumber} -- {line.sapItemCode ?? "?"} {line.sapItemDescription ? `(${line.sapItemDescription})` : ""}
+                      Line {line.lineNumber} -- {itemCode} {itemDescription ? `(${itemDescription})` : ""}
                       <span className="ml-auto font-normal text-gray-400">
-                        Invoiced {line.quantityInvoiced} {line.unitOfMeasure ?? ""} {line.unitPrice ? `@ ${line.unitPrice}` : ""}
+                        {quantityLabel} {quantity} {unitCode} {unitPrice ? `@ ${unitPrice}` : ""}
                       </span>
                     </label>
 
@@ -429,8 +624,8 @@ export default function NewClaimForm() {
                           <span className="font-medium text-gray-600">Evidence notes (optional)</span>
                           <textarea value={draft.evidenceNotes} onChange={(event) => updateLine(line.id, { evidenceNotes: event.target.value })} rows={2} className="w-full rounded-lg border border-gray-200 px-2 py-1.5" />
                         </label>
-                        {fieldErrors[`lines.${invoice.lines.findIndex((l) => l.id === line.id)}`] && (
-                          <p className="col-span-2 text-red-600">{fieldErrors[`lines.${invoice.lines.findIndex((l) => l.id === line.id)}`]}</p>
+                        {fieldErrors[`lines.${(order ? order.lines : invoice!.lines).findIndex((l) => l.id === line.id)}`] && (
+                          <p className="col-span-2 text-red-600">{fieldErrors[`lines.${(order ? order.lines : invoice!.lines).findIndex((l) => l.id === line.id)}`]}</p>
                         )}
                       </div>
                     )}

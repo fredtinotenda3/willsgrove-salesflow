@@ -181,14 +181,27 @@ export default async function OrderDetailPage({ params }: RouteParams) {
 
               {/* Milestone 2C: one-click re-order -- pre-fills a NEW
                   manual order with this order's lines/quantities for a
-                  human to review and submit; nothing is created yet. */}
-              <Link
+                  human to review and submit; nothing is created yet.
+                  Real-world bug fix: this is a plain <a>, not next/link's
+                  <Link>, so clicking it always forces a full browser
+                  navigation to /orders/new. It used to be a <Link>, and
+                  staff repeating an order right after submitting a
+                  DIFFERENT one would land back on that OTHER order's
+                  stale "Order Received" confirmation screen instead of
+                  a form pre-filled with THIS order's lines -- Next's
+                  client Router Cache (cacheComponents: true in
+                  next.config.ts) was reusing the previously rendered
+                  /orders/new component instance, createdOrder state and
+                  all, instead of giving this navigation a fresh one. See
+                  the matching comment above app/orders/new/page.tsx's
+                  own createdOrder state. */}
+              <a
                 href={`/orders/new?repeatFrom=${order.id}`}
                 className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-xs font-semibold text-gray-600 transition hover:bg-gray-50"
               >
                 <RotateCcw size={14} />
                 Repeat this order
-              </Link>
+              </a>
 
               <div className="rounded-xl border border-[#E8EBE6] bg-white px-5 py-4 text-right">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Order Total</p>
@@ -303,9 +316,25 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                                   : "Not provided"}
                               </td>
                               <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">
+                                {/* Real-world fix ("the column Approved
+                                    Price should have the Customer Price
+                                    if[] applicable"): falls back to the
+                                    customer's own price (clearly labelled
+                                    as such, never silently presented as
+                                    approved) when no price has actually
+                                    been approved yet -- better than an
+                                    uninformative "Pending" when there IS
+                                    a real price on file for this line,
+                                    it's simply not yet the approved one.
+                                    This is purely a display fallback:
+                                    OrderLine.approvedUnitPrice itself is
+                                    untouched, still only ever set by the
+                                    price-decision/approval workflow. */}
                                 {line.approvedUnitPrice !== null
                                   ? `${order.currency} ${line.approvedUnitPrice}`
-                                  : "Pending"}
+                                  : line.customerUnitPrice !== null
+                                    ? `${order.currency} ${line.customerUnitPrice} (customer price)`
+                                    : "Pending"}
                               </td>
                               <td className="whitespace-nowrap px-6 py-4 text-xs font-semibold text-gray-700">
                                 {line.lineTotal !== null ? `${order.currency} ${line.lineTotal}` : "Pending"}
