@@ -245,7 +245,7 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Real Business Data Onboarding Phase 
 
     const filter = { search: "DEMO-CUST", category: null, status: null, priceListId: null };
 
-    const assignResult = await bulkAssignPriceList(filter, list);
+    const assignResult = await bulkAssignPriceList(filter, list, false);
     expect(assignResult.ok).toBe(true);
     if (assignResult.ok) expect(assignResult.matchedCount).toBeGreaterThanOrEqual(1);
 
@@ -258,8 +258,15 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Real Business Data Onboarding Phase 
     });
     const afterData = auditAfterAssign?.afterData as Record<string, unknown> | null;
     expect(afterData?.targetPriceListId).toBe(list);
+    // Incident follow-up: beforeData must capture what the matched
+    // customers' priceListId distribution was BEFORE this overwrote it,
+    // so a mistaken bulk-assign (like the production incident) can be
+    // diagnosed from the audit log, not just detected after the fact.
+    const beforeData = auditAfterAssign?.beforeData as { byPreviousPriceListId?: { priceListId: string | null; count: number }[] } | null;
+    expect(beforeData?.byPreviousPriceListId).toBeDefined();
+    expect(beforeData!.byPreviousPriceListId!.reduce((sum, g) => sum + g.count, 0)).toBe(assignResult.ok ? assignResult.matchedCount : -1);
 
-    const rejectResult = await bulkAssignPriceList(filter, "this-id-does-not-exist");
+    const rejectResult = await bulkAssignPriceList(filter, "this-id-does-not-exist", false);
     expect(rejectResult.ok).toBe(false);
     if (!rejectResult.ok) {
       expect(rejectResult.status).toBe(400);
@@ -269,10 +276,75 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Real Business Data Onboarding Phase 
     const afterReject = await prisma.customer.findUnique({ where: { id: customerId }, select: { priceListId: true } });
     expect(afterReject?.priceListId).toBe(list);
 
-    const unassignResult = await bulkAssignPriceList(filter, null);
+    const unassignResult = await bulkAssignPriceList(filter, null, false);
     expect(unassignResult.ok).toBe(true);
     const afterUnassign = await prisma.customer.findUnique({ where: { id: customerId }, select: { priceListId: true } });
     expect(afterUnassign?.priceListId).toBeNull();
+  });
+
+  /**
+   * Incident follow-up: in production, a scoped TM-USD bulk-assign was
+   * immediately overwritten by a SECOND bulk-assign whose search box had
+   * been cleared -- an empty filter matches every customer, and nothing
+   * stopped that from running. This is the regression test for the fix:
+   * bulkAssignPriceList must refuse an effectively-empty filter unless
+   * the caller explicitly passes confirmedUnfiltered: true, and must
+   * leave data untouched when it refuses.
+   */
+  it("bulkAssignPriceList refuses an effectively-empty filter unless confirmedUnfiltered is true", async () => {
+    if (skipAll) return;
+
+    const { bulkAssignPriceList } = await import("@/lib/customers");
+    const { prisma } = await import("@/lib/prisma");
+
+    const list = createdPriceListIds[0];
+    if (!list) {
+      throw new Error("Expected the first test to have created a PriceList already.");
+    }
+
+    const beforeState = await prisma.customer.findUnique({ where: { id: customerId }, select: { priceListId: true } });
+
+    const emptyFilter = { search: "", category: null, status: null, priceListId: null };
+
+    const refused = await bulkAssignPriceList(emptyFilter, list, false);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) {
+      expect(refused.status).toBe(400);
+      expect(refused.fieldErrors?.filter).toBeDefined();
+    }
+
+    // Refused: the fixture customer (and by extension every other real
+    // customer this filter would otherwise have matched) must be
+    // untouched.
+    const afterRefused = await prisma.customer.findUnique({ where: { id: customerId }, select: { priceListId: true } });
+    expect(afterRefused?.priceListId).toBe(beforeState?.priceListId ?? null);
+
+    // Deliberately NOT tested here: actually running bulkAssignPriceList
+    // with confirmedUnfiltered: true against this empty filter. That
+    // would, correctly, reassign EVERY customer in whatever database
+    // this test runs against -- exactly the blast radius that caused the
+    // production incident. There is no way to "clean up" after that in a
+    // shared/seeded database without assuming every customer shared the
+    // same prior priceListId, which isn't true here and wouldn't be true
+    // against real data either. The guard's happy path (confirmed: true
+    // simply skips the early return and falls through to the same
+    // updateMany/transaction the "assigns every customer matching the
+    // filter" test above already exercises with a safely scoped filter)
+    // is covered by code review and the isFilterEffectivelyEmpty checks
+    // below, not by actually running the unscoped case.
+  });
+
+  it("isFilterEffectivelyEmpty treats any search/category/status/priceListId as scoping, and only a fully bare filter as empty", async () => {
+    if (skipAll) return;
+
+    const { isFilterEffectivelyEmpty } = await import("@/lib/customer-queries");
+    const { RecordStatus } = await import("@prisma/client");
+
+    expect(isFilterEffectivelyEmpty({ search: "", category: null, status: null, priceListId: null })).toBe(true);
+    expect(isFilterEffectivelyEmpty({ search: "TM Supermarkets", category: null, status: null, priceListId: null })).toBe(false);
+    expect(isFilterEffectivelyEmpty({ search: "", category: "Retail", status: null, priceListId: null })).toBe(false);
+    expect(isFilterEffectivelyEmpty({ search: "", category: null, status: RecordStatus.ACTIVE, priceListId: null })).toBe(false);
+    expect(isFilterEffectivelyEmpty({ search: "", category: null, status: null, priceListId: "UNASSIGNED" })).toBe(false);
   });
 
   it("connects the two phases: resolveEstimatedLostSaleValue falls back to the customer's assigned PriceList entry", async () => {

@@ -122,11 +122,29 @@ export function parseCustomerListQuery(
 export type BulkAssignPriceListInput = {
   filter: Pick<CustomerListQuery, "search" | "category" | "status" | "priceListId">;
   targetPriceListId: string | null;
+  confirmedUnfiltered: boolean;
 };
 
 export type ParsedBulkAssignPriceListInput =
   | { ok: true; input: BulkAssignPriceListInput }
   | { ok: false; message: string };
+
+// Real-world fix (incident follow-up): a filter with no search, category,
+// status, or priceListId narrows nothing -- it matches every customer. The
+// Customer Pricing page's search box drives BOTH the table filter and the
+// bulk-assign scope, so clearing it (or never setting it) between two
+// bulk-assign actions silently widens the second one to "everyone,"
+// overwriting whatever the first action correctly set. This happened in
+// production: a scoped TM-USD assignment was immediately wiped out by an
+// unfiltered BHOLA assignment. lib/customers.ts's bulkAssignPriceList
+// refuses to run an effectively-empty filter unless the caller explicitly
+// passes confirmedUnfiltered: true -- the one new piece of friction that
+// would have caught this before it happened.
+export function isFilterEffectivelyEmpty(
+  filter: Pick<CustomerListQuery, "search" | "category" | "status" | "priceListId">
+): boolean {
+  return !filter.search && !filter.category && !filter.status && !filter.priceListId;
+}
 
 export function parseBulkAssignPriceListInput(body: Record<string, unknown>): ParsedBulkAssignPriceListInput {
   const rawSearch = body.search;
@@ -168,17 +186,19 @@ export function parseBulkAssignPriceListInput(body: Record<string, unknown>): Pa
     return { ok: false, message: "targetPriceListId must be a non-empty string, or null to unassign." };
   }
 
-  // Deliberately NOT optional and NOT defaulted to "match everyone": an
-  // empty filter (no search, no category, no status, no priceListId
-  // filter) legitimately means "every customer" -- that's a real,
-  // supported bulk action (e.g. assigning a default list to everyone
-  // still unassigned, filtered by priceListId: "UNASSIGNED"), so this
-  // function doesn't reject it. The confirmation step belongs in the UI
-  // (app/price-lists/customers/page.tsx shows the live matched count
-  // before the staff member confirms), not here.
+  // Real-world fix (incident follow-up): confirmedUnfiltered defaults to
+  // false, never true -- a caller that doesn't know about this field (an
+  // older client, a script) gets the SAFE behavior (rejected, see
+  // bulkAssignPriceList's own guard), not the dangerous one. An empty
+  // filter matching every customer is still a legitimate action (e.g. a
+  // default list for everyone still unassigned) -- it just now requires
+  // the caller to say so explicitly rather than that being the default
+  // outcome of an empty search box.
+  const confirmedUnfiltered = body.confirmedUnfiltered === true;
+
   return {
     ok: true,
-    input: { filter: { search, category, status, priceListId: filterPriceListId }, targetPriceListId },
+    input: { filter: { search, category, status, priceListId: filterPriceListId }, targetPriceListId, confirmedUnfiltered },
   };
 }
 

@@ -89,6 +89,20 @@ export default function CustomerPricingPage() {
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [bulkResult, setBulkResult] = useState<{ count: number; code: string } | null>(null);
 
+  // Incident follow-up: this search box and assignmentFilter select drive
+  // BOTH the table below AND the bulk-assign scope above -- that's by
+  // design (one filter, never two that can drift apart), but it means
+  // clearing the search box between two bulk-assign actions silently
+  // widens the next one to "every customer." That's exactly what
+  // happened in production: a correctly-scoped TM-USD assignment was
+  // immediately overwritten by an unfiltered BHOLA assignment. This
+  // tracks whether NO search/filter is currently applied, and requires
+  // an explicit, separate acknowledgement before "every customer" can be
+  // the target -- reset any time the filter changes, so it can never
+  // carry over from a previous, different action.
+  const filterIsEmpty = debouncedSearch === "" && assignmentFilter === "ALL";
+  const [confirmUnfiltered, setConfirmUnfiltered] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -115,6 +129,14 @@ export default function CustomerPricingPage() {
     const timer = setTimeout(() => {
       setDebouncedSearch(search.trim());
       setPage(1);
+      // Incident follow-up: a search-box change narrows or widens the
+      // bulk-assign scope too (same state backs both) -- never let
+      // "confirmed unfiltered" or a pending confirmation granted under
+      // the PREVIOUS search text silently carry over to this one.
+      setConfirmUnfiltered(false);
+      setBulkConfirming(false);
+      setBulkResult(null);
+      setBulkError(null);
     }, 300);
     return () => clearTimeout(timer);
   }, [search]);
@@ -201,6 +223,7 @@ export default function CustomerPricingPage() {
           search: debouncedSearch,
           priceListId: assignmentFilter === "ALL" ? null : assignmentFilter,
           targetPriceListId: bulkTargetId === "" ? null : bulkTargetId,
+          confirmedUnfiltered: filterIsEmpty ? confirmUnfiltered : false,
         }),
       });
       const body = await response.json().catch(() => null);
@@ -298,14 +321,36 @@ export default function CustomerPricingPage() {
                 import can do it for you.
               </p>
 
+              {filterIsEmpty && pagination && pagination.totalItems > 0 && (
+                <label className="mt-4 flex items-start gap-2 rounded-lg border border-[#F1D9D9] bg-[#FFF6F6] px-3 py-2.5 text-sm text-[#9B3B3B]">
+                  <input
+                    type="checkbox"
+                    checked={confirmUnfiltered}
+                    onChange={(event) => setConfirmUnfiltered(event.target.checked)}
+                    className="mt-0.5"
+                  />
+                  I understand there is no search or filter applied, and this will overwrite the price list for
+                  every one of the {formatNumber(pagination.totalItems)} customers shown, including any already
+                  assigned to a different list.
+                </label>
+              )}
+
               <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-                <p className="text-sm text-[#5E7366]">
+                <p className={`text-sm ${filterIsEmpty ? "font-medium text-[#9B3B3B]" : "text-[#5E7366]"}`}>
                   {pagination ? (
-                    <>
-                      <span className="font-semibold text-[#17251E]">{formatNumber(pagination.totalItems)}</span> customer
-                      {pagination.totalItems === 1 ? "" : "s"} match{" "}
-                      {debouncedSearch ? <>&quot;{debouncedSearch}&quot;</> : "your current filter"}
-                    </>
+                    filterIsEmpty ? (
+                      <>
+                        <AlertCircle size={14} className="mr-1 inline -mt-0.5" />
+                        No filter applied -- this targets{" "}
+                        <span className="font-semibold">ALL {formatNumber(pagination.totalItems)} customers</span>,
+                        including any already assigned to a different list
+                      </>
+                    ) : (
+                      <>
+                        <span className="font-semibold text-[#17251E]">{formatNumber(pagination.totalItems)}</span> customer
+                        {pagination.totalItems === 1 ? "" : "s"} match &quot;{debouncedSearch}&quot;
+                      </>
+                    )
                   ) : (
                     "Loading..."
                   )}
@@ -334,7 +379,7 @@ export default function CustomerPricingPage() {
                 {!bulkConfirming ? (
                   <button
                     onClick={() => setBulkConfirming(true)}
-                    disabled={!pagination || pagination.totalItems === 0 || bulkSaving}
+                    disabled={!pagination || pagination.totalItems === 0 || bulkSaving || (filterIsEmpty && !confirmUnfiltered)}
                     className="rounded-lg bg-[#315C43] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#274A35] disabled:opacity-40"
                   >
                     Bulk assign
@@ -397,6 +442,13 @@ export default function CustomerPricingPage() {
                   onChange={(event) => {
                     setAssignmentFilter(event.target.value);
                     setPage(1);
+                    // Incident follow-up: this select narrows or widens
+                    // the bulk-assign scope too -- same reasoning as the
+                    // search-box reset above.
+                    setConfirmUnfiltered(false);
+                    setBulkConfirming(false);
+                    setBulkResult(null);
+                    setBulkError(null);
                   }}
                   className="rounded-lg border border-[#E5EAE4] bg-white px-3 py-2 text-sm outline-none"
                 >

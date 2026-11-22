@@ -5,7 +5,7 @@ import type {
   FieldErrors,
   UpdateCustomerInput,
 } from "@/lib/customer-validation";
-import { buildCustomerListWhere, type CustomerListQuery } from "@/lib/customer-queries";
+import { buildCustomerListWhere, isFilterEffectivelyEmpty, type CustomerListQuery } from "@/lib/customer-queries";
 
 export type MutationFailure = {
   ok: false;
@@ -57,6 +57,22 @@ const unknownPriceListFailure: MutationFailure = {
   status: 400,
   message: "That price list could not be found.",
   fieldErrors: { priceListId: "This price list no longer exists. Refresh and try again." },
+};
+
+// Real-world fix (incident follow-up): see lib/customer-queries.ts's
+// isFilterEffectivelyEmpty for why this exists -- a filter with no
+// search/category/status/priceListId narrows nothing, so running it
+// silently reassigns every customer, including ones a previous, correctly
+// scoped bulk-assign already set. This is the guard that would have
+// caught the production incident (a scoped TM-USD assign immediately
+// overwritten by an unfiltered BHOLA assign, because the search box had
+// been cleared in between).
+const unfilteredBulkAssignNotConfirmed: MutationFailure = {
+  ok: false,
+  status: 400,
+  message:
+    "No search or filter is applied, so this would reassign every customer, including any already assigned to a different list. Add a filter, or explicitly confirm you intend to apply this to every customer.",
+  fieldErrors: { filter: "This matches every customer -- confirm that's intended before running it." },
 };
 
 export async function createCustomer(
@@ -229,16 +245,25 @@ export type BulkAssignPriceListResult =
  * target list (e.g. OKUSDBYO) themselves, same deliberateness the
  * single-row assignment already had, just applied to many rows at once.
  *
- * An empty filter matches every customer -- not rejected here (a
- * legitimate bulk action, e.g. assigning a default/fallback list to
- * everyone still unassigned via `priceListId: "UNASSIGNED"`); the
- * confirmation step belongs in the UI, which shows the live matched
- * count before the staff member confirms.
+ * An empty filter matches every customer -- not silently allowed (see the
+ * production incident this round's unfilteredBulkAssignNotConfirmed
+ * documents): it's still a legitimate action (e.g. assigning a
+ * default/fallback list to everyone still unassigned), just one that now
+ * requires the caller to say confirmedUnfiltered: true rather than that
+ * being what an empty search box defaults to. The UI's live matched
+ * count is still the first line of defense, but a client-side-only check
+ * isn't enough for a mutation with this blast radius -- this is the
+ * actual guard, enforced here regardless of what called it.
  */
 export async function bulkAssignPriceList(
   filter: Pick<CustomerListQuery, "search" | "category" | "status" | "priceListId">,
-  targetPriceListId: string | null
+  targetPriceListId: string | null,
+  confirmedUnfiltered: boolean
 ): Promise<BulkAssignPriceListResult> {
+  if (isFilterEffectivelyEmpty(filter) && !confirmedUnfiltered) {
+    return unfilteredBulkAssignNotConfirmed;
+  }
+
   if (targetPriceListId !== null) {
     const priceList = await prisma.priceList.findUnique({
       where: { id: targetPriceListId },
@@ -254,22 +279,37 @@ export async function bulkAssignPriceList(
 
   try {
     return await prisma.$transaction(async (tx) => {
+      // Real-world fix (incident follow-up): snapshot what every matched
+      // customer's priceListId was BEFORE this overwrites it, grouped by
+      // list rather than one row per customer -- same "one audit row per
+      // batch" principle the single afterData summary already followed,
+      // just extended so a mistake like the production incident (an
+      // unfiltered assign silently overwriting a correct one) can
+      // actually be diagnosed and reversed from the audit log afterward,
+      // not just detected after the fact.
+      const beforeGroups = await tx.customer.groupBy({
+        by: ["priceListId"],
+        where,
+        _count: { _all: true },
+      });
+
       const { count } = await tx.customer.updateMany({
         where,
         data: { priceListId: targetPriceListId },
       });
 
-      // One audit row for the whole batch (not one per customer): the
-      // filter and target fully describe what changed, and 2,647
-      // individual rows for a single staff action would make the audit
-      // log itself unreadable -- afterData carries the filter + target +
-      // matched count so a reviewer can see exactly what ran.
       await tx.auditEvent.create({
         data: {
           actorId: null,
           action: "CUSTOMER_BULK_PRICE_LIST_ASSIGN",
           entityType: "Customer",
           entityId: "bulk",
+          beforeData: {
+            byPreviousPriceListId: beforeGroups.map((g) => ({
+              priceListId: g.priceListId,
+              count: g._count._all,
+            })),
+          },
           afterData: { filter, targetPriceListId, matchedCount: count },
         },
       });

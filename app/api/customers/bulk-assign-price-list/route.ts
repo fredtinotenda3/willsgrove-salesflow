@@ -44,7 +44,11 @@ export async function PATCH(request: NextRequest) {
       return Response.json({ success: false, message: parsed.message }, { status: 400 });
     }
 
-    const result = await bulkAssignPriceList(parsed.input.filter, parsed.input.targetPriceListId);
+    const result = await bulkAssignPriceList(
+      parsed.input.filter,
+      parsed.input.targetPriceListId,
+      parsed.input.confirmedUnfiltered
+    );
 
     if (!result.ok) {
       return Response.json(
