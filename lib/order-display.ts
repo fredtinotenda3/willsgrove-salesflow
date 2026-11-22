@@ -288,6 +288,47 @@ export function formatOrderAmount(total: string | null, currency: string): strin
   })}`;
 }
 
+/**
+ * Real-world fix ("all places with Pending pricing must populate with
+ * price... ie Amount column on Workspace / Sales Management / Orders
+ * page"): the Orders list's Amount column specifically -- shows the
+ * APPROVED total when there is one (unchanged), and otherwise falls back
+ * to the order's own estimateOrderTotal (lib/order-queries.ts, summed
+ * from each line's customerUnitPrice x requestedQuantity), clearly
+ * marked `isEstimate` so the caller can style/label it differently from a
+ * real approved amount -- never silently presented as the same thing.
+ * Left as a sibling of formatOrderAmount, not a signature change to it,
+ * since that function has several OTHER callers (subtotal/taxTotal,
+ * quotations, unrelated reporting amounts) this fallback doesn't apply
+ * to.
+ */
+export function formatOrderAmountWithEstimate(
+  total: string | null,
+  estimatedTotal: string | null,
+  estimatedTotalIsPartial: boolean,
+  currency: string
+): { text: string; isEstimate: boolean; isPartialEstimate: boolean } {
+  if (total !== null) {
+    return { text: formatOrderAmount(total, currency), isEstimate: false, isPartialEstimate: false };
+  }
+  if (estimatedTotal === null) {
+    return { text: "Pending pricing", isEstimate: false, isPartialEstimate: false };
+  }
+  const value = Number(estimatedTotal);
+  if (!Number.isFinite(value)) {
+    return { text: "Pending pricing", isEstimate: false, isPartialEstimate: false };
+  }
+  const formatted = `${currency} ${value.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+  return {
+    text: estimatedTotalIsPartial ? `~${formatted}` : formatted,
+    isEstimate: true,
+    isPartialEstimate: estimatedTotalIsPartial,
+  };
+}
+
 export function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;

@@ -78,7 +78,68 @@ const orderListSelect = {
   // these to derive that) -- CANCELLED dispatches are excluded because a
   // cancelled dispatch never counts as progress for this order.
   dispatchRecords: { where: { status: { not: "CANCELLED" } }, select: { status: true } },
+  // Real-world fix ("all places with Pending pricing must populate with
+  // price... ie Amount column on Workspace / Sales Management / Orders
+  // page"): `total` above stays null until the (not-yet-built)
+  // price-approval workflow sets it -- see createOrderCore's own comment
+  // in lib/orders.ts. Rather than show nothing, estimateOrderTotal below
+  // sums each line's own customerUnitPrice x requestedQuantity as a
+  // clearly-labelled estimate, using exactly the same per-line price this
+  // order was actually submitted with.
+  lines: { select: { requestedQuantity: true, customerUnitPrice: true } },
 } satisfies Prisma.CustomerOrderSelect;
+
+// Scaled-bigint decimal-string arithmetic (never floats), matching this
+// codebase's house convention for money (lib/fulfilment/decimal.ts /
+// lib/picking/validation.ts). Mirrors app/orders/new/page.tsx's own
+// computeLinePreviewTotal rather than importing across domains (see
+// lib/customers.ts's isUniqueViolation for why duplication is this
+// codebase's deliberate convention here).
+const ESTIMATE_DECIMAL_PATTERN = /^\d+(\.\d{1,4})?$/;
+
+function parseEstimateScaledDecimal(value: string): bigint | null {
+  if (!ESTIMATE_DECIMAL_PATTERN.test(value)) return null;
+  const [intPart, fracPartRaw = ""] = value.split(".");
+  return BigInt(intPart) * BigInt(10_000) + BigInt(fracPartRaw.padEnd(4, "0"));
+}
+
+function formatEstimateScaledDecimal(scaled: bigint): string {
+  const intPart = scaled / BigInt(10_000);
+  const fracPart = scaled % BigInt(10_000);
+  return `${intPart}.${fracPart.toString().padStart(4, "0").slice(0, 2)}`;
+}
+
+/**
+ * Sums requestedQuantity x customerUnitPrice across an order's lines.
+ * Returns null (never a guessed/partial figure silently presented as
+ * whole) when there are no lines, or ANY line is missing a resolvable
+ * price/quantity -- isPartial distinguishes "no estimate possible" from
+ * "some but not all lines priced" so the UI can caveat correctly rather
+ * than quietly understating the real total.
+ */
+function estimateOrderTotal(
+  lines: { requestedQuantity: { toString(): string }; customerUnitPrice: { toString(): string } | null }[]
+): { estimatedTotal: string | null; estimatedTotalIsPartial: boolean } {
+  if (lines.length === 0) return { estimatedTotal: null, estimatedTotalIsPartial: false };
+
+  let sum = BigInt(0);
+  let pricedLineCount = 0;
+
+  for (const line of lines) {
+    if (line.customerUnitPrice === null) continue;
+    const quantity = parseEstimateScaledDecimal(line.requestedQuantity.toString());
+    const unitPrice = parseEstimateScaledDecimal(line.customerUnitPrice.toString());
+    if (quantity === null || unitPrice === null) continue;
+    sum += (quantity * unitPrice) / BigInt(10_000);
+    pricedLineCount += 1;
+  }
+
+  if (pricedLineCount === 0) return { estimatedTotal: null, estimatedTotalIsPartial: false };
+  return {
+    estimatedTotal: formatEstimateScaledDecimal(sum),
+    estimatedTotalIsPartial: pricedLineCount < lines.length,
+  };
+}
 
 /**
  * Workflow/Navigation/Performance round, Part 2: once an invoice's
@@ -111,6 +172,32 @@ const orderListSelect = {
  * `where` clause is correct for every caller, including "All Orders" --
  * a REJECTED/CANCELLED/DRAFT order can never have a matched invoice at
  * all, so this is a no-op for those tabs, not a behavior change.
+ *
+ * NOT broadened to also exclude on a bare native DeliveryRecord (no
+ * matched SapInvoice): that was tried and reverted in the Real Business
+ * Data Onboarding round. A dispatch reaching DELIVERED natively means
+ * the TRUCK is done, not that the ORDER is -- for a business that does
+ * use SAP invoicing, a physically-delivered order still has real,
+ * active work outstanding (invoicing, reconciliation, claims), and
+ * dropping it off every Orders tab the moment the truck leaves would
+ * hide that work, not finish it. (It also contradicted an existing,
+ * intentional DB-integration-test expectation --
+ * tests/delivered-orders-db.integration.test.ts's "removes an order
+ * from every active Orders tab..." case builds its fixture via
+ * createFullyDispatchedOrder(), which already calls
+ * lib/fulfilment/delivery.ts's recordDelivery() for every dispatch
+ * BEFORE the SAP invoice/outcome ever exists, and asserts the order is
+ * still visible at that point.) The dispatch/delivery-level lifecycle
+ * this business actually runs end-to-end without SAP is already
+ * tracked correctly and separately, by lib/fulfilment/queries.ts's own
+ * listDispatchQueue/listDeliveredOrders pair (FULLY_DELIVERED_CONDITION)
+ * -- see app/components/sidebar.tsx's own comment for why "Delivered
+ * Orders" in the nav already points at /deliveries/history, not here.
+ * Whether a native delivery should ALSO retire an order from this main
+ * Orders list is a real product question (raised back to the client,
+ * not decided unilaterally here) -- answering it "yes" by default would
+ * be indistinguishable, from this code alone, from quietly deciding this
+ * business will never use SAP invoicing at all.
  */
 const EXCLUDE_DELIVERED_ORDERS: Prisma.CustomerOrderWhereInput = {
   matchedSapInvoices: { none: { deliveryRecord: { isNot: null } } },
@@ -147,22 +234,27 @@ export async function listOrders(query: OrderListQuery) {
   ]);
 
   return {
-    orders: rows.map((order) => ({
-      id: order.id,
-      reference: order.reference,
-      customerPoReference: order.customerPoReference,
-      status: order.status,
-      source: order.source,
-      orderDate: order.orderDate?.toISOString() ?? null,
-      requestedDeliveryDate: order.requestedDeliveryDate?.toISOString() ?? null,
-      total: order.total?.toString() ?? null,
-      currency: order.currency,
-      isDemo: order.isDemo,
-      createdAt: order.createdAt.toISOString(),
-      customer: order.customer,
-      lineCount: order._count.lines,
-      dispatchStatuses: order.dispatchRecords.map((d) => d.status),
-    })),
+    orders: rows.map((order) => {
+      const { estimatedTotal, estimatedTotalIsPartial } = estimateOrderTotal(order.lines);
+      return {
+        id: order.id,
+        reference: order.reference,
+        customerPoReference: order.customerPoReference,
+        status: order.status,
+        source: order.source,
+        orderDate: order.orderDate?.toISOString() ?? null,
+        requestedDeliveryDate: order.requestedDeliveryDate?.toISOString() ?? null,
+        total: order.total?.toString() ?? null,
+        estimatedTotal,
+        estimatedTotalIsPartial,
+        currency: order.currency,
+        isDemo: order.isDemo,
+        createdAt: order.createdAt.toISOString(),
+        customer: order.customer,
+        lineCount: order._count.lines,
+        dispatchStatuses: order.dispatchRecords.map((d) => d.status),
+      };
+    }),
     pagination: {
       page: query.page,
       pageSize: query.pageSize,

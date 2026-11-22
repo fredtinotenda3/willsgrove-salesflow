@@ -430,22 +430,38 @@ export type ClaimLineInput = z.infer<typeof claimLineInputSchema>;
 // match the claim header's: a SAP-anchored claim's lines all carry
 // sapInvoiceLineId, a native (order-anchored) claim's lines all carry
 // orderLineId -- never mixed within one claim.
-export const createInvoiceClaimSchema = z
-  .object({
-    sapInvoiceId: z.string().min(1).optional(),
-    orderId: z.string().min(1).optional(),
-    customerId: z.string().min(1),
-    customerComplaintReference: z.string().max(200).optional(),
-    category: z.enum(CLAIM_CATEGORIES),
-    categoryDetail: z.string().max(2000).optional(),
-    description: z.string().min(1).max(4000),
-    assignedToId: z.string().min(1).optional(),
-    priority: z.enum(CLAIM_PRIORITIES).optional(),
-    claimDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "claimDate must be YYYY-MM-DD"),
-    customerCommunicationNotes: z.string().max(4000).optional(),
-    lines: z.array(claimLineInputSchema).min(1, "A claim must have at least one disputed line."),
-  })
-  .refine(
+// Bug fix (Real Business Data Onboarding round): kept as a separate,
+// un-refined export -- zod v4 cannot .omit()/.pick()/.extend() an object
+// schema once a .refine() has wrapped it (the refined schema is no
+// longer itself a ZodObject), and lib/invoice-delivery/validation.ts's
+// deliveryClaimInputSchema does exactly that (`createInvoiceClaimSchema
+// .omit({ sapInvoiceId: true, customerId: true })`). That omit target
+// never actually needed the sapInvoiceId/orderId XOR refine below in the
+// first place: a delivery-outcome claim always derives sapInvoiceId
+// from the invoice whose delivery is being recorded (never from the
+// request body, never orderId either -- see that file's own comment),
+// so the refine's condition isn't meaningful for that shape regardless.
+// createInvoiceClaimSchema (below) stays the one every other caller
+// (app/api/invoice-claims/route.ts, lib/invoice-claims/create-claim.ts,
+// this file's own tests) already uses and keeps the exact same validated
+// behavior; only a caller that needs to omit/extend the raw shape should
+// ever reach for this one instead.
+export const createInvoiceClaimObjectSchema = z.object({
+  sapInvoiceId: z.string().min(1).optional(),
+  orderId: z.string().min(1).optional(),
+  customerId: z.string().min(1),
+  customerComplaintReference: z.string().max(200).optional(),
+  category: z.enum(CLAIM_CATEGORIES),
+  categoryDetail: z.string().max(2000).optional(),
+  description: z.string().min(1).max(4000),
+  assignedToId: z.string().min(1).optional(),
+  priority: z.enum(CLAIM_PRIORITIES).optional(),
+  claimDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "claimDate must be YYYY-MM-DD"),
+  customerCommunicationNotes: z.string().max(4000).optional(),
+  lines: z.array(claimLineInputSchema).min(1, "A claim must have at least one disputed line."),
+});
+
+export const createInvoiceClaimSchema = createInvoiceClaimObjectSchema.refine(
     (data) => {
       if (data.sapInvoiceId) {
         return data.lines.every((line) => Boolean(line.sapInvoiceLineId));

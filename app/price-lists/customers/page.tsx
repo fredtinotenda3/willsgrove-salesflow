@@ -76,6 +76,19 @@ export default function CustomerPricingPage() {
   const [rowError, setRowError] = useState<{ id: string; message: string } | null>(null);
   const [rowSuccessId, setRowSuccessId] = useState<string | null>(null);
 
+  // Real-world fix (bulk price-list assignment): the real customer-master
+  // export has no price-list column (see the page intro copy below), so
+  // with ~2,647 customers, one-row-at-a-time assignment above is not
+  // realistic. This lets staff assign every customer matching the SAME
+  // search/assignmentFilter already applied to the table -- never a
+  // separate, driftable filter -- to one target list, confirming against
+  // the live matched count first.
+  const [bulkTargetId, setBulkTargetId] = useState<string>("");
+  const [bulkConfirming, setBulkConfirming] = useState(false);
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bulkResult, setBulkResult] = useState<{ count: number; code: string } | null>(null);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -174,6 +187,39 @@ export default function CustomerPricingPage() {
     }
   }
 
+  async function confirmBulkAssign() {
+    setBulkSaving(true);
+    setBulkError(null);
+
+    const targetList = bulkTargetId === "" ? null : priceLists.find((list) => list.id === bulkTargetId) ?? null;
+
+    try {
+      const response = await fetch("/api/customers/bulk-assign-price-list", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          search: debouncedSearch,
+          priceListId: assignmentFilter === "ALL" ? null : assignmentFilter,
+          targetPriceListId: bulkTargetId === "" ? null : bulkTargetId,
+        }),
+      });
+      const body = await response.json().catch(() => null);
+
+      if (!response.ok || body?.success !== true) {
+        setBulkError(body?.message ?? "Unable to assign the price list to these customers.");
+        return;
+      }
+
+      setBulkResult({ count: body.matchedCount as number, code: targetList ? targetList.code : "Unassigned" });
+      setBulkConfirming(false);
+      setReloadKey((key) => key + 1);
+    } catch {
+      setBulkError("Could not reach the server. Please try again.");
+    } finally {
+      setBulkSaving(false);
+    }
+  }
+
   const rangeStart = pagination && pagination.totalItems > 0 ? (pagination.page - 1) * pagination.pageSize + 1 : 0;
   const rangeEnd = pagination ? Math.min(pagination.page * pagination.pageSize, pagination.totalItems) : 0;
 
@@ -241,6 +287,88 @@ export default function CustomerPricingPage() {
                 </Link>
               ))}
             </div>
+          )}
+
+          {priceLists.length > 0 && (
+            <section className="mb-7 rounded-xl border border-[#E8ECE7] bg-white p-5">
+              <h3 className="font-semibold">Bulk assign</h3>
+              <p className="mt-1 text-xs text-[#89948D]">
+                Assigns every customer currently matching your search and filter above (not just this page) to one
+                price list in a single action -- the practical way to work through thousands of customers when no
+                import can do it for you.
+              </p>
+
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <p className="text-sm text-[#5E7366]">
+                  {pagination ? (
+                    <>
+                      <span className="font-semibold text-[#17251E]">{formatNumber(pagination.totalItems)}</span> customer
+                      {pagination.totalItems === 1 ? "" : "s"} match{" "}
+                      {debouncedSearch ? <>&quot;{debouncedSearch}&quot;</> : "your current filter"}
+                    </>
+                  ) : (
+                    "Loading..."
+                  )}
+                </p>
+
+                <select
+                  value={bulkTargetId}
+                  onChange={(event) => {
+                    setBulkTargetId(event.target.value);
+                    setBulkConfirming(false);
+                    setBulkResult(null);
+                  }}
+                  className="rounded-lg border border-[#E1E7E0] bg-white px-3 py-2 text-sm outline-none sm:w-56"
+                >
+                  <option value="" disabled>
+                    Assign to...
+                  </option>
+                  <option value="">Unassigned</option>
+                  {priceLists.map((list) => (
+                    <option key={list.id} value={list.id}>
+                      {list.code} ({list.currencyCode})
+                    </option>
+                  ))}
+                </select>
+
+                {!bulkConfirming ? (
+                  <button
+                    onClick={() => setBulkConfirming(true)}
+                    disabled={!pagination || pagination.totalItems === 0 || bulkSaving}
+                    className="rounded-lg bg-[#315C43] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#274A35] disabled:opacity-40"
+                  >
+                    Bulk assign
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={confirmBulkAssign}
+                      disabled={bulkSaving}
+                      className="rounded-lg bg-[#9B3B3B] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#832F2F] disabled:opacity-60"
+                    >
+                      {bulkSaving
+                        ? "Assigning..."
+                        : `Confirm: assign ${pagination ? formatNumber(pagination.totalItems) : ""} customer(s)`}
+                    </button>
+                    <button
+                      onClick={() => setBulkConfirming(false)}
+                      disabled={bulkSaving}
+                      className="rounded-lg border border-[#E1E7E0] bg-white px-3 py-2 text-sm text-[#5E7366] hover:bg-[#FAFBF9]"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {bulkError && <p className="mt-3 text-sm text-[#9B3B3B]">{bulkError}</p>}
+              {bulkResult && (
+                <p className="mt-3 flex items-center gap-1.5 text-sm text-[#347447]">
+                  <CheckCircle2 size={15} />
+                  Assigned {formatNumber(bulkResult.count)} customer(s) to {bulkResult.code}.
+                </p>
+              )}
+            </section>
           )}
 
           <section className="overflow-hidden rounded-xl border border-[#E8ECE7] bg-white">

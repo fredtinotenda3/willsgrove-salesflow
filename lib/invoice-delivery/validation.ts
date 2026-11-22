@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createInvoiceClaimSchema } from "@/lib/invoice-claims/validation";
+import { createInvoiceClaimObjectSchema } from "@/lib/invoice-claims/validation";
 
 /**
  * Final Operational Enhancements (spec Part 5) -- the "central
@@ -27,6 +27,18 @@ export type InvoiceDeliveryOutcomeValue = (typeof INVOICE_DELIVERY_OUTCOMES)[num
  * so a caller cannot create a claim against a different invoice than the
  * one it is nominally being recorded against.
  *
+ * `orderId` is deliberately KEPT (unlike sapInvoiceId): it's the
+ * optional courtesy cross-reference lib/invoice-delivery/record-outcome.ts
+ * already defaults from the invoice's own matchedOrderId when the caller
+ * doesn't supply one -- see that function's own comment. Native
+ * (order-ONLY, no SapInvoice) claims never go through this schema at
+ * all, so there is no XOR to guard against here.
+ *
+ * Built from createInvoiceClaimObjectSchema (the un-refined base), not
+ * createInvoiceClaimSchema itself -- zod v4 cannot .omit() an object
+ * schema once a .refine() has wrapped it. See that export's own comment
+ * in lib/invoice-claims/validation.ts.
+ *
  * `customerId` is relaxed to optional here (createInvoiceClaimSchema
  * requires it): recording a delivery outcome almost always happens on an
  * invoice that already has a resolved matchedCustomerId (Milestone 5), so
@@ -36,7 +48,7 @@ export type InvoiceDeliveryOutcomeValue = (typeof INVOICE_DELIVERY_OUTCOMES)[num
  * customer, record-outcome.ts reports a clear field error rather than
  * silently failing.
  */
-const deliveryClaimInputSchema = createInvoiceClaimSchema.omit({ sapInvoiceId: true, customerId: true }).extend({
+const deliveryClaimInputSchema = createInvoiceClaimObjectSchema.omit({ sapInvoiceId: true, customerId: true }).extend({
   customerId: z.string().min(1).optional(),
 });
 export type DeliveryClaimInput = z.infer<typeof deliveryClaimInputSchema>;

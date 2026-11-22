@@ -110,6 +110,78 @@ export function parseCustomerListQuery(
   };
 }
 
+// Real-world fix (bulk price-list assignment): the real customer-master
+// export this business has (app/price-lists/customers/page.tsx's own
+// comment) carries no price-list column at all, so every assignment is a
+// deliberate staff action -- never guessed or defaulted here either.
+// This is the JSON-body counterpart to parseCustomerListQuery (same
+// search/category/status/priceListId filter semantics, so "assign to
+// everyone matching my current filter" always means exactly the
+// customers already shown on screen), plus the one additional field:
+// which price list to assign them to.
+export type BulkAssignPriceListInput = {
+  filter: Pick<CustomerListQuery, "search" | "category" | "status" | "priceListId">;
+  targetPriceListId: string | null;
+};
+
+export type ParsedBulkAssignPriceListInput =
+  | { ok: true; input: BulkAssignPriceListInput }
+  | { ok: false; message: string };
+
+export function parseBulkAssignPriceListInput(body: Record<string, unknown>): ParsedBulkAssignPriceListInput {
+  const rawSearch = body.search;
+  const search = typeof rawSearch === "string" ? rawSearch.trim() : "";
+
+  if (search.length > MAX_SEARCH_LENGTH) {
+    return { ok: false, message: `Search text must be ${MAX_SEARCH_LENGTH} characters or fewer.` };
+  }
+
+  const rawCategory = body.category;
+  const category = typeof rawCategory === "string" && rawCategory.trim() !== "" && rawCategory.trim().toLowerCase() !== "all"
+    ? rawCategory.trim()
+    : null;
+
+  const rawStatus = typeof body.status === "string" ? body.status.trim().toUpperCase() : "";
+  let status: RecordStatus | null = null;
+
+  if (rawStatus === "ACTIVE") {
+    status = RecordStatus.ACTIVE;
+  } else if (rawStatus === "INACTIVE") {
+    status = RecordStatus.INACTIVE;
+  } else if (rawStatus !== "" && rawStatus !== "ALL") {
+    return { ok: false, message: "status must be ACTIVE, INACTIVE or ALL." };
+  }
+
+  const rawFilterPriceListId = body.priceListId;
+  const filterPriceListId =
+    typeof rawFilterPriceListId === "string" && rawFilterPriceListId.trim() !== "" ? rawFilterPriceListId.trim() : null;
+
+  const rawTarget = body.targetPriceListId;
+
+  if (rawTarget !== null && typeof rawTarget !== "string") {
+    return { ok: false, message: "targetPriceListId must be a price list id, or null to unassign." };
+  }
+
+  const targetPriceListId = typeof rawTarget === "string" ? rawTarget.trim() : null;
+
+  if (typeof rawTarget === "string" && targetPriceListId === "") {
+    return { ok: false, message: "targetPriceListId must be a non-empty string, or null to unassign." };
+  }
+
+  // Deliberately NOT optional and NOT defaulted to "match everyone": an
+  // empty filter (no search, no category, no status, no priceListId
+  // filter) legitimately means "every customer" -- that's a real,
+  // supported bulk action (e.g. assigning a default list to everyone
+  // still unassigned, filtered by priceListId: "UNASSIGNED"), so this
+  // function doesn't reject it. The confirmation step belongs in the UI
+  // (app/price-lists/customers/page.tsx shows the live matched count
+  // before the staff member confirms), not here.
+  return {
+    ok: true,
+    input: { filter: { search, category, status, priceListId: filterPriceListId }, targetPriceListId },
+  };
+}
+
 const customerListSelect = {
   id: true,
   name: true,
@@ -135,7 +207,15 @@ const customerListSelect = {
   },
 } satisfies Prisma.CustomerSelect;
 
-export async function listCustomers(query: CustomerListQuery) {
+// Real-world fix (bulk price-list assignment): split out of listCustomers
+// so lib/customers.ts's bulkAssignPriceList can match the EXACT same set
+// of customers a staff member is looking at on /price-lists/customers
+// (same search box, same category/status/priceListId filters) before
+// bulk-updating them -- one filter definition, never two copies that can
+// drift apart and bulk-assign a different set than what was shown.
+export function buildCustomerListWhere(
+  query: Pick<CustomerListQuery, "search" | "category" | "status" | "priceListId">
+): Prisma.CustomerWhereInput {
   const where: Prisma.CustomerWhereInput = {};
 
   if (query.search) {
@@ -160,6 +240,12 @@ export async function listCustomers(query: CustomerListQuery) {
   } else if (query.priceListId) {
     where.priceListId = query.priceListId;
   }
+
+  return where;
+}
+
+export async function listCustomers(query: CustomerListQuery) {
+  const where = buildCustomerListWhere(query);
 
   const [filteredTotal, rows, total, active, withoutLocations, groups] =
     await Promise.all([

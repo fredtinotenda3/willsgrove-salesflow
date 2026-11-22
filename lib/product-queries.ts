@@ -170,6 +170,11 @@ export async function listProducts(query: ProductListQuery) {
         status: true,
         importedAt: true,
         sourceData: true,
+        // Real-world fix: order-line entry (app/orders/new/page.tsx) reuses
+        // this same search for its catalogue lookup and auto-fills the
+        // Unit field from this once a product is picked -- additive, the
+        // Products page itself doesn't render it.
+        unitOfMeasure: true,
       },
     }),
     prisma.product.count(),
@@ -200,6 +205,7 @@ export async function listProducts(query: ProductListQuery) {
       barcode: product.barcode,
       category: product.category,
       status: product.status,
+      unitOfMeasure: product.unitOfMeasure,
       importedAt: product.importedAt
         ? product.importedAt.toISOString()
         : null,

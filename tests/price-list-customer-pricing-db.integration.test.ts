@@ -224,6 +224,57 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Real Business Data Onboarding Phase 
     expect(afterUnassign?.priceListId).toBeNull();
   });
 
+  /**
+   * Real-world fix (bulk price-list assignment): the real customer-master
+   * export has no price-list column at all, so this is the only
+   * realistic way to assign a price list to more than a handful of
+   * customers. Scoped with search: "DEMO-CUST" -- the fixture customer's
+   * own sapCustomerCode prefix (beforeAll) -- so this never touches any
+   * of the real, non-demo customers already imported into this database.
+   */
+  it("bulkAssignPriceList assigns every customer matching the filter, rejects an unknown target, and unassigns", async () => {
+    if (skipAll) return;
+
+    const { bulkAssignPriceList } = await import("@/lib/customers");
+    const { prisma } = await import("@/lib/prisma");
+
+    const list = createdPriceListIds[0];
+    if (!list) {
+      throw new Error("Expected the first test to have created a PriceList already.");
+    }
+
+    const filter = { search: "DEMO-CUST", category: null, status: null, priceListId: null };
+
+    const assignResult = await bulkAssignPriceList(filter, list);
+    expect(assignResult.ok).toBe(true);
+    if (assignResult.ok) expect(assignResult.matchedCount).toBeGreaterThanOrEqual(1);
+
+    const afterAssign = await prisma.customer.findUnique({ where: { id: customerId }, select: { priceListId: true } });
+    expect(afterAssign?.priceListId).toBe(list);
+
+    const auditAfterAssign = await prisma.auditEvent.findFirst({
+      where: { entityType: "Customer", entityId: "bulk", action: "CUSTOMER_BULK_PRICE_LIST_ASSIGN" },
+      orderBy: { createdAt: "desc" },
+    });
+    const afterData = auditAfterAssign?.afterData as Record<string, unknown> | null;
+    expect(afterData?.targetPriceListId).toBe(list);
+
+    const rejectResult = await bulkAssignPriceList(filter, "this-id-does-not-exist");
+    expect(rejectResult.ok).toBe(false);
+    if (!rejectResult.ok) {
+      expect(rejectResult.status).toBe(400);
+      expect(rejectResult.fieldErrors?.priceListId).toBeDefined();
+    }
+    // The rejected bulk assignment must not have changed anything.
+    const afterReject = await prisma.customer.findUnique({ where: { id: customerId }, select: { priceListId: true } });
+    expect(afterReject?.priceListId).toBe(list);
+
+    const unassignResult = await bulkAssignPriceList(filter, null);
+    expect(unassignResult.ok).toBe(true);
+    const afterUnassign = await prisma.customer.findUnique({ where: { id: customerId }, select: { priceListId: true } });
+    expect(afterUnassign?.priceListId).toBeNull();
+  });
+
   it("connects the two phases: resolveEstimatedLostSaleValue falls back to the customer's assigned PriceList entry", async () => {
     if (skipAll) return;
 

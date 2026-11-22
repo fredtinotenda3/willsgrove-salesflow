@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Fragment, useEffect, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
 import Sidebar from "../../components/sidebar";
 import { ORDER_SOURCE_LABELS } from "@/lib/order-display";
@@ -41,6 +41,11 @@ type ProductSuggestion = {
   id: string;
   itemName: string;
   sapItemCode: string | null;
+  // Real-world fix ("when i insert Quantity, Unit should automatically
+  // fill/populate with its measure (KG / EA / BOX)"): carried through
+  // from /api/products (lib/product-queries.ts) so selectProduct below
+  // can prefill requestedUnitCode -- still fully editable.
+  unitOfMeasure: string | null;
 };
 
 // Milestone 12 (Sales Performance Intelligence).
@@ -485,6 +490,7 @@ export default function NewOrderPage() {
                 id: p.id,
                 itemName: p.itemName,
                 sapItemCode: p.sapItemCode,
+                unitOfMeasure: p.unitOfMeasure,
               })),
             });
           }
@@ -505,6 +511,13 @@ export default function NewOrderPage() {
               originalProductDescription: line.originalProductDescription.trim()
                 ? line.originalProductDescription
                 : product.itemName,
+              // Real-world fix: auto-fill Unit from the product's own SAP
+              // unit-of-measure (KG / EA / BOX) -- only when the operator
+              // hasn't already typed one, same non-clobber rule as the
+              // price-list prefill below.
+              requestedUnitCode: line.requestedUnitCode.trim()
+                ? line.requestedUnitCode
+                : product.unitOfMeasure ?? line.requestedUnitCode,
               suggestions: [],
               showSuggestions: false,
               priceListHint: null,
@@ -1155,151 +1168,192 @@ export default function NewOrderPage() {
               </button>
             </div>
 
-            <div className="mt-4 space-y-4">
-              {lines.map((line, index) => (
-                <div key={line.key} className="rounded-xl border border-gray-100 p-4">
-                  <div className="flex items-center justify-between">
-                    <p className="text-[11px] font-semibold text-gray-400">Line {index + 1}</p>
-                    {lines.length > 1 && (
+            {/* Real-world fix ("Order Lines table should be like an excel,
+                width and height, each data field should perfectly fill the
+                cells" + "Add Line button should not [get stuck]/should
+                stick when screen scrolls"): a real <table>, fixed column
+                widths, every input filling its own cell edge-to-edge with
+                no card padding around it, grid lines between cells like a
+                spreadsheet -- and bounded to a scrollable viewport (rather
+                than letting the whole page grow) with its own header row
+                AND its own "Add Line" affordance both pinned via `sticky`
+                so neither scrolls out of reach while there are many lines. */}
+            <div className="mt-4 overflow-auto rounded-lg border border-gray-200" style={{ maxHeight: 560 }}>
+              <table className="w-full border-collapse text-xs" style={{ tableLayout: "fixed" }}>
+                <colgroup>
+                  <col style={{ width: 32 }} />
+                  <col style={{ width: "19%" }} />
+                  <col style={{ width: "19%" }} />
+                  <col style={{ width: "8%" }} />
+                  <col style={{ width: "8%" }} />
+                  <col style={{ width: "11%" }} />
+                  <col style={{ width: "11%" }} />
+                  <col style={{ width: "20%" }} />
+                  <col style={{ width: 32 }} />
+                </colgroup>
+                <thead className="sticky top-0 z-10 bg-[#FAFBF9]">
+                  <tr className="border-b border-gray-200 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+                    <th className="border-r border-gray-200 px-2 py-2" />
+                    <th className="border-r border-gray-200 px-2 py-2 text-left">Catalogue search</th>
+                    <th className="border-r border-gray-200 px-2 py-2 text-left">Description (PO) *</th>
+                    <th className="border-r border-gray-200 px-2 py-2 text-left">Qty *</th>
+                    <th className="border-r border-gray-200 px-2 py-2 text-left">Unit *</th>
+                    <th className="border-r border-gray-200 px-2 py-2 text-left">Unit Price</th>
+                    <th className="border-r border-gray-200 px-2 py-2 text-left">Total</th>
+                    <th className="border-r border-gray-200 px-2 py-2 text-left">Notes</th>
+                    <th className="px-2 py-2" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {lines.map((line, index) => (
+                    <Fragment key={line.key}>
+                      <tr className="border-b border-gray-100 align-top">
+                        <td className="border-r border-gray-100 bg-gray-50 px-2 py-2 text-center text-[10px] text-gray-400">
+                          {index + 1}
+                        </td>
+                        <td className="relative border-r border-gray-100 p-0">
+                          <input
+                            type="text"
+                            value={line.productQuery}
+                            onChange={(event) => handleProductQueryChange(line.key, event.target.value)}
+                            onFocus={() => updateLine(line.key, { showSuggestions: true })}
+                            placeholder="SAP code, name or barcode..."
+                            className="h-10 w-full border-0 bg-transparent px-2 text-xs outline-none focus:bg-[#F3F7F1]"
+                          />
+                          {line.showSuggestions && line.suggestions.length > 0 && (
+                            <div className="absolute left-0 top-full z-20 w-64 rounded-lg border border-gray-100 bg-white shadow-lg">
+                              {line.suggestions.map((product) => (
+                                <button
+                                  key={product.id}
+                                  type="button"
+                                  onClick={() => selectProduct(line.key, product)}
+                                  className="block w-full px-3 py-2 text-left text-xs hover:bg-gray-50"
+                                >
+                                  <p className="font-medium text-gray-700">{product.itemName}</p>
+                                  {product.sapItemCode && (
+                                    <p className="text-[10px] text-gray-400">{product.sapItemCode}</p>
+                                  )}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                          {line.productId && (
+                            <p className="truncate px-2 pb-1 text-[9px] text-green-600">
+                              Linked{line.sapItemCodeSnapshot ? ` (${line.sapItemCodeSnapshot})` : ""}
+                            </p>
+                          )}
+                        </td>
+                        <td className="border-r border-gray-100 p-0">
+                          <input
+                            type="text"
+                            value={line.originalProductDescription}
+                            onChange={(event) =>
+                              updateLine(line.key, { originalProductDescription: event.target.value })
+                            }
+                            placeholder="e.g. Apples G/D Econ 1.5kg"
+                            className="h-10 w-full border-0 bg-transparent px-2 text-xs outline-none focus:bg-[#F3F7F1]"
+                          />
+                        </td>
+                        <td className="border-r border-gray-100 p-0">
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={line.requestedQuantity}
+                            onChange={(event) => updateLine(line.key, { requestedQuantity: event.target.value })}
+                            placeholder="10"
+                            className="h-10 w-full border-0 bg-transparent px-2 text-xs outline-none focus:bg-[#F3F7F1]"
+                          />
+                        </td>
+                        <td className="border-r border-gray-100 p-0">
+                          <input
+                            type="text"
+                            value={line.requestedUnitCode}
+                            onChange={(event) => updateLine(line.key, { requestedUnitCode: event.target.value })}
+                            placeholder="KG / EA"
+                            className="h-10 w-full border-0 bg-transparent px-2 text-xs outline-none focus:bg-[#F3F7F1]"
+                          />
+                        </td>
+                        <td className="border-r border-gray-100 p-0">
+                          {/* Real-world fix ("customer price should
+                              automatically fil[l] with customer price (Unit
+                              price)... remove this column: Customer
+                              Price"): renamed from "Customer's Price" now
+                              that it's prefilled from Willsgrove's own
+                              price list (lookupPriceListPrice above)
+                              rather than always requiring the operator to
+                              type a figure copied from the customer's PO
+                              -- still fully editable, and still submitted
+                              as the same customerUnitPrice field as
+                              before. */}
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={line.customerUnitPrice}
+                            onChange={(event) =>
+                              updateLine(line.key, { customerUnitPrice: event.target.value, priceListHint: null })
+                            }
+                            placeholder="Optional"
+                            className="h-10 w-full border-0 bg-transparent px-2 text-xs outline-none focus:bg-[#F3F7F1]"
+                          />
+                          {line.priceListHint && (
+                            <p className="truncate px-2 pb-1 text-[9px] text-green-600">{line.priceListHint}</p>
+                          )}
+                        </td>
+                        <td className="border-r border-gray-100 bg-gray-50 px-2 py-2 text-gray-600">
+                          {/* Real-world fix: live qty x unit price preview
+                              -- see computeLinePreviewTotal's own comment
+                              for why this is a client-side-only display
+                              value, never OrderLine.lineTotal itself. */}
+                          {computeLinePreviewTotal(line.requestedQuantity, line.customerUnitPrice) ?? "--"}
+                        </td>
+                        <td className="border-r border-gray-100 p-0">
+                          <input
+                            type="text"
+                            value={line.salesNotes}
+                            onChange={(event) => updateLine(line.key, { salesNotes: event.target.value })}
+                            placeholder="Optional"
+                            className="h-10 w-full border-0 bg-transparent px-2 text-xs outline-none focus:bg-[#F3F7F1]"
+                          />
+                        </td>
+                        <td className="px-1 py-2 text-center">
+                          {lines.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => removeLine(line.key)}
+                              className="text-gray-300 hover:text-red-600"
+                              aria-label={`Remove line ${index + 1}`}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                      {line.error && (
+                        <tr className="border-b border-gray-100">
+                          <td />
+                          <td colSpan={8} className="px-2 py-1 text-[11px] text-red-600">
+                            {line.error}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={9} className="sticky bottom-0 border-t border-gray-200 bg-white p-0">
                       <button
                         type="button"
-                        onClick={() => removeLine(line.key)}
-                        className="text-gray-300 hover:text-red-600"
+                        onClick={addLine}
+                        className="flex w-full items-center gap-1.5 px-3 py-2.5 text-[11px] font-semibold text-gray-600 hover:bg-gray-50"
                       >
-                        <Trash2 size={14} />
+                        <Plus size={14} />
+                        Add Line
                       </button>
-                    )}
-                  </div>
-
-                  {line.error && <p className="mt-1 text-[11px] text-red-600">{line.error}</p>}
-
-                  <div className="mt-2 grid grid-cols-4 gap-3">
-                    <div className="relative col-span-2">
-                      <label className="text-[10px] font-semibold text-gray-400">
-                        Catalogue search (SAP code, name or barcode -- optional)
-                      </label>
-                      <input
-                        type="text"
-                        value={line.productQuery}
-                        onChange={(event) => handleProductQueryChange(line.key, event.target.value)}
-                        onFocus={() => updateLine(line.key, { showSuggestions: true })}
-                        placeholder="Search by SAP code, name or barcode..."
-                        className="mt-1 h-9 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
-                      />
-                      {line.showSuggestions && line.suggestions.length > 0 && (
-                        <div className="absolute z-10 mt-1 w-full rounded-lg border border-gray-100 bg-white shadow-lg">
-                          {line.suggestions.map((product) => (
-                            <button
-                              key={product.id}
-                              type="button"
-                              onClick={() => selectProduct(line.key, product)}
-                              className="block w-full px-3 py-2 text-left text-xs hover:bg-gray-50"
-                            >
-                              <p className="font-medium text-gray-700">{product.itemName}</p>
-                              {product.sapItemCode && (
-                                <p className="text-[10px] text-gray-400">{product.sapItemCode}</p>
-                              )}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      {line.productId && (
-                        <p className="mt-1 text-[10px] text-green-600">
-                          Linked to SAP product{line.sapItemCodeSnapshot ? ` (${line.sapItemCodeSnapshot})` : ""}
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="col-span-2">
-                      <label className="text-[10px] font-semibold text-gray-400">
-                        Description as written on PO *
-                      </label>
-                      <input
-                        type="text"
-                        value={line.originalProductDescription}
-                        onChange={(event) =>
-                          updateLine(line.key, { originalProductDescription: event.target.value })
-                        }
-                        placeholder="e.g. Apples G/D Econ 1.5kg"
-                        className="mt-1 h-9 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-[10px] font-semibold text-gray-400">Quantity *</label>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={line.requestedQuantity}
-                        onChange={(event) => updateLine(line.key, { requestedQuantity: event.target.value })}
-                        placeholder="10"
-                        className="mt-1 h-9 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-[10px] font-semibold text-gray-400">Unit *</label>
-                      <input
-                        type="text"
-                        value={line.requestedUnitCode}
-                        onChange={(event) => updateLine(line.key, { requestedUnitCode: event.target.value })}
-                        placeholder="KG / EA / BOX"
-                        className="mt-1 h-9 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
-                      />
-                    </div>
-
-                    <div>
-                      {/* Real-world fix ("customer price should
-                          automatically fil[l] with customer price (Unit
-                          price)... remove this column: Customer Price"):
-                          renamed from "Customer's Price" now that it's
-                          prefilled from Willsgrove's own price list
-                          (lookupPriceListPrice above) rather than always
-                          requiring the operator to type a figure copied
-                          from the customer's PO -- still fully editable,
-                          and still submitted as the same
-                          customerUnitPrice field as before. */}
-                      <label className="text-[10px] font-semibold text-gray-400">Unit Price</label>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={line.customerUnitPrice}
-                        onChange={(event) =>
-                          updateLine(line.key, { customerUnitPrice: event.target.value, priceListHint: null })
-                        }
-                        placeholder="Optional"
-                        className="mt-1 h-9 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
-                      />
-                      {line.priceListHint && (
-                        <p className="mt-1 text-[10px] text-green-600">{line.priceListHint}</p>
-                      )}
-                    </div>
-
-                    <div>
-                      {/* Real-world fix: live qty x unit price preview,
-                          added alongside the Unit Price field above --
-                          see computeLinePreviewTotal's own comment for
-                          why this is a client-side-only display value,
-                          never OrderLine.lineTotal itself. */}
-                      <label className="text-[10px] font-semibold text-gray-400">Total</label>
-                      <div className="mt-1 flex h-9 w-full items-center rounded-lg border border-gray-100 bg-gray-50 px-3 text-xs text-gray-600">
-                        {computeLinePreviewTotal(line.requestedQuantity, line.customerUnitPrice) ?? "--"}
-                      </div>
-                    </div>
-
-                    <div className="col-span-4">
-                      <label className="text-[10px] font-semibold text-gray-400">Notes</label>
-                      <input
-                        type="text"
-                        value={line.salesNotes}
-                        onChange={(event) => updateLine(line.key, { salesNotes: event.target.value })}
-                        placeholder="Optional"
-                        className="mt-1 h-9 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
-                      />
-                    </div>
-                  </div>
-                </div>
-              ))}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
             </div>
 
             <p className="mt-4 rounded-lg bg-gray-50 px-4 py-3 text-[11px] text-gray-500">

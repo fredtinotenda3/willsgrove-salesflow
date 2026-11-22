@@ -5,6 +5,7 @@ import type {
   FieldErrors,
   UpdateCustomerInput,
 } from "@/lib/customer-validation";
+import { buildCustomerListWhere, type CustomerListQuery } from "@/lib/customer-queries";
 
 export type MutationFailure = {
   ok: false;
@@ -197,6 +198,85 @@ export async function updateCustomer(
       return duplicateCodeFailure;
     }
 
+    if (isForeignKeyViolation(error)) {
+      return unknownPriceListFailure;
+    }
+
+    throw error;
+  }
+}
+
+export type BulkAssignPriceListResult =
+  | { ok: true; matchedCount: number }
+  | MutationFailure;
+
+/**
+ * Real-world fix (bulk price-list assignment): the real customer-master
+ * export this business has carries no price-list column at all (see
+ * app/price-lists/customers/page.tsx's own comment), so --
+ * Customers assigned: 0 out of ~2,647 at the time this was written --
+ * assigning one customer at a time through that page's existing
+ * assignPriceList() is not a realistic path to ever finishing. This is
+ * the deliberate, staff-driven alternative: assign EVERY customer
+ * currently matching a filter (the exact same search/category/status/
+ * priceListId filter already shown on /price-lists/customers, built by
+ * the same buildCustomerListWhere() listCustomers uses, so "assign to
+ * everyone matching my filter" can never target a different set than
+ * what the staff member is looking at) to one target price list in a
+ * single statement, rather than guessing a mapping from customer name
+ * text -- that guess is exactly what this feature still leaves to a
+ * human: they choose the filter (e.g. search "OK Supermarkets") and the
+ * target list (e.g. OKUSDBYO) themselves, same deliberateness the
+ * single-row assignment already had, just applied to many rows at once.
+ *
+ * An empty filter matches every customer -- not rejected here (a
+ * legitimate bulk action, e.g. assigning a default/fallback list to
+ * everyone still unassigned via `priceListId: "UNASSIGNED"`); the
+ * confirmation step belongs in the UI, which shows the live matched
+ * count before the staff member confirms.
+ */
+export async function bulkAssignPriceList(
+  filter: Pick<CustomerListQuery, "search" | "category" | "status" | "priceListId">,
+  targetPriceListId: string | null
+): Promise<BulkAssignPriceListResult> {
+  if (targetPriceListId !== null) {
+    const priceList = await prisma.priceList.findUnique({
+      where: { id: targetPriceListId },
+      select: { id: true },
+    });
+
+    if (!priceList) {
+      return unknownPriceListFailure;
+    }
+  }
+
+  const where = buildCustomerListWhere(filter);
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const { count } = await tx.customer.updateMany({
+        where,
+        data: { priceListId: targetPriceListId },
+      });
+
+      // One audit row for the whole batch (not one per customer): the
+      // filter and target fully describe what changed, and 2,647
+      // individual rows for a single staff action would make the audit
+      // log itself unreadable -- afterData carries the filter + target +
+      // matched count so a reviewer can see exactly what ran.
+      await tx.auditEvent.create({
+        data: {
+          actorId: null,
+          action: "CUSTOMER_BULK_PRICE_LIST_ASSIGN",
+          entityType: "Customer",
+          entityId: "bulk",
+          afterData: { filter, targetPriceListId, matchedCount: count },
+        },
+      });
+
+      return { ok: true, matchedCount: count } as const;
+    }, TRANSACTION_OPTIONS);
+  } catch (error) {
     if (isForeignKeyViolation(error)) {
       return unknownPriceListFailure;
     }
