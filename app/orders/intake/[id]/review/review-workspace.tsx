@@ -1,5 +1,7 @@
 "use client";
 
+import { toast } from "sonner";
+
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
@@ -367,19 +369,23 @@ export default function ReviewWorkspace({ documentId }: { documentId: string }) 
         setConfirmedOrder({ id: body.orderId as string, reference: body.orderReference as string });
         setConfirmedOrders((body.orders as ConfirmedOrderEntry[] | undefined) ?? null);
         setCustomerLabelsAtConfirm(labelsAtConfirm);
+        toast.success("Order created", { description: (body.orderReference as string | undefined) ?? "The PO has been confirmed into an order." });
         return;
       }
 
       if (response.status === 409 && Array.isArray(body.duplicateWarnings) && (body.duplicateWarnings as unknown[]).length > 0) {
         setLiveDuplicateWarnings(body.duplicateWarnings as DuplicateWarning[]);
         setConfirmError((body.message as string) ?? "This looks like a possible duplicate.");
+        toast.warning("Possible duplicate", { description: (body.message as string) ?? "Review the duplicate warning before confirming." });
         return;
       }
 
       setFieldErrors((body.fieldErrors as Record<string, string>) ?? {});
       setConfirmError((body.message as string) ?? "Unable to confirm this document into an order.");
+      toast.error("Order not created", { description: (body.message as string) ?? "Unable to confirm this document into an order." });
     } catch {
       setConfirmError("Could not reach the server.");
+      toast.error("Order not created", { description: "Could not reach the server." });
     } finally {
       setConfirming(false);
     }

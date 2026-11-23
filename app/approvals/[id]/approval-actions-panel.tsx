@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
 
 /**
@@ -55,13 +56,17 @@ export default function ApprovalActionsPanel({ requestId, status, canDecide, can
       });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : `Unable to ${path} this request.`);
+        const message = typeof data.message === "string" ? data.message : `Unable to ${path} this request.`;
+        setError(message);
+        toast.error("Action failed", { description: message });
         return;
       }
       close();
+      toast.success({ approve: "Request approved", reject: "Request rejected", withdraw: "Request withdrawn", cancel: "Request cancelled" }[path]);
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Action failed", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }

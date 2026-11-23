@@ -357,8 +357,8 @@ export default async function Home() {
             </div>
             <div className="rounded-xl border border-[#E8EBE6] bg-white p-6">
               <SectionHeading
-                title="Lost Value (trend)"
-                description="Supply-shortage lost-sales estimate by day, trailing 30 days"
+                title="Requested vs. Unavailable value (trend)"
+                description="Order-line Total (Amount) for requested vs. lost quantity by day, trailing 30 days"
                 action="Full analytics"
                 actionHref="/lost-sales/analytics"
               />

@@ -203,6 +203,51 @@ export function RequestedFoundUnavailableChart({
   );
 }
 
+const VALUE_BY_PRODUCT_CONFIG: ChartConfig = {
+  requestedValue: { label: "Requested value", color: "var(--chart-1)" },
+  foundValue: { label: "Found value", color: "var(--chart-3)" },
+  estimatedValue: { label: "Lost Value (Total)", color: "var(--chart-2)" },
+};
+
+/**
+ * Value (Total/Amount) counterpart of RequestedFoundUnavailableChart:
+ * same product set, same entity colours, but each bar is the
+ * order-line Total for that quantity. Currency-denominated, so its own
+ * chart and axis rather than sharing the quantity axis.
+ */
+export function RequestedFoundUnavailableValueChart({
+  data,
+  basePath = DEFAULT_BASE_PATH,
+  baseQuery = DEFAULT_BASE_QUERY,
+}: {
+  data: LostSalesProductBreakdown[];
+  basePath?: string;
+  baseQuery?: Record<string, string>;
+}) {
+  if (data.length === 0) return <EmptyState message="No product shortages in the selected range." />;
+  const rows = data.map((row) => ({
+    ...row,
+    displayLabel: truncateLabel(row.productDescriptionSnapshot),
+    requestedValue: Number(row.requestedValue),
+    foundValue: Number(row.foundValue),
+    estimatedValue: Number(row.estimatedValue),
+  }));
+  return (
+    <ChartContainer config={VALUE_BY_PRODUCT_CONFIG} className="aspect-auto h-[360px] w-full">
+      <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 16, left: 4, bottom: 0 }}>
+        <CartesianGrid horizontal={false} />
+        <XAxis type="number" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} />
+        <YAxis dataKey="displayLabel" type="category" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} width={140} />
+        <ChartTooltip content={<ProductBarTooltipContent basePath={basePath} baseQuery={baseQuery} />} />
+        <ChartLegend content={<ChartLegendContent />} />
+        <Bar dataKey="requestedValue" fill="var(--color-requestedValue)" radius={3} maxBarSize={14} />
+        <Bar dataKey="foundValue" fill="var(--color-foundValue)" radius={3} maxBarSize={14} />
+        <Bar dataKey="estimatedValue" fill="var(--color-estimatedValue)" radius={3} maxBarSize={14} />
+      </BarChart>
+    </ChartContainer>
+  );
+}
+
 /**
  * Spec: shortage rate ranking by product/customer -- single series (a
  * percentage), gated upstream by MIN_DEMAND_COUNT_FOR_RATE_RANKING so a

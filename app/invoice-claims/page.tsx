@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { isValidId } from "@/lib/http";
 import { listInvoiceClaims, listRejectedDeliveriesAwaitingClaim } from "@/lib/invoice-claims/queries";
-import { listInvoiceRegister } from "@/lib/invoice-claims/invoice-register";
+import { listReturnedProducts } from "@/lib/invoice-claims/returned-products";
 import InvoiceRegister from "./invoice-register";
 import {
   CLAIM_STATUS_LABELS,
@@ -58,7 +58,7 @@ export default async function InvoiceClaimsPage({ searchParams }: RouteParams) {
   const customerId = rawCustomerId && isValidId(rawCustomerId) ? rawCustomerId : undefined;
 
   const registerFilter = resolved.reg === "none" || resolved.reg === "with" ? resolved.reg : "all";
-  const register = await listInvoiceRegister({ search, customerId, claim: registerFilter }, 1, 50);
+  const register = await listReturnedProducts({ search, customerId, claim: registerFilter }, 1, 50);
 
   const { rows: claims, total, totalPages } = await listInvoiceClaims({ status, search, customerId }, page, PAGE_SIZE);
 

@@ -1,3 +1,4 @@
+import { resolveEffectiveLostValue } from "@/lib/lost-sales/effective-value";
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -65,6 +66,7 @@ const DEMAND_SUMMARY_SELECT = {
   estimatedUnitPrice: true,
   estimatedValue: true,
   estimatedValueSource: true,
+  orderLine: { select: { approvedUnitPrice: true, customerUnitPrice: true } },
   supersededByDemandId: true,
   status: true,
   expectedFollowUpDate: true,
@@ -91,6 +93,7 @@ type DemandSummaryRow = {
   estimatedUnitPrice: { toString(): string } | null;
   estimatedValue: { toString(): string } | null;
   estimatedValueSource: string | null;
+  orderLine: { approvedUnitPrice: { toString(): string } | null; customerUnitPrice: { toString(): string } | null } | null;
   supersededByDemandId: string | null;
   status: string;
   expectedFollowUpDate: Date | null;
@@ -99,6 +102,13 @@ type DemandSummaryRow = {
 };
 
 function toSummary(row: DemandSummaryRow): UnfulfilledDemandSummary {
+  const effective = resolveEffectiveLostValue({
+    storedUnitPrice: row.estimatedUnitPrice ? row.estimatedUnitPrice.toString() : null,
+    storedValue: row.estimatedValue ? row.estimatedValue.toString() : null,
+    lineApprovedUnitPrice: row.orderLine?.approvedUnitPrice?.toString() ?? null,
+    lineCustomerUnitPrice: row.orderLine?.customerUnitPrice?.toString() ?? null,
+    quantity: (Number(row.confirmedLostQuantity.toString()) > 0 ? row.confirmedLostQuantity : row.unavailableQuantity).toString(),
+  });
   return {
     id: row.id,
     orderId: row.orderId,
@@ -116,9 +126,9 @@ function toSummary(row: DemandSummaryRow): UnfulfilledDemandSummary {
     cancelledQuantity: row.cancelledQuantity.toString(),
     substitutedQuantity: row.substitutedQuantity.toString(),
     confirmedLostQuantity: row.confirmedLostQuantity.toString(),
-    estimatedUnitPrice: row.estimatedUnitPrice ? row.estimatedUnitPrice.toString() : null,
-    estimatedValue: row.estimatedValue ? row.estimatedValue.toString() : null,
-    estimatedValueSource: row.estimatedValueSource,
+    estimatedUnitPrice: effective.unitPrice,
+    estimatedValue: effective.value,
+    estimatedValueSource: effective.source === "ORDER_LINE_PRICE" ? "ORDER_LINE_APPROVED_PRICE" : row.estimatedValueSource,
     supersededByDemandId: row.supersededByDemandId,
     status: row.status,
     expectedFollowUpDate: row.expectedFollowUpDate ? row.expectedFollowUpDate.toISOString() : null,
@@ -569,16 +579,36 @@ export async function getAutomaticLostSalesValue(options?: {
     status: { not: "SUPERSEDED" },
   };
 
-  const [valueAggregate, totalCount, withEstimateCount] = await Promise.all([
-    prisma.unfulfilledDemand.aggregate({ where, _sum: { estimatedValue: true } }),
-    prisma.unfulfilledDemand.count({ where }),
-    prisma.unfulfilledDemand.count({ where: { ...where, estimatedValue: { not: null } } }),
-  ]);
+  const demands = await prisma.unfulfilledDemand.findMany({
+    where,
+    select: {
+      unavailableQuantity: true,
+      confirmedLostQuantity: true,
+      estimatedUnitPrice: true,
+      estimatedValue: true,
+      orderLine: { select: { approvedUnitPrice: true, customerUnitPrice: true } },
+    },
+  });
+  let total = new Prisma.Decimal(0);
+  let withEstimate = 0;
+  for (const demand of demands) {
+    const effective = resolveEffectiveLostValue({
+      storedUnitPrice: demand.estimatedUnitPrice?.toString() ?? null,
+      storedValue: demand.estimatedValue?.toString() ?? null,
+      lineApprovedUnitPrice: demand.orderLine?.approvedUnitPrice?.toString() ?? null,
+      lineCustomerUnitPrice: demand.orderLine?.customerUnitPrice?.toString() ?? null,
+      quantity: (demand.confirmedLostQuantity.gt(0) ? demand.confirmedLostQuantity : demand.unavailableQuantity).toString(),
+    });
+    if (effective.value !== null) {
+      total = total.plus(effective.value);
+      withEstimate += 1;
+    }
+  }
 
   return {
-    estimatedValue: (valueAggregate._sum.estimatedValue ?? new Prisma.Decimal(0)).toString(),
-    demandsWithEstimate: withEstimateCount,
-    demandsWithoutEstimate: totalCount - withEstimateCount,
+    estimatedValue: total.toString(),
+    demandsWithEstimate: withEstimate,
+    demandsWithoutEstimate: demands.length - withEstimate,
   };
 }
 

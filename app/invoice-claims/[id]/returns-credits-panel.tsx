@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Loader2, PackageCheck, Receipt } from "lucide-react";
 import { RETURN_CONDITION_LABELS } from "@/lib/returns-credits/display";
 
@@ -81,13 +82,17 @@ export default function ReturnsCreditsPanel({ claimId, claimStatus, canRecordCre
       });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to record this return.");
+        const message = typeof data.message === "string" ? data.message : "Unable to record this return.";
+        setError(message);
+        toast.error("Return not recorded", { description: message });
         return;
       }
       close();
+      toast.success("Return recorded");
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Return not recorded", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }
@@ -111,13 +116,17 @@ export default function ReturnsCreditsPanel({ claimId, claimStatus, canRecordCre
       });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to record this credit note.");
+        const message = typeof data.message === "string" ? data.message : "Unable to record this credit note.";
+        setError(message);
+        toast.error("Credit note not recorded", { description: message });
         return;
       }
       close();
+      toast.success("Credit note recorded");
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Credit note not recorded", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }

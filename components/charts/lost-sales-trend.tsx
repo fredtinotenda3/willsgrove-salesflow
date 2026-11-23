@@ -41,7 +41,8 @@ const QUANTITY_CHART_CONFIG: ChartConfig = {
 };
 
 const VALUE_CHART_CONFIG: ChartConfig = {
-  estimatedLostValue: { label: "Lost Value", color: "var(--chart-1)" },
+  requestedValue: { label: "Requested value", color: "var(--chart-1)" },
+  estimatedLostValue: { label: "Lost Value (Total)", color: "var(--chart-2)" },
 };
 
 const AXIS_TICK_STYLE = { fontSize: 11, fill: "var(--chart-muted-ink)" };
@@ -108,7 +109,11 @@ export function EstimatedLostValueTrendChart({
   baseQuery?: Record<string, string>;
 }) {
   if (data.length === 0) return <TrendEmptyState message="No demand records in the selected range." />;
-  const rows = data.map((point) => ({ ...point, estimatedLostValue: Number(point.estimatedLostValue) }));
+  const rows = data.map((point) => ({
+    ...point,
+    requestedValue: Number(point.requestedValue),
+    estimatedLostValue: Number(point.estimatedLostValue),
+  }));
   return (
     <ChartContainer config={VALUE_CHART_CONFIG} className="aspect-auto h-[220px] w-full">
       <ComposedChart data={rows} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
@@ -116,7 +121,9 @@ export function EstimatedLostValueTrendChart({
         <XAxis dataKey="label" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} />
         <YAxis tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} width={56} />
         <ChartTooltip content={<ValueTrendTooltipContent basePath={basePath} baseQuery={baseQuery} />} />
+        <ChartLegend content={<ChartLegendContent />} />
         <Area type="monotone" dataKey="estimatedLostValue" fill="var(--color-estimatedLostValue)" stroke="var(--color-estimatedLostValue)" fillOpacity={0.18} strokeWidth={2} />
+        <Line type="monotone" dataKey="requestedValue" stroke="var(--color-requestedValue)" strokeWidth={2} dot={{ r: 3 }} />
       </ComposedChart>
     </ChartContainer>
   );

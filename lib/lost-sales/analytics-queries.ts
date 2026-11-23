@@ -1,3 +1,4 @@
+import { resolveEffectiveLostValue } from "@/lib/lost-sales/effective-value";
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -392,6 +393,9 @@ export async function getLostSalesAnalytics(
         confirmedLostQuantity: true,
         estimatedUnitPrice: true,
         estimatedValue: true,
+        // Lost Value fallback: the order line's own price snapshot, used
+        // when no estimate was stored on the demand (see effective-value.ts).
+        orderLine: { select: { approvedUnitPrice: true, customerUnitPrice: true } },
         status: true,
         createdAt: true,
         order: { select: { salespersonId: true } },
@@ -428,7 +432,15 @@ export async function getLostSalesAnalytics(
     }),
   ]);
 
-  const rows: AnalyticsRow[] = rawRows.map((row) => ({
+  const rows: AnalyticsRow[] = rawRows.map((row) => {
+    const effective = resolveEffectiveLostValue({
+      storedUnitPrice: row.estimatedUnitPrice === null ? null : row.estimatedUnitPrice.toString(),
+      storedValue: row.estimatedValue === null ? null : row.estimatedValue.toString(),
+      lineApprovedUnitPrice: row.orderLine?.approvedUnitPrice?.toString() ?? null,
+      lineCustomerUnitPrice: row.orderLine?.customerUnitPrice?.toString() ?? null,
+      quantity: (Number(row.confirmedLostQuantity) > 0 ? row.confirmedLostQuantity : row.unavailableQuantity).toString(),
+    });
+    return {
     id: row.id,
     orderId: row.orderId,
     customerId: row.customerId,
@@ -444,11 +456,10 @@ export async function getLostSalesAnalytics(
     cancelledQuantity: toNumber(row.cancelledQuantity),
     substitutedQuantity: toNumber(row.substitutedQuantity),
     confirmedLostQuantity: toNumber(row.confirmedLostQuantity),
-    estimatedUnitPrice: row.estimatedUnitPrice === null ? null : toNumber(row.estimatedUnitPrice),
-    estimatedValue: row.estimatedValue === null ? null : toNumber(row.estimatedValue),
-    requestedValue:
-      row.estimatedUnitPrice === null ? null : toNumber(row.requestedQuantity) * toNumber(row.estimatedUnitPrice),
-    foundValue: row.estimatedUnitPrice === null ? null : toNumber(row.foundQuantity) * toNumber(row.estimatedUnitPrice),
+    estimatedUnitPrice: effective.unitPrice === null ? null : toNumber(effective.unitPrice),
+    estimatedValue: effective.value === null ? null : toNumber(effective.value),
+    requestedValue: effective.unitPrice === null ? null : toNumber(row.requestedQuantity) * toNumber(effective.unitPrice),
+    foundValue: effective.unitPrice === null ? null : toNumber(row.foundQuantity) * toNumber(effective.unitPrice),
     confirmedLostValue: row.lostSaleRecords.reduce(
       (sum: number, record: { estimatedValue: { toString(): string } | null }) => sum + toNumber(record.estimatedValue),
       0
@@ -456,7 +467,8 @@ export async function getLostSalesAnalytics(
     status: row.status,
     createdAt: row.createdAt,
     salespersonId: row.order.salespersonId,
-  }));
+    };
+  });
 
   // --- KPIs -----------------------------------------------------------
   let totalRequested = 0;

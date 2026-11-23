@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Loader2, Paperclip, Upload } from "lucide-react";
 import { CLAIM_STATUS_LABELS, RESOLUTION_DECISION_LABELS } from "@/lib/invoice-claims/display";
 
@@ -78,13 +79,17 @@ export default function ClaimActionsPanel({ claimId, status, canApprove, pending
       });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to change status.");
+        const message = typeof data.message === "string" ? data.message : "Unable to change status.";
+        setError(message);
+        toast.error("Status not changed", { description: message });
         return;
       }
       close();
+      toast.success("Claim status updated");
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Status not changed", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }
@@ -109,13 +114,17 @@ export default function ClaimActionsPanel({ claimId, status, canApprove, pending
       });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to record this resolution.");
+        const message = typeof data.message === "string" ? data.message : "Unable to record this resolution.";
+        setError(message);
+        toast.error("Resolution not recorded", { description: message });
         return;
       }
       close();
+      toast.success("Resolution recorded");
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Resolution not recorded", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }
@@ -133,13 +142,17 @@ export default function ClaimActionsPanel({ claimId, status, canApprove, pending
       });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to approve this resolution.");
+        const message = typeof data.message === "string" ? data.message : "Unable to approve this resolution.";
+        setError(message);
+        toast.error("Resolution not approved", { description: message });
         return;
       }
       close();
+      toast.success("Resolution approved");
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Resolution not approved", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }
@@ -161,13 +174,17 @@ export default function ClaimActionsPanel({ claimId, status, canApprove, pending
       });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to reject this resolution.");
+        const message = typeof data.message === "string" ? data.message : "Unable to reject this resolution.";
+        setError(message);
+        toast.error("Resolution not rejected", { description: message });
         return;
       }
       close();
+      toast.success("Resolution rejected");
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Resolution not rejected", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }
@@ -182,13 +199,17 @@ export default function ClaimActionsPanel({ claimId, status, canApprove, pending
       const response = await fetch(`/api/invoice-claims/${claimId}/attachments`, { method: "POST", body: formData });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to upload this file.");
+        const message = typeof data.message === "string" ? data.message : "Unable to upload this file.";
+        setError(message);
+        toast.error("Upload failed", { description: message });
         return;
       }
       close();
+      toast.success("Evidence uploaded");
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Upload failed", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }

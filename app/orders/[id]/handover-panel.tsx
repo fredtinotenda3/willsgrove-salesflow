@@ -1,5 +1,6 @@
 "use client";
 
+import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import { Clipboard, Download, FileSpreadsheet, FileText, Loader2, RefreshCw } from "lucide-react";
 
@@ -125,9 +126,12 @@ export default function HandoverPanel({ orderId, readyToInvoice }: { orderId: st
       });
       const body = await readJson(response);
       if (!response.ok || !body.success) {
-        setGenerateError((body.message as string) ?? "Unable to generate this handover.");
+        const message = (body.message as string) ?? "Unable to generate this handover.";
+        setGenerateError(message);
+        toast.error("Handover not generated", { description: message });
         return;
       }
+      toast.success("Handover generated");
 
       const handover = body.handover as { clipboardText?: string };
       if (format === "CLIPBOARD" && handover.clipboardText) {
@@ -143,6 +147,7 @@ export default function HandoverPanel({ orderId, readyToInvoice }: { orderId: st
       await load();
     } catch {
       setGenerateError("Could not reach the server.");
+      toast.error("Handover not generated", { description: "Could not reach the server." });
     } finally {
       setGeneratingFormat(null);
     }

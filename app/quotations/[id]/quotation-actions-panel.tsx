@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import Link from "next/link";
 import { Loader2, Plus, Trash2, Pencil } from "lucide-react";
 
@@ -200,13 +201,17 @@ export default function QuotationActionsPanel({
       });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to add this line.");
+        const message = typeof data.message === "string" ? data.message : "Unable to add this line.";
+        setError(message);
+        toast.error("Line not added", { description: message });
         return;
       }
       close();
+      toast.success("Line added");
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Line not added", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }
@@ -239,13 +244,17 @@ export default function QuotationActionsPanel({
       });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to update this line.");
+        const message = typeof data.message === "string" ? data.message : "Unable to update this line.";
+        setError(message);
+        toast.error("Line not updated", { description: message });
         return;
       }
       close();
+      toast.success("Line updated");
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Line not updated", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }
@@ -258,12 +267,16 @@ export default function QuotationActionsPanel({
       const response = await fetch(`/api/quotations/${quotationId}/lines/${lineId}`, { method: "DELETE" });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to remove this line.");
+        const message = typeof data.message === "string" ? data.message : "Unable to remove this line.";
+        setError(message);
+        toast.error("Line not removed", { description: message });
         return;
       }
+      toast.success("Line removed");
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Line not removed", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }
@@ -277,15 +290,19 @@ export default function QuotationActionsPanel({
       const response = await fetch(`/api/quotations/${quotationId}/issue`, { method: "POST" });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to issue this quotation.");
+        const message = typeof data.message === "string" ? data.message : "Unable to issue this quotation.";
+        setError(message);
+        toast.error("Quotation not issued", { description: message });
         if (typeof data.approvalRequestId === "string") {
           setBlockedApprovalId(data.approvalRequestId);
         }
         return;
       }
+      toast.success("Quotation issued");
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Quotation not issued", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }
@@ -310,13 +327,17 @@ export default function QuotationActionsPanel({
       });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to record this response.");
+        const message = typeof data.message === "string" ? data.message : "Unable to record this response.";
+        setError(message);
+        toast.error("Response not recorded", { description: message });
         return;
       }
       close();
+      toast.success("Response recorded");
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Response not recorded", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }
@@ -337,13 +358,17 @@ export default function QuotationActionsPanel({
       });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to cancel this quotation.");
+        const message = typeof data.message === "string" ? data.message : "Unable to cancel this quotation.";
+        setError(message);
+        toast.error("Quotation not cancelled", { description: message });
         return;
       }
       close();
+      toast.success("Quotation cancelled");
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Quotation not cancelled", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }
@@ -360,12 +385,16 @@ export default function QuotationActionsPanel({
       });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to revise this quotation.");
+        const message = typeof data.message === "string" ? data.message : "Unable to revise this quotation.";
+        setError(message);
+        toast.error("Quotation not revised", { description: message });
         return;
       }
+      toast.success("Quotation revised");
       router.push(`/quotations/${data.id as string}`);
     } catch {
       setError("A network error occurred.");
+      toast.error("Quotation not revised", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }
@@ -385,12 +414,16 @@ export default function QuotationActionsPanel({
       });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to convert this quotation into an order.");
+        const message = typeof data.message === "string" ? data.message : "Unable to convert this quotation into an order.";
+        setError(message);
+        toast.error("Conversion failed", { description: message });
         return;
       }
+      toast.success("Quotation converted to an order");
       router.push(`/orders/${data.orderId as string}`);
     } catch {
       setError("A network error occurred.");
+      toast.error("Conversion failed", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }
@@ -403,12 +436,16 @@ export default function QuotationActionsPanel({
       const response = await fetch(`/api/quotations/${quotationId}/expire`, { method: "POST" });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to expire this quotation.");
+        const message = typeof data.message === "string" ? data.message : "Unable to expire this quotation.";
+        setError(message);
+        toast.error("Quotation not expired", { description: message });
         return;
       }
+      toast.success("Quotation expired");
       router.refresh();
     } catch {
       setError("A network error occurred.");
+      toast.error("Quotation not expired", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }

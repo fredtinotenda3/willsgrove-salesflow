@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Loader2, PlayCircle, CheckCircle2, ShieldCheck, Lock } from "lucide-react";
 import { classifyAvailability, type AvailabilityStatus } from "@/lib/picking/validation";
 
@@ -246,12 +247,16 @@ export default function PickingPanel({
       const response = await fetch(`/api/orders/${orderId}/picking`, { method: "POST" });
       const body = await readJson(response);
       if (!response.ok || !body.success) {
-        setStartError((body.message as string) ?? "Unable to start picking for this order.");
+        const message = (body.message as string) ?? "Unable to start picking for this order.";
+        setStartError(message);
+        toast.error("Picking not started", { description: message });
         return;
       }
+      toast.success("Picking started", { description: "The start time and your name are now recorded in the order history." });
       await load();
     } catch {
       setStartError("Could not reach the server.");
+      toast.error("Picking not started", { description: "Could not reach the server." });
     } finally {
       setStarting(false);
     }
@@ -298,12 +303,16 @@ export default function PickingPanel({
       });
       const body = await readJson(response);
       if (!response.ok || !body.success) {
-        setLineErrors((prev) => ({ ...prev, [orderLineId]: (body.message as string) ?? "Unable to save this line." }));
+        const message = (body.message as string) ?? "Unable to save this line.";
+        setLineErrors((prev) => ({ ...prev, [orderLineId]: message }));
+        toast.error("Line not saved", { description: message });
         return;
       }
+      toast.success("Line saved");
       await load();
     } catch {
       setLineErrors((prev) => ({ ...prev, [orderLineId]: "Could not reach the server." }));
+      toast.error("Line not saved", { description: "Could not reach the server." });
     } finally {
       setSavingLineId(null);
     }
@@ -345,12 +354,16 @@ export default function PickingPanel({
       });
       const body = await readJson(response);
       if (!response.ok || !body.success) {
-        setCompleteError((body.message as string) ?? "Unable to complete picking for this order.");
+        const message = (body.message as string) ?? "Unable to complete picking for this order.";
+        setCompleteError(message);
+        toast.error("Picking not completed", { description: message });
         return;
       }
+      toast.success("Picking completed", { description: "The end time and your name are now recorded in the order history." });
       await load();
     } catch {
       setCompleteError("Could not reach the server.");
+      toast.error("Picking not completed", { description: "Could not reach the server." });
     } finally {
       setCompleting(false);
     }
@@ -364,12 +377,16 @@ export default function PickingPanel({
       const response = await fetch(`/api/orders/${orderId}/picking/${session.id}/authorize`, { method: "POST" });
       const body = await readJson(response);
       if (!response.ok || !body.success) {
-        setAuthorizeError((body.message as string) ?? "Unable to authorize this picking session.");
+        const message = (body.message as string) ?? "Unable to authorize this picking session.";
+        setAuthorizeError(message);
+        toast.error("Picking not authorized", { description: message });
         return;
       }
+      toast.success("Picking authorized", { description: "The order is ready for invoicing." });
       await load();
     } catch {
       setAuthorizeError("Could not reach the server.");
+      toast.error("Picking not authorized", { description: "Could not reach the server." });
     } finally {
       setAuthorizing(false);
     }

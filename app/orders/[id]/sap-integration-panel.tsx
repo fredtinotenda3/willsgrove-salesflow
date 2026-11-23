@@ -1,5 +1,7 @@
 "use client";
 
+import { toast } from "sonner";
+
 import { useCallback, useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { ORDER_INTEGRATION_STATUS_LABELS } from "@/lib/integrations/sap/display";
@@ -72,12 +74,16 @@ export default function SapIntegrationPanel({ orderId, canSubmit }: { orderId: s
       const response = await fetch(`/api/orders/${orderId}/sap-submit`, { method: "POST" });
       const body = await readJson(response);
       if (!response.ok || body.success !== true) {
-        setError(typeof body.message === "string" ? body.message : "Unable to submit this order to SAP.");
+        const message = typeof body.message === "string" ? body.message : "Unable to submit this order to SAP.";
+        setError(message);
+        toast.error("Not submitted to SAP", { description: message });
         return;
       }
+      toast.success("Submitted to SAP");
       await load();
     } catch {
       setError("A network error occurred.");
+      toast.error("Not submitted to SAP", { description: "A network error occurred." });
     } finally {
       setSubmitting(false);
     }

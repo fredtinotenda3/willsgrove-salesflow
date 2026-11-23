@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { Loader2, Truck, PackageCheck, XCircle, Send, RotateCcw } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import ChangeAssignmentDialog from "./change-assignment-dialog";
@@ -256,9 +257,12 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
       });
       const body = await readJson(response);
       if (!response.ok || !body.success) {
-        setCreateError((body.message as string) ?? "Unable to create this dispatch.");
+        const message = (body.message as string) ?? "Unable to create this dispatch.";
+        setCreateError(message);
+        toast.error("Dispatch not created", { description: message });
         return;
       }
+      toast.success("Dispatch created", { description: "Driver, assistant and vehicle have been assigned." });
       setQuantities({});
       setDriverId("");
       setAssistantId("");
@@ -266,6 +270,7 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
       await load();
     } catch {
       setCreateError("Could not reach the server.");
+      toast.error("Dispatch not created", { description: "Could not reach the server." });
     } finally {
       setCreating(false);
     }
@@ -282,12 +287,16 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
       });
       const body = await readJson(response);
       if (!response.ok || !body.success) {
-        setActionError((body.message as string) ?? "Unable to mark this dispatch as departed.");
+        const message = (body.message as string) ?? "Unable to mark this dispatch as departed.";
+        setActionError(message);
+        toast.error("Dispatch not updated", { description: message });
         return;
       }
+      toast.success("Dispatch departed", { description: "The dispatch has been marked as departed." });
       await load();
     } catch {
       setActionError("Could not reach the server.");
+      toast.error("Dispatch not updated", { description: "Could not reach the server." });
     } finally {
       setActioningId(null);
     }
@@ -307,12 +316,16 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
       });
       const body = await readJson(response);
       if (!response.ok || !body.success) {
-        setActionError((body.message as string) ?? "Unable to cancel this dispatch.");
+        const message = (body.message as string) ?? "Unable to cancel this dispatch.";
+        setActionError(message);
+        toast.error("Dispatch not cancelled", { description: message });
         return;
       }
+      toast.success("Dispatch cancelled");
       await load();
     } catch {
       setActionError("Could not reach the server.");
+      toast.error("Dispatch not cancelled", { description: "Could not reach the server." });
     } finally {
       setActioningId(null);
     }
@@ -378,14 +391,18 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
       });
       const body = await readJson(response);
       if (!response.ok || !body.success) {
-        setDeliveryError((body.message as string) ?? "Unable to record this delivery outcome.");
+        const message = (body.message as string) ?? "Unable to record this delivery outcome.";
+        setDeliveryError(message);
+        toast.error("Delivery not recorded", { description: message });
         return;
       }
+      toast.success("Delivery recorded", { description: "The delivery outcome has been saved to the order's history." });
       setDeliveryFormFor(null);
       setDeliveryDetail(null);
       await load();
     } catch {
       setDeliveryError("Could not reach the server.");
+      toast.error("Delivery not recorded", { description: "Could not reach the server." });
     } finally {
       setSubmittingDelivery(false);
     }

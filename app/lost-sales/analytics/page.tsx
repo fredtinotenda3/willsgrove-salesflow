@@ -25,6 +25,7 @@ import {
   EstimatedLostValueTrendChart,
   TopUnavailableBarChart,
   RequestedFoundUnavailableChart,
+  RequestedFoundUnavailableValueChart,
   ShortageRateBarChart,
   CompositionStackedBar,
   UnavailableQuantityDistribution,
@@ -531,7 +532,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
             <RequestedVsUnavailableTrendChart data={analytics.trend} basePath={basePath} baseQuery={baseQuery} />
           </SectionCard>
 
-          <SectionCard title="Lost Value over time" description="A different scale (currency) from the quantity trend above -- its own chart, its own axis -- hover a point for the product-contribution table and the estimated-vs-confirmed split">
+          <SectionCard title="Requested vs. unavailable value (Total) over time" description="Order-line Total (Amount) for the same quantities as above -- a currency scale, so its own chart and axis -- hover a point for the product-contribution table and the estimated-vs-confirmed split">
             <EstimatedLostValueTrendChart data={analytics.trend} basePath={basePath} baseQuery={baseQuery} />
           </SectionCard>
 
@@ -546,6 +547,10 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
 
           <SectionCard title="Requested vs. found vs. unavailable, by product" description="Same top-10-by-unavailable product set as above, all three measures -- hover a bar for its full breakdown">
             <RequestedFoundUnavailableChart data={analytics.requestedFoundUnavailableByProduct} basePath={basePath} baseQuery={baseQuery} />
+          </SectionCard>
+
+          <SectionCard title="Requested vs. found vs. unavailable value (Total), by product" description="The same products as above measured in value (order-line Total) instead of quantity -- hover a bar for its full breakdown">
+            <RequestedFoundUnavailableValueChart data={analytics.requestedFoundUnavailableByProduct} basePath={basePath} baseQuery={baseQuery} />
           </SectionCard>
 
           <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">

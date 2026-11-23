@@ -51,3 +51,23 @@ New tests: `order-pricing`, `assignment-history` (+ schema), `return-quantity-an
 - Picking/dispatch history relies on existing records and audit events; dispatches created before this change have no recorded assignment event and show no assignment history (not reconstructed).
 - Lost Value breakdown/trend/filter features already existed in analytics; this round renamed and added columns rather than building new breakdowns.
 - Not visually checked in a browser.
+
+---
+
+## Round 2 — toasts, returned-products register, Lost Value (Total) everywhere
+
+### 1. Toasts on workflow actions (sonner, success + error)
+`<Toaster richColors closeButton />` was already mounted but most panels never called it. Added `toast.success` / `toast.error` (server message, or "Could not reach the server.") to: dispatch create / depart / cancel / record delivery (`fulfilment/[id]/dispatch-panel.tsx`), picking start / save line / complete / authorize (`picking-panel.tsx`), approvals approve/reject/withdraw/cancel, handover generate, SAP submit, PO-intake order creation (success, duplicate warning, error), quotation actions (add/edit/remove line, issue, respond, cancel, revise, convert, expire), claim actions (status, resolution, approve, reject, evidence upload) and returns/credit notes.
+Not covered: lower-traffic settings/communications/reconciliation forms (inline error text only, unchanged). `cancelDispatch` still uses `window.prompt` for the reason.
+
+### 2. Invoice Claims page
+The register is now **Returned products**: one row per delivery line with a rejected (returned) quantity — part or all — showing invoice (when generated), order, customer, product, delivered / accepted / rejected / returned quantities, the delivery-outcome reason (Price Claim, Poor Quality Product, Short Delivered, OverSupply, Expire, No Barcode, Barcode Scanning Problems, Duplicates), rejected value, and the claim (or "File a claim"). Filters: All / Claim filed / Awaiting claim. Rejected quantity and value are exposure, not confirmed loss. The previous all-invoices register (`lib/invoice-claims/invoice-register.ts`) was removed.
+Limitation: "returned" counts only physical returns recorded against a claim line.
+
+### 3. Lost Value = order-line Total for the lost quantity
+Stored `estimatedUnitPrice/estimatedValue` on a demand can be null (demand created before the line carried a price). `lib/lost-sales/effective-value.ts` now falls back at read time to `approvedUnitPrice ?? customerUnitPrice` × lost quantity (10 KG × USD 2 = USD 20.00). Applied to `/lost-sales` (list, detail, CSV export), `/lost-sales/analytics` rows/KPIs/charts, and the dashboard "current lost value" aggregate. Unpriced stays "--" (never 0). Tax is not added: the line carries no tax amount, so the value is the line's pre-tax Total (tax is "Not configured" in the example).
+### 4. Value on charts
+"Requested vs. unavailable value (Total) over time" (requested line + Lost Value area), new "Requested vs. found vs. unavailable value (Total), by product", dashboard "Requested vs. Unavailable value (trend)". Tooltips and KPI cards already carried value and now receive the fallback values.
+
+### Verification
+`npx tsc --noEmit`: 0 errors. `npm run lint`: 3 errors, all pre-existing. `npx vitest run`: 2 failures, both pre-existing (missing `test-data` file); new `tests/lost-value-and-returned-products.test.ts` passes. Not verified: no database or browser available — queries and toasts are type-checked, not exercised.

@@ -62,3 +62,24 @@ export function sumQuantities(values: Array<string | null | undefined>): string 
   }
   return formatScaledDecimal(total);
 }
+
+/**
+ * Display label for a delivery-outcome rejection reason. The value is
+ * stored as free text on DeliveryLine.rejectionReason: it may be a
+ * standardised identifier (e.g. "SHORT_DELIVERY"), the standardised label
+ * itself, or older free text -- so anything unrecognised is shown as
+ * recorded, and a missing reason is never invented.
+ */
+export function resolveRejectionReasonLabel(
+  raw: string | null | undefined,
+  labels: Record<string, string>
+): string | null {
+  const trimmed = raw?.trim();
+  if (!trimmed) return null;
+  return labels[trimmed] ?? trimmed;
+}
+
+/** Return progress of one rejected line: nothing / part / all of the rejected quantity physically returned. */
+export function deriveLineReturnFacet(returnedQuantity: string, rejectedQuantity: string): ReturnFacet {
+  return deriveReturnFacet(returnedQuantity, rejectedQuantity);
+}
