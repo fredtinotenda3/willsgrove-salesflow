@@ -116,8 +116,19 @@ function formatEstimateScaledDecimal(scaled: bigint): string {
  * price/quantity -- isPartial distinguishes "no estimate possible" from
  * "some but not all lines priced" so the UI can caveat correctly rather
  * than quietly understating the real total.
+ *
+ * Exported (not just used by listOrders above): "Order Total" on the
+ * order detail page (app/orders/[id]/page.tsx) and the dashboard's
+ * recent-orders widget (app/page.tsx) both still called plain
+ * formatOrderAmount(order.total, ...) directly -- the exact same
+ * "Pending pricing" staleness this function's own fallback was built to
+ * fix on the Orders list, just never wired to these other two callers.
+ * getOrderById below now computes and returns the same
+ * estimatedTotal/estimatedTotalIsPartial pair so every place that shows
+ * an order's total uses the one shared estimate, never a second
+ * reimplementation.
  */
-function estimateOrderTotal(
+export function estimateOrderTotal(
   lines: { requestedQuantity: { toString(): string }; customerUnitPrice: { toString(): string } | null }[]
 ): { estimatedTotal: string | null; estimatedTotalIsPartial: boolean } {
   if (lines.length === 0) return { estimatedTotal: null, estimatedTotalIsPartial: false };
@@ -379,7 +390,18 @@ export async function getOrderById(id: string) {
       },
       unfulfilledDemands: {
         orderBy: { createdAt: "desc" },
-        select: { id: true, status: true },
+        // Real-world fix ("ID pages... should carry also the amount of
+        // lost sales, not just quantity"): this card only ever showed
+        // the status badge. confirmedLostQuantity/estimatedValue are
+        // already resolved and stored directly on UnfulfilledDemand
+        // (see that model's own schema comment) -- added here, nothing
+        // new to compute.
+        select: {
+          id: true,
+          status: true,
+          confirmedLostQuantity: true,
+          estimatedValue: true,
+        },
       },
     },
   });
@@ -400,6 +422,7 @@ export async function getOrderById(id: string) {
     subtotal: order.subtotal?.toString() ?? null,
     taxTotal: order.taxTotal?.toString() ?? null,
     total: order.total?.toString() ?? null,
+    ...estimateOrderTotal(order.lines),
     originalSourceText: order.originalSourceText,
     internalNotes: order.internalNotes,
     isDemo: order.isDemo,
@@ -471,10 +494,19 @@ export async function getOrderById(id: string) {
       claimReference: claim.claimReference,
       status: claim.status,
     })),
-    unfulfilledDemands: order.unfulfilledDemands.map((demand: { id: string; status: string }) => ({
-      id: demand.id,
-      status: demand.status,
-    })),
+    unfulfilledDemands: order.unfulfilledDemands.map(
+      (demand: {
+        id: string;
+        status: string;
+        confirmedLostQuantity: { toString(): string };
+        estimatedValue: { toString(): string } | null;
+      }) => ({
+        id: demand.id,
+        status: demand.status,
+        confirmedLostQuantity: demand.confirmedLostQuantity.toString(),
+        estimatedValue: demand.estimatedValue?.toString() ?? null,
+      })
+    ),
   };
 }
 

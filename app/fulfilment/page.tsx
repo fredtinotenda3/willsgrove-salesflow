@@ -30,15 +30,36 @@ const PAGE_SIZE = 25;
 
 type RouteParams = { searchParams: Promise<{ page?: string }> };
 
-function pickingProgressLabel(status: string): { label: string; style: string } {
-  switch (status) {
-    case "PICKING":
-      return { label: "Picking in progress", style: "bg-cyan-50 text-cyan-700" };
-    case "READY_TO_INVOICE":
-      return { label: "Ready to invoice", style: "bg-emerald-50 text-emerald-700" };
-    default:
-      return { label: "Not started", style: "bg-gray-100 text-gray-500" };
+/**
+ * Real-world fix: this used to switch on the raw stored `status` alone,
+ * so once an order reached READY_TO_INVOICE it showed "Ready to invoice"
+ * forever -- even after the order was actually dispatched/delivered,
+ * because CustomerOrder.status is pinned at READY_TO_INVOICE by design
+ * (see lib/order-display.ts's getEffectiveOrderStatus module comment --
+ * it's the SAP-handover gate, not a tracked terminal state). The
+ * adjacent "Status" column in this same table already derives the real,
+ * dispatch-aware label via getEffectiveOrderStatus; this "Progress"
+ * column just never got the same fix, so the two columns visibly
+ * contradicted each other once a dispatch departed/delivered. Picking
+ * progress (Not started / Picking in progress) is a real, earlier-stage
+ * distinction getEffectiveOrderStatus doesn't make, so those two cases
+ * stay as-is; once the order reaches READY_TO_INVOICE or beyond, this
+ * now defers to the exact same derived label/style the Status column
+ * uses, so the two can never again show two different "current" states
+ * for the same order.
+ */
+function pickingProgressLabel(
+  status: string,
+  dispatchStatuses: string[]
+): { label: string; style: string } {
+  if (status === "PICKING") {
+    return { label: "Picking in progress", style: "bg-cyan-50 text-cyan-700" };
   }
+  if (status !== "READY_TO_INVOICE") {
+    return { label: "Not started", style: "bg-gray-100 text-gray-500" };
+  }
+  const effective = getEffectiveOrderStatus({ status, dispatchStatuses });
+  return { label: effective.label, style: effective.style };
 }
 
 export default async function FulfilmentQueuePage({ searchParams }: RouteParams) {
@@ -123,7 +144,7 @@ export default async function FulfilmentQueuePage({ searchParams }: RouteParams)
                         status: order.status,
                         dispatchStatuses: order.dispatchStatuses,
                       });
-                      const progress = pickingProgressLabel(order.status);
+                      const progress = pickingProgressLabel(order.status, order.dispatchStatuses);
 
                       return (
                         <tr key={order.id} className="border-b border-gray-50">

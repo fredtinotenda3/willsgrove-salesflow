@@ -1,0 +1,451 @@
+sapCustomerCode,customerName,priceListCode,matchReason
+HREC019,Athienities Spar,SPARUSD,name contains Spar
+HREC0D19,Athienities Spar,SPARUSD,name contains Spar
+BYOC010,Balmain Spar Masvingo,SPARUSD,name contains Spar
+BYOC0D014,Balmain Spar Masvingo,SPARUSD,name contains Spar
+BYOC008,Baobab Spar,SPARUSD,name contains Spar
+BYOC0D012,Baobab Spar,SPARUSD,name contains Spar
+BYOC093,Beitbridge Kwikspar,SPARUSD,name contains Spar
+BYOC0D116,Beitbridge Kwikspar,SPARUSD,name contains Spar
+HREC0D111,Bhola -Warren Park 1,BHOLA,name contains Bhola
+HREC0D102,Bhola Big B,BHOLA,name contains Bhola
+HREC0D120,Bhola Brooke,BHOLA,name contains Bhola
+HREC0D103,Bhola Longchen,BHOLA,name contains Bhola
+HREC0D106,Bhola Mabvuku,BHOLA,name contains Bhola
+HREC0D104,Bhola Msasa,BHOLA,name contains Bhola
+HREC0D108,Bhola Nelson Mandela,BHOLA,name contains Bhola
+HREC0D105,Bhola Robert Mugabe,BHOLA,name contains Bhola
+HREC0D110,Bhola Sunningdale,BHOLA,name contains Bhola
+HREC0D109,Bhola Whitecliff,BHOLA,name contains Bhola
+HREC0D719,Blkd Tm Supermarket - Westgate,TM-USD,name contains TM Supermarket
+BYOC020,Broadway Spar,SPARUSD,name contains Spar
+BYOC022,Broadway Spar,SPARUSD,name contains Spar
+BYOC0D030,Broadway Spar,SPARUSD,name contains Spar
+BYOC0D026,Broadway Spar Usd,SPARUSD,name contains Spar
+HREC069,Chadcombe Spar,SPARUSD,name contains Spar
+HREC0D69,Chadcombe Spar,SPARUSD,name contains Spar
+HREC116,Clyde Spar,SPARUSD,name contains Spar
+HREC0D960,Fresh Store (Pvt) Ltd t/a Avondale Spar,SPARUSD,name contains Spar
+HREC0D220,Hatfield Spar,SPARUSD,name contains Spar
+HREC220,Hatfield Spar,SPARUSD,name contains Spar
+HREC246,Joina City Spar,SPARUSD,name contains Spar
+HREC0D259,Kassack Enterprises T/A Spar Julius Nyer,SPARUSD,name contains Spar
+HREC259,Kassack Enterprises T/A Spar Julius Nyer,SPARUSD,name contains Spar
+HREC0D282,Mabelreign Spar,SPARUSD,name contains Spar
+HREC282,Mabelreign Spar,SPARUSD,name contains Spar
+HREC0D355,Morewax Trading T/A First Street Spar,SPARUSD,name contains Spar
+HREC355,Morewax Trading T/A First Street Spar,SPARUSD,name contains Spar
+HREC025,N & R Enterprises T/A Balmain Spar,SPARUSD,name contains Spar
+HREC0D25,N & R Enterprises T/A Balmain Spar,SPARUSD,name contains Spar
+HREC0D570,Rhodesville Spar,SPARUSD,name contains Spar
+HREC570,Rhodesville Spar,SPARUSD,name contains Spar
+HREC0D589,Sakubva Spar,SPARUSD,name contains Spar
+HREC589,Sakubva Spar,SPARUSD,name contains Spar
+HREC0D319,Skyclare Ent. T/A Spar Market Square,SPARUSD,name contains Spar
+HREC319,Skyclare Ent. T/A Spar Market Square,SPARUSD,name contains Spar
+HREC0D614,Spar Arcadia,SPARUSD,name contains Spar
+HREC614,Spar Arcadia,SPARUSD,name contains Spar
+HREC0D619,Spar Avondale,SPARUSD,name contains Spar
+HREC024,Spar Ballantyne,SPARUSD,name contains Spar
+HREC0D24,Spar Ballantyne,SPARUSD,name contains Spar
+HREC0D626,Spar Borrowdale Village,SPARUSD,name contains Spar
+HREC626,Spar Borrowdale Village,SPARUSD,name contains Spar
+HREC0D608,Spar Braeside,SPARUSD,name contains Spar
+HREC608,Spar Braeside,SPARUSD,name contains Spar
+HREC0D615,Spar Bridge,SPARUSD,name contains Spar
+HREC615,Spar Bridge,SPARUSD,name contains Spar
+HREC0D616,Spar Chivhu,SPARUSD,name contains Spar
+HREC616,Spar Chivhu,SPARUSD,name contains Spar
+HREC0D617,Spar Golden Stairs,SPARUSD,name contains Spar
+HREC617,Spar Golden Stairs,SPARUSD,name contains Spar
+HREC0D954,Spar Greencroft,SPARUSD,name contains Spar
+HREC953,Spar Greencroft,SPARUSD,name contains Spar
+HREC0D627,Spar Groombridge,SPARUSD,name contains Spar
+HREC627,Spar Groombridge,SPARUSD,name contains Spar
+HREC0D618,Spar Helensvale,SPARUSD,name contains Spar
+HREC618,Spar Helensvale,SPARUSD,name contains Spar
+BYOC178,Spar Joshua Nkomo Zig,SPARUSD,name contains Spar
+HREC619,Spar Junction,SPARUSD,name contains Spar
+HREC0D620,Spar Kadoma,SPARUSD,name contains Spar
+HREC620,Spar Kadoma,SPARUSD,name contains Spar
+HREC0D610,Spar Kamfinsa,SPARUSD,name contains Spar
+HREC610,Spar Kamfinsa,SPARUSD,name contains Spar
+HREC0D611,Spar Kwekwe,SPARUSD,name contains Spar
+HREC611,Spar Kwekwe,SPARUSD,name contains Spar
+HREC0D612,Spar Mabelreign,SPARUSD,name contains Spar
+HREC612,Spar Mabelreign,SPARUSD,name contains Spar
+HREC0D621,Spar Marondera,SPARUSD,name contains Spar
+HREC621,Spar Marondera,SPARUSD,name contains Spar
+HREC0D276,Spar Megasave Letombo,SPARUSD,name contains Spar
+HREC276,Spar Megasave Letombo,SPARUSD,name contains Spar
+HREC0D622,Spar Midlands Gweru,SPARUSD,name contains Spar
+HREC622,Spar Midlands Gweru,SPARUSD,name contains Spar
+HREC0D623,Spar Montague,SPARUSD,name contains Spar
+HREC623,Spar Montague,SPARUSD,name contains Spar
+HREC0D613,Spar Mufakose,SPARUSD,name contains Spar
+HREC613,Spar Mufakose,SPARUSD,name contains Spar
+HREC0D628,Spar Mutare,SPARUSD,name contains Spar
+HREC628,Spar Mutare,SPARUSD,name contains Spar
+HREC0D624,Spar Mvuma,SPARUSD,name contains Spar
+HREC624,Spar Mvuma,SPARUSD,name contains Spar
+HREC0D555,Spar Queensdale,SPARUSD,name contains Spar
+HREC0D625,Spar Queensdale,SPARUSD,name contains Spar
+HREC555,Spar Queensdale,SPARUSD,name contains Spar
+HREC625,Spar Queensdale,SPARUSD,name contains Spar
+BYOC0D024,Tallaville Marketing (Pvt) Ltd  T/A Bonsa Spar Usd,SPARUSD,name contains Spar
+BYOC018,Tallaville Marketing T/A Bonsa Spar,SPARUSD,name contains Spar
+HREC667,TM Supermarket - Ascot,TM-USD,name contains TM Supermarket
+HREC681,TM Supermarket - Fife Street,TM-USD,name contains TM Supermarket
+HREC684,TM Supermarket - Hwange,TM-USD,name contains TM Supermarket
+HREC685,TM Supermarket - Jason Moyo Street,TM-USD,name contains TM Supermarket
+HREC715,TM Supermarket - Southwold,TM-USD,name contains TM Supermarket
+HREC718,TM Supermarket - Victoria Falls,TM-USD,name contains TM Supermarket
+HREC705,TM Supermarket (Pvt) Ltd  - Orr Street,TM-USD,name contains TM Supermarket
+HREC819,TM Supermarket (Pvt) Ltd  - Orr Street,TM-USD,name contains TM Supermarket
+HREC0D686,TM Supermarket (Pvt) Ltd - Kadoma,TM-USD,name contains TM Supermarket
+HREC0D706,TM Supermarket (Pvt) Ltd - Orr St - Take-Away,TM-USD,name contains TM Supermarket
+HREC717,TM Supermarkets - Triangle,TM-USD,name contains TM Supermarket
+HREC0D690,TM Supermarkets (Pvt) Ltd   - Karoi,TM-USD,name contains TM Supermarket
+BYOC0D239,TM Supermarkets (Pvt) Ltd  -  Victoria Falls Us,TM-USD,name contains TM Supermarket
+HREC666,TM Supermarkets (Pvt) Ltd  - Arcadia,TM-USD,name contains TM Supermarket
+BYOC0D222,TM Supermarkets (Pvt) Ltd  - Ascot Us,TM-USD,name contains TM Supermarket
+HREC729,TM Supermarkets (Pvt) Ltd  - Aspindale,TM-USD,name contains TM Supermarket
+HREC830,TM Supermarkets (Pvt) Ltd  - Aspindale,TM-USD,name contains TM Supermarket
+BYOC0D224,TM Supermarkets (Pvt) Ltd  - Bradfield Us,TM-USD,name contains TM Supermarket
+BYOC193,TM Supermarkets (Pvt) Ltd  - Bradfield Zig,TM-USD,name contains TM Supermarket
+HREC669,TM Supermarkets (Pvt) Ltd  - Budiriro 1,TM-USD,name contains TM Supermarket
+BYOC0D235,TM Supermarkets (Pvt) Ltd  - Bulawayo Stores - Retail Section Us,TM-USD,name contains TM Supermarket
+BYOC205,TM Supermarkets (Pvt) Ltd  - Bulawayo Stores - Retail Section Zig,TM-USD,name contains TM Supermarket
+BYOC0D234,TM Supermarkets (Pvt) Ltd  - Bulawayo Stores - Shop Section Usd,TM-USD,name contains TM Supermarket
+BYOC204,TM Supermarkets (Pvt) Ltd  - Bulawayo Stores - Shop Section Zig,TM-USD,name contains TM Supermarket
+HREC0D673,TM Supermarkets (Pvt) Ltd  - Chegutu,TM-USD,name contains TM Supermarket
+HREC673,TM Supermarkets (Pvt) Ltd  - Chegutu,TM-USD,name contains TM Supermarket
+HREC803,TM Supermarkets (Pvt) Ltd  - Chegutu,TM-USD,name contains TM Supermarket
+HREC677,TM Supermarkets (Pvt) Ltd  - Chinhoyi North,TM-USD,name contains TM Supermarket
+HREC805,TM Supermarkets (Pvt) Ltd  - Chinhoyi North,TM-USD,name contains TM Supermarket
+HREC0D675,TM Supermarkets (Pvt) Ltd  - Chipinge,TM-USD,name contains TM Supermarket
+HREC0D676,TM Supermarkets (Pvt) Ltd  - Chiredzi,TM-USD,name contains TM Supermarket
+BYOC0D225,TM Supermarkets (Pvt) Ltd  - Chiredzi Us,TM-USD,name contains TM Supermarket
+BYOC194,TM Supermarkets (Pvt) Ltd  - Chiredzi Zig,TM-USD,name contains TM Supermarket
+BYOC0D226,TM Supermarkets (Pvt) Ltd  - Cowdry Park Us,TM-USD,name contains TM Supermarket
+HREC680,TM Supermarkets (Pvt) Ltd  - Dangamvura Mutare,TM-USD,name contains TM Supermarket
+BYOC0D227,TM Supermarkets (Pvt) Ltd  - Fife Street Us,TM-USD,name contains TM Supermarket
+BYOC0D166,TM Supermarkets (Pvt) Ltd  - Gwanda Usd,TM-USD,name contains TM Supermarket
+BYOC134,TM Supermarkets (Pvt) Ltd  - Gwanda Zig,TM-USD,name contains TM Supermarket
+BYOC135,TM Supermarkets (Pvt) Ltd  - Gwanda Zig,TM-USD,name contains TM Supermarket
+BYOC138,TM Supermarkets (Pvt) Ltd  - Gweru,TM-USD,name contains TM Supermarket
+BYOC0D168,TM Supermarkets (Pvt) Ltd  - Gweru Usd,TM-USD,name contains TM Supermarket
+HREC0D683,TM Supermarkets (Pvt) Ltd  - Harare Street,TM-USD,name contains TM Supermarket
+HREC683,TM Supermarkets (Pvt) Ltd  - Harare Street,TM-USD,name contains TM Supermarket
+HREC808,TM Supermarkets (Pvt) Ltd  - Harare Street,TM-USD,name contains TM Supermarket
+HREC727,TM Supermarkets (Pvt) Ltd  - Highlands Park,TM-USD,name contains TM Supermarket
+HREC828,TM Supermarkets (Pvt) Ltd  - Highlands Park,TM-USD,name contains TM Supermarket
+HREC0D841,TM Supermarkets (Pvt) Ltd  - Hogerty Hills,TM-USD,name contains TM Supermarket
+HREC841,TM Supermarkets (Pvt) Ltd  - Hogerty Hills,TM-USD,name contains TM Supermarket
+BYOC0D228,TM Supermarkets (Pvt) Ltd  - Hwange Us,TM-USD,name contains TM Supermarket
+BYOC197,TM Supermarkets (Pvt) Ltd  - Hwange Zig,TM-USD,name contains TM Supermarket
+BYOC0D229,TM Supermarkets (Pvt) Ltd  - Hyper Us,TM-USD,name contains TM Supermarket
+BYOC0D230,TM Supermarkets (Pvt) Ltd  - Jason Moyo Us,TM-USD,name contains TM Supermarket
+BYOC199,TM Supermarkets (Pvt) Ltd  - Jason Moyo Zig,TM-USD,name contains TM Supermarket
+HREC733,TM Supermarkets (Pvt) Ltd  - Kamfinsa,TM-USD,name contains TM Supermarket
+HREC832,TM Supermarkets (Pvt) Ltd  - Kamfinsa,TM-USD,name contains TM Supermarket
+HREC0D687,TM Supermarkets (Pvt) Ltd  - Kariba,TM-USD,name contains TM Supermarket
+HREC690,TM Supermarkets (Pvt) Ltd  - Karoi,TM-USD,name contains TM Supermarket
+HREC811,TM Supermarkets (Pvt) Ltd  - Karoi,TM-USD,name contains TM Supermarket
+HREC836,TM Supermarkets (Pvt) Ltd  - Karoi,TM-USD,name contains TM Supermarket
+BYOC0D237,TM Supermarkets (Pvt) Ltd  - Kwekwe Us,TM-USD,name contains TM Supermarket
+BYOC208,TM Supermarkets (Pvt) Ltd  - Kwekwe Zig,TM-USD,name contains TM Supermarket
+BYOC0D231,TM Supermarkets (Pvt) Ltd  - Lobengula Us,TM-USD,name contains TM Supermarket
+HREC0D726,TM Supermarkets (Pvt) Ltd  - Madokero,TM-USD,name contains TM Supermarket
+HREC726,TM Supermarkets (Pvt) Ltd  - Madokero,TM-USD,name contains TM Supermarket
+HREC827,TM Supermarkets (Pvt) Ltd  - Madokero,TM-USD,name contains TM Supermarket
+HREC0D693,TM Supermarkets (Pvt) Ltd  - Magaba,TM-USD,name contains TM Supermarket
+HREC0D699,TM Supermarkets (Pvt) Ltd  - Masasa,TM-USD,name contains TM Supermarket
+HREC709,TM Supermarkets (Pvt) Ltd  - Masvingo,TM-USD,name contains TM Supermarket
+BYOC0D167,TM Supermarkets (Pvt) Ltd  - Megawatt Usd,TM-USD,name contains TM Supermarket
+HREC699,TM Supermarkets (Pvt) Ltd  - Msasa,TM-USD,name contains TM Supermarket
+HREC814,TM Supermarkets (Pvt) Ltd  - Msasa,TM-USD,name contains TM Supermarket
+HREC0D701,TM Supermarkets (Pvt) Ltd  - Mutare,TM-USD,name contains TM Supermarket
+HREC701,TM Supermarkets (Pvt) Ltd  - Mutare,TM-USD,name contains TM Supermarket
+HREC816,TM Supermarkets (Pvt) Ltd  - Mutare,TM-USD,name contains TM Supermarket
+HREC700,TM Supermarkets (Pvt) Ltd  - Mutoko,TM-USD,name contains TM Supermarket
+HREC815,TM Supermarkets (Pvt) Ltd  - Mutoko,TM-USD,name contains TM Supermarket
+HREC0D702,TM Supermarkets (Pvt) Ltd  - Newlands,TM-USD,name contains TM Supermarket
+HREC702,TM Supermarkets (Pvt) Ltd  - Newlands,TM-USD,name contains TM Supermarket
+HREC817,TM Supermarkets (Pvt) Ltd  - Newlands,TM-USD,name contains TM Supermarket
+HREC0D704,TM Supermarkets (Pvt) Ltd  - Northend,TM-USD,name contains TM Supermarket
+HREC704,TM Supermarkets (Pvt) Ltd  - Northend,TM-USD,name contains TM Supermarket
+BYOC0D233,TM Supermarkets (Pvt) Ltd  - Northend Us,TM-USD,name contains TM Supermarket
+HREC0D703,TM Supermarkets (Pvt) Ltd  - Norton,TM-USD,name contains TM Supermarket
+HREC703,TM Supermarkets (Pvt) Ltd  - Norton,TM-USD,name contains TM Supermarket
+HREC818,TM Supermarkets (Pvt) Ltd  - Norton,TM-USD,name contains TM Supermarket
+HREC706,TM Supermarkets (Pvt) Ltd  - Orr St - Take-Away,TM-USD,name contains TM Supermarket
+HREC0D711,TM Supermarkets (Pvt) Ltd  - Rusape,TM-USD,name contains TM Supermarket
+HREC711,TM Supermarkets (Pvt) Ltd  - Rusape,TM-USD,name contains TM Supermarket
+HREC822,TM Supermarkets (Pvt) Ltd  - Rusape,TM-USD,name contains TM Supermarket
+HREC0D712,TM Supermarkets (Pvt) Ltd  - Ruwa,TM-USD,name contains TM Supermarket
+BYOC0D274,TM Supermarkets (Pvt) Ltd  - Shurugwi,TM-USD,name contains TM Supermarket
+BYOC274,TM Supermarkets (Pvt) Ltd  - Shurugwi,TM-USD,name contains TM Supermarket
+HREC0D958,TM Supermarkets (Pvt) Ltd  - Shurugwi,TM-USD,name contains TM Supermarket
+HREC958,TM Supermarkets (Pvt) Ltd  - Shurugwi,TM-USD,name contains TM Supermarket
+HREC0D736,TM Supermarkets (Pvt) Ltd  - Simon Mazorodze,TM-USD,name contains TM Supermarket
+HREC736,TM Supermarkets (Pvt) Ltd  - Simon Mazorodze,TM-USD,name contains TM Supermarket
+HREC835,TM Supermarkets (Pvt) Ltd  - Simon Mazorodze,TM-USD,name contains TM Supermarket
+BYOC0D236,TM Supermarkets (Pvt) Ltd  - Southworld Us,TM-USD,name contains TM Supermarket
+BYOC0D221,TM Supermarkets (Pvt) Ltd  - Swell_ Settlement Discounts Us,TM-USD,name contains TM Supermarket
+BYOC0D238,TM Supermarkets (Pvt) Ltd  - Triangle Us,TM-USD,name contains TM Supermarket
+HREC0D710,TM Supermarkets (Pvt) Ltd  - Zvishavane,TM-USD,name contains TM Supermarket
+BYOC0D240,TM Supermarkets (Pvt) Ltd  - Zvishavane Us,TM-USD,name contains TM Supermarket
+HREC0D728,TM Supermarkets (Pvt) Ltd  -Arundel,TM-USD,name contains TM Supermarket
+HREC728,TM Supermarkets (Pvt) Ltd  -Arundel,TM-USD,name contains TM Supermarket
+HREC829,TM Supermarkets (Pvt) Ltd  -Arundel,TM-USD,name contains TM Supermarket
+HREC674,TM Supermarkets (Pvt) Ltd  -Chikanga Mutare,TM-USD,name contains TM Supermarket
+HREC0D733,TM Supermarkets (Pvt) Ltd  -Kamfinsa,TM-USD,name contains TM Supermarket
+HREC0D688,TM Supermarkets (Pvt) Ltd  -Kenneth Kaunda,TM-USD,name contains TM Supermarket
+HREC0D689,TM Supermarkets (Pvt) Ltd  -Kenneth Kaunda Takeaway,TM-USD,name contains TM Supermarket
+HREC0D692,TM Supermarkets (Pvt) Ltd  -Machipisa,TM-USD,name contains TM Supermarket
+HREC0D695,TM Supermarkets (Pvt) Ltd  -Makoni,TM-USD,name contains TM Supermarket
+HREC0D698,TM Supermarkets (Pvt) Ltd  -Marondera Main,TM-USD,name contains TM Supermarket
+HREC698,TM Supermarkets (Pvt) Ltd  -Marondera Main,TM-USD,name contains TM Supermarket
+HREC813,TM Supermarkets (Pvt) Ltd  -Marondera Main,TM-USD,name contains TM Supermarket
+HREC697,TM Supermarkets (Pvt) Ltd  -Marondera Oak,TM-USD,name contains TM Supermarket
+HREC0D713,TM Supermarkets (Pvt) Ltd  -Sakubva Mutare,TM-USD,name contains TM Supermarket
+HREC713,TM Supermarkets (Pvt) Ltd  -Sakubva Mutare,TM-USD,name contains TM Supermarket
+HREC824,TM Supermarkets (Pvt) Ltd  -Sakubva Mutare,TM-USD,name contains TM Supermarket
+HREC0D735,TM Supermarkets (Pvt) Ltd  -Westgate,TM-USD,name contains TM Supermarket
+HREC735,TM Supermarkets (Pvt) Ltd  -Westgate,TM-USD,name contains TM Supermarket
+HREC834,TM Supermarkets (Pvt) Ltd  -Westgate,TM-USD,name contains TM Supermarket
+HREC0D714,TM Supermarkets (Pvt) Ltd  Karoi T/Away,TM-USD,name contains TM Supermarket
+HREC714,TM Supermarkets (Pvt) Ltd  Karoi T/Away,TM-USD,name contains TM Supermarket
+HREC0D731,TM Supermarkets (Pvt) Ltd -  Chivhu,TM-USD,name contains TM Supermarket
+HREC0D727,TM Supermarkets (Pvt) Ltd -  Highlands Park,TM-USD,name contains TM Supermarket
+HREC0D691,TM Supermarkets (Pvt) Ltd -  Kwekwe,TM-USD,name contains TM Supermarket
+HREC691,TM Supermarkets (Pvt) Ltd -  Kwekwe,TM-USD,name contains TM Supermarket
+HREC0D666,TM Supermarkets (Pvt) Ltd - Arcadia,TM-USD,name contains TM Supermarket
+BYOC190,TM Supermarkets (Pvt) Ltd - Ascot Zig,TM-USD,name contains TM Supermarket
+HREC0D729,TM Supermarkets (Pvt) Ltd - Aspindale,TM-USD,name contains TM Supermarket
+HREC0D668,TM Supermarkets (Pvt) Ltd - Avondale,TM-USD,name contains TM Supermarket
+HREC668,TM Supermarkets (Pvt) Ltd - Avondale,TM-USD,name contains TM Supermarket
+HREC801,TM Supermarkets (Pvt) Ltd - Avondale,TM-USD,name contains TM Supermarket
+HREC670,TM Supermarkets (Pvt) Ltd - Bindura,TM-USD,name contains TM Supermarket
+BYOC192,TM Supermarkets (Pvt) Ltd - Bradfield Zig,TM-USD,name contains TM Supermarket
+HREC0D672,TM Supermarkets (Pvt) Ltd - Chadcombe,TM-USD,name contains TM Supermarket
+HREC672,TM Supermarkets (Pvt) Ltd - Chadcombe,TM-USD,name contains TM Supermarket
+HREC0D677,TM Supermarkets (Pvt) Ltd - Chinhoyi North,TM-USD,name contains TM Supermarket
+HREC0D679,TM Supermarkets (Pvt) Ltd - Chinhoyi South,TM-USD,name contains TM Supermarket
+HREC679,TM Supermarkets (Pvt) Ltd - Chinhoyi South,TM-USD,name contains TM Supermarket
+HREC807,TM Supermarkets (Pvt) Ltd - Chinhoyi South,TM-USD,name contains TM Supermarket
+HREC675,TM Supermarkets (Pvt) Ltd - Chipinge,TM-USD,name contains TM Supermarket
+HREC804,TM Supermarkets (Pvt) Ltd - Chipinge,TM-USD,name contains TM Supermarket
+HREC676,TM Supermarkets (Pvt) Ltd - Chiredzi,TM-USD,name contains TM Supermarket
+HREC0D678,TM Supermarkets (Pvt) Ltd - Chiremba,TM-USD,name contains TM Supermarket
+HREC678,TM Supermarkets (Pvt) Ltd - Chiremba,TM-USD,name contains TM Supermarket
+HREC806,TM Supermarkets (Pvt) Ltd - Chiremba,TM-USD,name contains TM Supermarket
+HREC731,TM Supermarkets (Pvt) Ltd - Chivhu,TM-USD,name contains TM Supermarket
+HREC831,TM Supermarkets (Pvt) Ltd - Chivhu,TM-USD,name contains TM Supermarket
+BYOC195,TM Supermarkets (Pvt) Ltd - Cowdry Park Zig,TM-USD,name contains TM Supermarket
+HREC0D680,TM Supermarkets (Pvt) Ltd - Dangamvura Mutare,TM-USD,name contains TM Supermarket
+BYOC196,TM Supermarkets (Pvt) Ltd - Fife Street Zig,TM-USD,name contains TM Supermarket
+HREC0D682,TM Supermarkets (Pvt) Ltd - Gweru,TM-USD,name contains TM Supermarket
+HREC682,TM Supermarkets (Pvt) Ltd - Gweru,TM-USD,name contains TM Supermarket
+BYOC137,TM Supermarkets (Pvt) Ltd - Gweru Zig,TM-USD,name contains TM Supermarket
+BYOC0D002,TM Supermarkets (Pvt) Ltd - Head Office US,TM-USD,name contains TM Supermarket
+BYOC002,TM Supermarkets (Pvt) Ltd - Head Office ZIG,TM-USD,name contains TM Supermarket
+BYOC198,TM Supermarkets (Pvt) Ltd - Hyper Zig,TM-USD,name contains TM Supermarket
+HREC686,TM Supermarkets (Pvt) Ltd - Kadoma,TM-USD,name contains TM Supermarket
+HREC809,TM Supermarkets (Pvt) Ltd - Kadoma,TM-USD,name contains TM Supermarket
+HREC687,TM Supermarkets (Pvt) Ltd - Kariba,TM-USD,name contains TM Supermarket
+HREC810,TM Supermarkets (Pvt) Ltd - Kariba,TM-USD,name contains TM Supermarket
+HREC688,TM Supermarkets (Pvt) Ltd - Kenneth Kaunda,TM-USD,name contains TM Supermarket
+HREC689,TM Supermarkets (Pvt) Ltd - Kenneth Kaunda Takeaway,TM-USD,name contains TM Supermarket
+BYOC207,TM Supermarkets (Pvt) Ltd - Kwekwe Zig,TM-USD,name contains TM Supermarket
+BYOC200,TM Supermarkets (Pvt) Ltd - Lobengula Zig,TM-USD,name contains TM Supermarket
+HREC692,TM Supermarkets (Pvt) Ltd - Machipisa,TM-USD,name contains TM Supermarket
+HREC693,TM Supermarkets (Pvt) Ltd - Magaba,TM-USD,name contains TM Supermarket
+HREC694,TM Supermarkets (Pvt) Ltd - Magaba Takeaway,TM-USD,name contains TM Supermarket
+HREC695,TM Supermarkets (Pvt) Ltd - Makoni,TM-USD,name contains TM Supermarket
+BYOC201,TM Supermarkets (Pvt) Ltd - Masvingo Zig,TM-USD,name contains TM Supermarket
+HREC708,TM Supermarkets (Pvt) Ltd - Megawatt Gweru,TM-USD,name contains TM Supermarket
+HREC821,TM Supermarkets (Pvt) Ltd - Megawatt Gweru,TM-USD,name contains TM Supermarket
+BYOC136,TM Supermarkets (Pvt) Ltd - Megawatt Zig,TM-USD,name contains TM Supermarket
+HREC0D700,TM Supermarkets (Pvt) Ltd - Mutoko,TM-USD,name contains TM Supermarket
+BYOC203,TM Supermarkets (Pvt) Ltd - Northend Zig,TM-USD,name contains TM Supermarket
+HREC0D705,TM Supermarkets (Pvt) Ltd - Orr Street,TM-USD,name contains TM Supermarket
+HREC712,TM Supermarkets (Pvt) Ltd - Ruwa,TM-USD,name contains TM Supermarket
+HREC823,TM Supermarkets (Pvt) Ltd - Ruwa,TM-USD,name contains TM Supermarket
+HREC734,TM Supermarkets (Pvt) Ltd - Sam Nujoma,TM-USD,name contains TM Supermarket
+HREC833,TM Supermarkets (Pvt) Ltd - Sam Nujoma,TM-USD,name contains TM Supermarket
+BYOC206,TM Supermarkets (Pvt) Ltd - Southworld Zig,TM-USD,name contains TM Supermarket
+HREC0D716,TM Supermarkets (Pvt) Ltd - Strathaven,TM-USD,name contains TM Supermarket
+HREC716,TM Supermarkets (Pvt) Ltd - Strathaven,TM-USD,name contains TM Supermarket
+HREC825,TM Supermarkets (Pvt) Ltd - Strathaven,TM-USD,name contains TM Supermarket
+BYOC189,TM Supermarkets (Pvt) Ltd - Swell_Settlement Discounts Zig,TM-USD,name contains TM Supermarket
+BYOC209,TM Supermarkets (Pvt) Ltd - Triangle  Zig,TM-USD,name contains TM Supermarket
+BYOC211,TM Supermarkets (Pvt) Ltd - Victoria Falls Zig,TM-USD,name contains TM Supermarket
+HREC0D720,TM Supermarkets (Pvt) Ltd - Zengeza,TM-USD,name contains TM Supermarket
+HREC720,TM Supermarkets (Pvt) Ltd - Zengeza,TM-USD,name contains TM Supermarket
+HREC826,TM Supermarkets (Pvt) Ltd - Zengeza,TM-USD,name contains TM Supermarket
+HREC0D721,TM Supermarkets (Pvt) Ltd - Zengeza Takeaway,TM-USD,name contains TM Supermarket
+HREC710,TM Supermarkets (Pvt) Ltd - Zvishavane,TM-USD,name contains TM Supermarket
+BYOC212,TM Supermarkets (Pvt) Ltd - Zvishavane Zig,TM-USD,name contains TM Supermarket
+HREC0D674,TM Supermarkets (Pvt) Ltd -Chikanga Mutare,TM-USD,name contains TM Supermarket
+HREC0D707,TM Supermarkets (Pvt) Ltd -Joina City,TM-USD,name contains TM Supermarket
+HREC707,TM Supermarkets (Pvt) Ltd -Joina City,TM-USD,name contains TM Supermarket
+HREC820,TM Supermarkets (Pvt) Ltd -Joina City,TM-USD,name contains TM Supermarket
+HREC0D694,TM Supermarkets (Pvt) Ltd -Magaba Takeaway,TM-USD,name contains TM Supermarket
+HREC0D696,TM Supermarkets (Pvt) Ltd -Makoni Takeaway,TM-USD,name contains TM Supermarket
+HREC696,TM Supermarkets (Pvt) Ltd -Makoni Takeaway,TM-USD,name contains TM Supermarket
+HREC812,TM Supermarkets (Pvt) Ltd -Makoni Takeaway,TM-USD,name contains TM Supermarket
+HREC0D697,TM Supermarkets (Pvt) Ltd -Marondera Oak,TM-USD,name contains TM Supermarket
+BYOC0D409,TM Supermarkets (Pvt) Ltd -Masvingo (Usd),TM-USD,name contains TM Supermarket
+HREC721,TM Supermarkets (Pvt) Ltd -Zengeza Takeaway,TM-USD,name contains TM Supermarket
+HREC0D734,TM Supermarkets (Pvt) Ltd (Sam Nujoma),TM-USD,name contains TM Supermarket
+HREC0D670,TM Supermarkets (Pvt) Ltd-  Bindura,TM-USD,name contains TM Supermarket
+HREC0D708,TM Supermarkets (Pvt) Ltd-  Megawatt Gweru,TM-USD,name contains TM Supermarket
+HREC0D671,TM Supermarkets (Pvt) Ltd- Borrowdale,TM-USD,name contains TM Supermarket
+HREC671,TM Supermarkets (Pvt) Ltd- Borrowdale,TM-USD,name contains TM Supermarket
+HREC802,TM Supermarkets (Pvt) Ltd- Borrowdale,TM-USD,name contains TM Supermarket
+HREC0D669,TM Supermarkets (Pvt) Ltd- Budiriro 1,TM-USD,name contains TM Supermarket
+HREC0D709,TM Supermarkets (Pvt) Ltd- Masvingo,TM-USD,name contains TM Supermarket
+BYOC226,Yellowcob Spar Shops Zig,SPARUSD,name contains Spar
+BYOC240,OK Supermarkets -  Chiredzi Byo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC241,OK Supermarkets -  Entumbane Bulawayo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC242,OK Supermarkets -  Gwanda Bulawayo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC243,OK Supermarkets -  Gweru Byo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC244,OK Supermarkets -  Hwange Byo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC245,OK Supermarkets -  Hwange Byo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC246,OK Supermarkets -  Jason Moyo Byo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC247,OK Supermarkets -  Lobengula Byo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC248,OK Supermarkets -  Mart Bulawayo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC249,OK Supermarkets -  Mart Gweru Byo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC250,OK Supermarkets -  Mart Kwekwe Byo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC251,OK Supermarkets -  Mart Masvingo Byo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC252,OK Supermarkets -  Mart Victoria Falls  Byo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC253,OK Supermarkets -  Masvingo Byo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC254,OK Supermarkets -  Triangle Byo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC255,OK Supermarkets -  Victoria Falls Byo,OKUSDBYO,Bulawayo-coded OK branch
+BYOC256,OK Supermarkets -  Zvishavane Byo,OKUSDBYO,Bulawayo-coded OK branch
+HREC730,Pick N Pay Bradifield,PNPUSD,name contains Pick N Pay
+HREC732,Pick N Pay Hyper,PNPUSD,name contains Pick N Pay
+WFMC0D012,Affinity Investments (Pvt) Ltd t/a Derby Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D102,African Sun Zimbabwe t/a Hwange Safari Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+HREC004,African Village Restaurant - Cod Account,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D04,African Village Restaurant - Cod Account,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D4,African Village Restaurant - Cod Account,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D020,ALSTRAN INVESTMENTS T/A BAOBAB HOTEL,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D578,Ambassador Hotel Harare-Rtgs,HOSPI-USD,hospitality keyword match -- review for fit
+HREC578,Ambassador Hotel Harare-Rtgs,HOSPI-USD,hospitality keyword match -- review for fit
+WFMC0D029,Apex Luxury Lodges PBC,HOSPI-USD,hospitality keyword match -- review for fit
+HREC015,Arti'S Restaurant,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D15,Arti'S Restaurant,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD33,Banff Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D317,Baobab Duty Free Private Limited t/a Baobab Restaurant,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC015,Baobab Hotel Hwange,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC013,Batonka Guest Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D018,Batonka Guest Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC011,Bayethe Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D016,Bayethe Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+HREC046,Beverlino Restaurant,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D46,Beverlino Restaurant,HOSPI-USD,hospitality keyword match -- review for fit
+WFNC0D009,Big Cave Safaris,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC016,Bishopstone Safaris,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D022,Bishopstone Safaris,HOSPI-USD,hospitality keyword match -- review for fit
+WFMC0D250,BLUEAXIS PVT LTD T/A ZAMBEZI SAFARIS,HOSPI-USD,hospitality keyword match -- review for fit
+WFMC0D011,Brewlands Investments t/a Matobo Hills Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+HREC054,Bronte Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D54,Bronte Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D175,Camp Hwange Vic Falls - Relaxnetsafaris,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC144,Camp Hwange Vic Falls - Relaxnetsafaris Zig,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D188,Chilo Gorge Safari Lodge- RTGS CUSTOMER,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D181,Cresta Hotels Pvt Ltd - Cresta Churchill Usd,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D181 B,Cresta Hotels Pvt Ltd - Cresta Victoria Falls,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D128,Cutty Sark Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D129,Cutty Sark Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+HREC128,Cutty Sark Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+HREC129,Cutty Sark Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D054,Dabula Safaris T/A Pure Africa,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D064,Elephant Hills Resort,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC055,Elephant Hills Resort Zig,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D319,Elgiboh Guest Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D196,Gava Restaurant,HOSPI-USD,hospitality keyword match -- review for fit
+HREC196,Gava Restaurant,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD49,Gerant Enterprises T/A Glen Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+HREC207,Great Zimbabwe Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D792,Hala House Restaurant,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D006,Hippo Houseboats & Safaris T/A Lodge At The Ancient City  Usd,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D231,Hunyani Hills Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+HREC231,Hunyani Hills Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC080,Hwange Colliery Lodge USD,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC083,Hwange Safari Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD026,Imvelo Safari Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+FVSC0D001,Imvelo Safari Lodge Usd,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D272,Kefmeg Investments  T/A Great Zimbabwe Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D944,Kefmeg Investments  t/a Great Zimbabwe Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC092,Kingdom Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D114,Kingdom Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D117,Ledge Back Safaris,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC257,Ledge Back Safaris T/A Siavonga Usd,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D132,Masuwe Landela Safaris,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC104,Masuwe Landela Safaris,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD011,MATOBO HILLS LODGE BREWLANDS INVESTIMENTS,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD38,Mavuna Guest Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+FVSC0D103,MAZUNGA SAFARIS,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD004,MAZUNGA SAFARIS,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD64,Mbalabala Safaris,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D348,Meikles Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+HREC348,Meikles Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D353,Monomutapa Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+HREC353,Monomutapa Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D869,Montclair Resort and Conference,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD74,Motsamai Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+WFMC0D010,Nyamazana Safari Pvt Ltd,HOSPI-USD,hospitality keyword match -- review for fit
+WFMC0D008,Overwhelming Tours & Travel T/A Sethule Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D162,Phezulu Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC131,Phezulu Lodge Zig,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D174,Rainbow Hotel Bulawayo Usd,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC143,Rainbow Hotel Bulawayo Zig,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC007,Rainbow Tourism Group t/a Azambezi River Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D011,Rainbow Tourism Group t/a Azambezi River Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D247,Rainbow Tourism Group t/a Victoria Falls Rainbow Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD62,Relaxnet Safaris,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD024,Retreat Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC157,Rtgs Customer - Chilo Gorge Safari Lodge Zig,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D187,Rtgs Customer - Regency Hotels,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC156,Rtgs Customer - Regency Hotels Zig,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC147,Rtgs-Bulawayo Rainbow Hotel Zig,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D871,Rupurara Valley Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D202,Safaris - Drummonds,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC169,Safaris - Drummonds Zig,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD35,Sethule Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D205,Shearwater Safaris Vic Falls,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC172,Shearwater Safaris Vic Falls Zig,HOSPI-USD,hospitality keyword match -- review for fit
+WFMC0D002,Spurs Technology T/A Mpala Boutique Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D208,Stanley And Livingstone Hotel Us,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD03,Stay Afrique Hotels,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD43,Tammy Lodge T/A Black Rhino Safaris,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD77,Tammy Lodge T/a Black Rhino Safaris,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D185,Tanganda Road Motel Lodge T/A Palm Tree Usd,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC154,Tanganda Road Motel Lodge T/A Palm Tree Zig,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D990,The Fog Restaurant Kadoma,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D220,The Hide Safaries,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC188,The Hide Safaries Zig,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D191,THE TRIBE RESORTS,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D606,The Village Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+HREC606,The Village Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D251,Toxo Investments T/A Wakefield Lodges Zvishavane Us,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D107,Troutbreck Resort,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC216,Victoria Falls Hotel,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D245,Victoria Falls Hotel Usd,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC218,Victoria Falls Rainbow Hotel Zig,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D248,Victoria Falls Safari Lodge Pvt Ltd Usd,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC219,Victoria Falls Safari Lodge Zig,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D751,Village Greek Restaurant,HOSPI-USD,hospitality keyword match -- review for fit
+HREC751,Village Greek Restaurant,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC220,Wakefield Lodges Zvishavane Zig,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D793,Wilderness  Safari Camps,HOSPI-USD,hospitality keyword match -- review for fit
+HREC793,Wilderness  Safari Camps,HOSPI-USD,hospitality keyword match -- review for fit
+WFMCOD60,Wozani Lodge,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC0D259,Zambezi Cruise Safaris,HOSPI-USD,hospitality keyword match -- review for fit
+BYOC229,Zambezi Cruise Safaris Zig,HOSPI-USD,hospitality keyword match -- review for fit
+HREC0D788,Zvinonaka Restaurant,HOSPI-USD,hospitality keyword match -- review for fit
+HREC788,Zvinonaka Restaurant,HOSPI-USD,hospitality keyword match -- review for fit

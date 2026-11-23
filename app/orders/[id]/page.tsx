@@ -16,6 +16,7 @@ import {
   formatOrderDate,
   formatOrderDateTime,
   formatOrderAmount,
+  formatOrderAmountWithEstimate,
   formatFileSize,
   initialsFor,
   avatarColorFor,
@@ -203,12 +204,42 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                 Repeat this order
               </a>
 
-              <div className="rounded-xl border border-[#E8EBE6] bg-white px-5 py-4 text-right">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Order Total</p>
-                <p className="mt-1 text-xl font-bold text-[#17251E]">
-                  {formatOrderAmount(order.total, order.currency)}
-                </p>
-              </div>
+              {(() => {
+                // Real-world fix: this card still showed a bare "Pending
+                // pricing" even once every line had a price, because it
+                // called formatOrderAmount(order.total, ...) directly --
+                // order.total only ever holds the APPROVED total, which
+                // this business's (not-yet-built) approval workflow has
+                // never set. The Orders list column already solved this
+                // with an estimated-from-lines fallback
+                // (formatOrderAmountWithEstimate); this card just never
+                // got the same fix. Same convention: amber + a title
+                // explaining it's an estimate, never silently presented
+                // as the approved total.
+                const amount = formatOrderAmountWithEstimate(
+                  order.total,
+                  order.estimatedTotal,
+                  order.estimatedTotalIsPartial,
+                  order.currency
+                );
+                return (
+                  <div className="rounded-xl border border-[#E8EBE6] bg-white px-5 py-4 text-right">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Order Total</p>
+                    <p
+                      className={`mt-1 text-xl font-bold ${amount.isEstimate ? "text-amber-700" : "text-[#17251E]"}`}
+                      title={
+                        amount.isEstimate
+                          ? amount.isPartialEstimate
+                            ? "Estimated from the lines that have a price so far -- not every line is priced yet, and not the approved total."
+                            : "Estimated from each line's price at order entry -- not yet the approved total."
+                          : undefined
+                      }
+                    >
+                      {amount.text}
+                    </p>
+                  </div>
+                );
+              })()}
             </div>
           </section>
 
@@ -632,22 +663,43 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                       </Link>
                     ))}
 
-                    {order.unfulfilledDemands.map((demand: { id: string; status: string }) => (
-                      <Link
-                        key={demand.id}
-                        href={`/lost-sales/${demand.id}`}
-                        className="flex items-center justify-between rounded-lg border border-gray-100 px-3 py-2.5 text-xs font-medium text-gray-700 transition hover:border-gray-200 hover:bg-gray-50"
-                      >
-                        <span className="flex items-center gap-2">
-                          <TrendingDown size={14} className="text-gray-400" />
-                          Lost Sale record
-                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${UNFULFILLED_DEMAND_STATUS_STYLES[demand.status] ?? "bg-gray-100 text-gray-500"}`}>
-                            {UNFULFILLED_DEMAND_STATUS_LABELS[demand.status] ?? demand.status}
+                    {/* Real-world fix ("ID pages... should carry also the amount
+                        of lost sales, not just quantity"): estimatedValue is
+                        null, never 0, when no historically valid price could be
+                        resolved at the time (lib/lost-sales/estimate-value.ts's
+                        "never invent a price" rule) -- shown as "No price
+                        available" rather than silently omitted or defaulted to
+                        zero. */}
+                    {order.unfulfilledDemands.map(
+                      (demand: {
+                        id: string;
+                        status: string;
+                        confirmedLostQuantity: string;
+                        estimatedValue: string | null;
+                      }) => (
+                        <Link
+                          key={demand.id}
+                          href={`/lost-sales/${demand.id}`}
+                          className="flex items-center justify-between rounded-lg border border-gray-100 px-3 py-2.5 text-xs font-medium text-gray-700 transition hover:border-gray-200 hover:bg-gray-50"
+                        >
+                          <span className="flex items-center gap-2">
+                            <TrendingDown size={14} className="text-gray-400" />
+                            Lost Sale record
+                            <span className="text-gray-400">
+                              ({demand.confirmedLostQuantity}
+                              {demand.estimatedValue !== null
+                                ? ` · ${formatOrderAmount(demand.estimatedValue, order.currency)}`
+                                : " · no price available"}
+                              )
+                            </span>
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${UNFULFILLED_DEMAND_STATUS_STYLES[demand.status] ?? "bg-gray-100 text-gray-500"}`}>
+                              {UNFULFILLED_DEMAND_STATUS_LABELS[demand.status] ?? demand.status}
+                            </span>
                           </span>
-                        </span>
-                        <ArrowUpRight size={13} className="text-gray-400" />
-                      </Link>
-                    ))}
+                          <ArrowUpRight size={13} className="text-gray-400" />
+                        </Link>
+                      )
+                    )}
                   </div>
                 </section>
               )}

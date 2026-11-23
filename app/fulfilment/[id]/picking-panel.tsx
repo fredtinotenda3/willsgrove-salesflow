@@ -167,6 +167,19 @@ export default function PickingPanel({
 
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  // Real-world fix ("Start a new picking session BUTTON SHOULD BE
+  // DISABLED AFTER AUTHORIZE, IT SHOULD NOT KEEP SAYING Start a new
+  // picking session ON A PHASE THAT IS PASSED"): the re-pick/correction
+  // capability itself stays -- it's how staff fix a bad pick after the
+  // fact, and removing it outright would remove the only way to correct
+  // a mistaken authorization (see dispatchHasDepartedOrDelivered's own
+  // comment: the server-side guard is the real enforcement either way).
+  // What was wrong is that it read as the obvious next step on a phase
+  // that had already passed: the same big, dark, primary CTA as "Start
+  // picking" on a brand-new order. Collapsed behind this toggle, off by
+  // default, so the authorized/done state reads as done, and correcting
+  // it reads as the deliberate exception it is.
+  const [showCorrectionPanel, setShowCorrectionPanel] = useState(false);
 
   const [inputs, setInputs] = useState<Record<string, LineInput>>({});
   const [savingLineId, setSavingLineId] = useState<string | null>(null);
@@ -378,31 +391,16 @@ export default function PickingPanel({
     );
   }
 
-  // No session yet, or the latest one was authorized -- either way, the
-  // next action is to start a (possibly brand-new) session.
-  if (!session || session.status === "AUTHORIZED") {
+  // No session yet: the next action really is to start picking -- full,
+  // primary-CTA treatment, unchanged.
+  if (!session) {
     return (
       <section className="space-y-4">
-        {session && (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-            <p className="text-xs font-semibold text-emerald-800">
-              Picking authorized on {formatDateTime(session.authorizedAt)}.
-            </p>
-            <p className="mt-1 text-[11px] text-emerald-700">
-              {session.lines.length} line{session.lines.length === 1 ? "" : "s"} picked. This order is ready for
-              invoice handover.
-            </p>
-          </div>
-        )}
-
         <div className="rounded-xl border border-[#E8EBE6] bg-white p-6">
-          <h2 className="text-[15px] font-bold text-[#17251E]">{session ? "Start a new picking session" : "Start picking"}</h2>
+          <h2 className="text-[15px] font-bold text-[#17251E]">Start picking</h2>
           <p className="mt-1 text-xs text-gray-400">
-            {dispatchHasDepartedOrDelivered
-              ? "This order already has a dispatch that has departed or been delivered, so picking can no longer be restarted -- the earlier, authorized session's history is kept exactly as recorded."
-              : session
-                ? "A new session is a correction/re-pick -- the earlier, authorized session's history is kept, not overwritten."
-                : `${lines.length} line${lines.length === 1 ? "" : "s"} will be set up for picking, with the requested quantity snapshotted for each.`}
+            {lines.length} line{lines.length === 1 ? "" : "s"} will be set up for picking, with the requested quantity
+            snapshotted for each.
           </p>
 
           <ul className="mt-4 space-y-1.5">
@@ -423,20 +421,93 @@ export default function PickingPanel({
           <button
             type="button"
             onClick={() => void startPicking()}
-            disabled={starting || dispatchHasDepartedOrDelivered}
-            title={dispatchHasDepartedOrDelivered ? "Locked -- this order has already been dispatched." : undefined}
+            disabled={starting}
             className="mt-4 flex items-center gap-2 rounded-lg bg-[#173D2E] px-4 py-2.5 text-xs font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {starting ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : dispatchHasDepartedOrDelivered ? (
-              <Lock size={14} />
-            ) : (
-              <PlayCircle size={14} />
-            )}
-            {dispatchHasDepartedOrDelivered ? "Picking locked -- already dispatched" : session ? "Start a new picking session" : "Start picking"}
+            {starting ? <Loader2 size={14} className="animate-spin" /> : <PlayCircle size={14} />}
+            Start picking
           </button>
         </div>
+      </section>
+    );
+  }
+
+  // The latest session was authorized: this phase is DONE. The
+  // correction/re-pick capability stays available (see
+  // showCorrectionPanel's own comment above) but demoted behind an
+  // explicit toggle, not shown as the obvious next step.
+  if (session.status === "AUTHORIZED") {
+    return (
+      <section className="space-y-4">
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+          <p className="text-xs font-semibold text-emerald-800">
+            Picking authorized on {formatDateTime(session.authorizedAt)}.
+          </p>
+          <p className="mt-1 text-[11px] text-emerald-700">
+            {session.lines.length} line{session.lines.length === 1 ? "" : "s"} picked. This order is ready for
+            invoice handover.
+          </p>
+        </div>
+
+        {!showCorrectionPanel ? (
+          <button
+            type="button"
+            onClick={() => setShowCorrectionPanel(true)}
+            className="text-[11px] font-medium text-gray-400 underline-offset-2 transition hover:text-gray-600 hover:underline"
+          >
+            Picking needs a correction?
+          </button>
+        ) : (
+          <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-5">
+            <h2 className="text-[13px] font-semibold text-gray-700">Start a new picking session</h2>
+            <p className="mt-1 text-xs text-gray-400">
+              {dispatchHasDepartedOrDelivered
+                ? "This order already has a dispatch that has departed or been delivered, so picking can no longer be restarted -- the earlier, authorized session's history is kept exactly as recorded."
+                : "A new session is a correction/re-pick -- the earlier, authorized session's history is kept, not overwritten."}
+            </p>
+
+            <ul className="mt-4 space-y-1.5">
+              {lines.map((line) => (
+                <li key={line.id} className="flex items-center justify-between text-xs text-gray-600">
+                  <span>
+                    #{line.lineNumber} {line.originalProductDescription}
+                  </span>
+                  <span className="font-medium text-gray-700">
+                    {line.requestedQuantity} {line.requestedUnitCode}
+                  </span>
+                </li>
+              ))}
+            </ul>
+
+            {startError && <p className="mt-3 text-[11px] text-[#9B3B3B]">{startError}</p>}
+
+            <div className="mt-4 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => void startPicking()}
+                disabled={starting || dispatchHasDepartedOrDelivered}
+                title={dispatchHasDepartedOrDelivered ? "Locked -- this order has already been dispatched." : undefined}
+                className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-xs font-semibold text-gray-700 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {starting ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : dispatchHasDepartedOrDelivered ? (
+                  <Lock size={14} />
+                ) : (
+                  <PlayCircle size={14} />
+                )}
+                {dispatchHasDepartedOrDelivered ? "Picking locked -- already dispatched" : "Start a new picking session"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowCorrectionPanel(false)}
+                className="text-[11px] font-medium text-gray-400 transition hover:text-gray-600"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </section>
     );
   }

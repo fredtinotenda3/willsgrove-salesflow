@@ -5,7 +5,7 @@ import { type ActionQueueItem, type ActionQueueSeverity, type OperationalDashboa
 import { getDecisionDashboard, type DashboardKpi } from "@/lib/reporting/decision-dashboard";
 import { RequestedVsUnavailableTrendChart, EstimatedLostValueTrendChart } from "@/components/charts/lost-sales-trend";
 import { listOrders } from "@/lib/order-queries";
-import { getEffectiveOrderStatus, formatOrderDate, formatOrderAmount, initialsFor, avatarColorFor } from "@/lib/order-display";
+import { getEffectiveOrderStatus, formatOrderDate, formatOrderAmountWithEstimate, initialsFor, avatarColorFor } from "@/lib/order-display";
 import type { ReportFilters } from "@/lib/reporting/types";
 import Sidebar from "./components/sidebar";
 
@@ -607,7 +607,35 @@ export default async function Home() {
                         </td>
 
                         <td className="whitespace-nowrap px-6 py-4 text-xs font-semibold text-gray-700">
-                          {formatOrderAmount(order.total, order.currency)}
+                          {/* Real-world fix: this already receives estimatedTotal/
+                              estimatedTotalIsPartial from listOrders (same query the
+                              Orders list page uses) but was still calling plain
+                              formatOrderAmount, so it showed "Pending pricing" even
+                              when every line had a price -- same bug, same fix, as
+                              the Orders list column and the order detail page's
+                              Order Total card. */}
+                          {(() => {
+                            const amount = formatOrderAmountWithEstimate(
+                              order.total,
+                              order.estimatedTotal,
+                              order.estimatedTotalIsPartial,
+                              order.currency
+                            );
+                            return (
+                              <span
+                                className={amount.isEstimate ? "font-medium text-amber-700" : undefined}
+                                title={
+                                  amount.isEstimate
+                                    ? amount.isPartialEstimate
+                                      ? "Estimated from the lines that have a price so far -- not every line is priced yet, and not the approved total."
+                                      : "Estimated from each line's price at order entry -- not yet the approved total."
+                                    : undefined
+                                }
+                              >
+                                {amount.text}
+                              </span>
+                            );
+                          })()}
                         </td>
 
                         <td className="px-6 py-4">
