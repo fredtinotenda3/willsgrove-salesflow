@@ -92,8 +92,8 @@ export async function GET(request: NextRequest) {
       // ones).
       { key: "estimatedUnitPrice", header: "Unit price used" },
       { key: "currencyCode", header: "Currency" },
-      { key: "estimatedValue", header: "Estimated lost value" },
-      { key: "estimatedValueSource", header: "Estimate source" },
+      { key: "estimatedValue", header: "Lost Value" },
+      { key: "estimatedValueSource", header: "Price source" },
       { key: "status", header: "Status" },
       { key: "createdAt", header: "Created" },
     ]);

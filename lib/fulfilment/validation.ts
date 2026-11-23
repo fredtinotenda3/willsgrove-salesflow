@@ -63,3 +63,22 @@ export const recordDeliverySchema = z.object({
   notes: z.string().max(2000).optional(),
 });
 export type RecordDeliveryInput = z.infer<typeof recordDeliverySchema>;
+
+/**
+ * Changing who/what is assigned to a dispatch after it was created. At least
+ * one of driver/assistant/vehicle must be supplied, and a reason is always
+ * required -- the change is written to the order's fulfilment history
+ * (before and after), so "why" is part of the record, not optional.
+ */
+export const changeDispatchAssignmentSchema = z
+  .object({
+    driverId: z.string().min(1).optional(),
+    assistantId: z.string().min(1).optional(),
+    vehicleId: z.string().min(1).optional(),
+    reason: z.string().trim().min(1, "A reason for the change is required.").max(1000),
+  })
+  .refine((value) => value.driverId || value.assistantId || value.vehicleId, {
+    message: "Choose a new driver, assistant or vehicle.",
+    path: ["driverId"],
+  });
+export type ChangeDispatchAssignmentInput = z.infer<typeof changeDispatchAssignmentSchema>;

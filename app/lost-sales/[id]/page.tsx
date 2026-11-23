@@ -160,7 +160,7 @@ export default async function LostSaleDetailPage({ params }: RouteParams) {
           )}
 
           <section className="rounded-xl border border-[#E8EBE6] bg-white p-5">
-            <h2 className="text-sm font-bold text-[#17251E]">Estimated Lost Sales (automatic)</h2>
+            <h2 className="text-sm font-bold text-[#17251E]">Lost Value (automatic)</h2>
             <p className="mt-1 text-[11px] text-gray-400">
               Calculated automatically the moment this shortage was recorded -- Unavailable Quantity x Applicable
               Selling Price. This is the same quantity that was automatically cancelled and confirmed lost below --
@@ -173,7 +173,7 @@ export default async function LostSaleDetailPage({ params }: RouteParams) {
                       ? "order's own approved price"
                       : "price list"
                   })`
-                : "No estimated value available -- no historically valid price resolved for this product."}
+                : "No Lost Value available (unpriced -- not treated as zero) -- no historically valid price resolved for this product."}
             </p>
           </section>
 
@@ -183,7 +183,7 @@ export default async function LostSaleDetailPage({ params }: RouteParams) {
             </div>
             {demand.lostSaleRecords.length === 0 ? (
               <p className="px-6 py-8 text-center text-xs text-gray-400">
-                No lost sale was recorded for this shortage -- see Estimated Lost Sales above if a price could not be resolved.
+                No lost sale was recorded for this shortage -- see Lost Value above if a price could not be resolved.
               </p>
             ) : (
               <ul className="divide-y divide-gray-50">
@@ -200,12 +200,12 @@ export default async function LostSaleDetailPage({ params }: RouteParams) {
                     </p>
                     <p className="mt-1 text-[11px] text-gray-500">
                       {record.estimatedValue !== null
-                        ? `Estimated value: ${record.estimatedValue} (${
+                        ? `Lost Value: ${record.estimatedValue} (${
                             record.estimatedValueSource === "ORDER_LINE_APPROVED_PRICE"
                               ? "order's own approved price"
                               : "price list"
                           }) -- estimate only`
-                        : "No estimated value available -- no historically valid price resolved for this product."}
+                        : "No Lost Value available (unpriced -- not treated as zero) -- no historically valid price resolved for this product."}
                     </p>
                     {record.reasonDetail && <p className="mt-1 text-[11px] text-gray-400">{record.reasonDetail}</p>}
                     {record.remarks && <p className="mt-1 text-[11px] text-gray-400">{record.remarks}</p>}

@@ -1,4 +1,10 @@
 import { Download, Filter } from "lucide-react";
+import { DatePicker } from "../../components/date-picker";
+import { FormSelect } from "../../components/form-select";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import type { FilterOption } from "@/lib/reporting/filter-options";
 import { DECISION_CATEGORIES, DECISION_PRIORITIES, DECISION_RECOMMENDATION_STATUSES } from "@/lib/reporting/decision-types";
 import { LOST_SALE_REASON_LABELS, LOST_SALE_SOURCE_VALUES, LOST_SALE_SOURCE_LABELS } from "@/lib/lost-sales/display";
@@ -22,8 +28,7 @@ import { LOST_SALE_REASON_LABELS, LOST_SALE_SOURCE_VALUES, LOST_SALE_SOURCE_LABE
  * worse than no dropdown at all.
  */
 
-const FIELD_INPUT_CLASS =
-  "h-[38px] w-full rounded-lg border border-[#E1E7E2] bg-white px-3 text-sm text-[#17251E] outline-none focus:border-[#78964A]";
+const FIELD_INPUT_CLASS = "h-9 text-sm md:text-sm";
 
 /** Milestone 15 (Decision Intelligence). Human-readable labels for the three new fixed enums -- hardcoded here (rather than threaded through as props from each page) because, unlike `customers`/`salespeople`, these option sets are small, fixed schema enums with no per-tenant variation. */
 const DECISION_CATEGORY_LABELS: Record<string, string> = {
@@ -142,49 +147,38 @@ export function ReportFilterBar({
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
-        <Field label="From">
-          <input type="date" name="dateFrom" defaultValue={get("dateFrom")} className={FIELD_INPUT_CLASS} />
-        </Field>
+        {/* shadcn calendar + popover; hidden inputs keep this a plain GET form. Not wrapped in <label> (a label would re-dispatch clicks to the trigger). */}
+        <div className="block">
+          <Label className="mb-1.5 block text-xs font-medium text-[#718078]">From</Label>
+          <DatePicker name="dateFrom" defaultValue={get("dateFrom")} placeholder="From" aria-label="From date" />
+        </div>
 
-        <Field label="To">
-          <input type="date" name="dateTo" defaultValue={get("dateTo")} className={FIELD_INPUT_CLASS} />
-        </Field>
+        <div className="block">
+          <Label className="mb-1.5 block text-xs font-medium text-[#718078]">To</Label>
+          <DatePicker name="dateTo" defaultValue={get("dateTo")} placeholder="To" aria-label="To date" />
+        </div>
 
         {showCustomer && (
           <Field label="Customer">
-            <select name="customerId" defaultValue={get("customerId")} className={FIELD_INPUT_CLASS}>
-              <option value="">All customers</option>
-              {customers.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+            <FormSelect name="customerId" defaultValue={get("customerId")} options={[{ value: "", label: "All customers" }, ...customers.map((c) => ({ value: c.id, label: c.name }))]} className="h-9 w-full text-sm" />
           </Field>
         )}
 
         {showSalesperson && (
           <Field label="Salesperson">
-            <select name="salespersonId" defaultValue={get("salespersonId")} className={FIELD_INPUT_CLASS}>
-              <option value="">All salespeople</option>
-              {salespeople.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
+            <FormSelect name="salespersonId" defaultValue={get("salespersonId")} options={[{ value: "", label: "All salespeople" }, ...salespeople.map((s) => ({ value: s.id, label: s.name }))]} className="h-9 w-full text-sm" />
           </Field>
         )}
 
         {showProduct && (
           <Field label="Product ID" hint="Exact SAP item ID -- no search yet">
-            <input type="text" name="productId" defaultValue={get("productId")} placeholder="e.g. clxyz..." className={FIELD_INPUT_CLASS} />
+            <Input type="text" name="productId" defaultValue={get("productId")} placeholder="e.g. clxyz..." className={FIELD_INPUT_CLASS} />
           </Field>
         )}
 
         {showCurrency && (
           <Field label="Currency" hint="3-letter code, e.g. USD">
-            <input
+            <Input
               type="text"
               name="currency"
               defaultValue={get("currency")}
@@ -197,124 +191,78 @@ export function ReportFilterBar({
 
         {showSapItemCode && (
           <Field label="SAP item code" hint="Exact match">
-            <input type="text" name="sapItemCode" defaultValue={get("sapItemCode")} placeholder="e.g. 10001234" className={FIELD_INPUT_CLASS} />
+            <Input type="text" name="sapItemCode" defaultValue={get("sapItemCode")} placeholder="e.g. 10001234" className={FIELD_INPUT_CLASS} />
           </Field>
         )}
 
         {showProductCategory && (
           <Field label="Product category" hint="Free text, exact match -- no fixed list">
-            <input type="text" name="productCategory" defaultValue={get("productCategory")} className={FIELD_INPUT_CLASS} />
+            <Input type="text" name="productCategory" defaultValue={get("productCategory")} className={FIELD_INPUT_CLASS} />
           </Field>
         )}
 
         {showProductSearch && (
           <Field label="Search products" hint="SAP item code or description">
-            <input type="text" name="productSearch" defaultValue={get("productSearch")} className={FIELD_INPUT_CLASS} />
+            <Input type="text" name="productSearch" defaultValue={get("productSearch")} className={FIELD_INPUT_CLASS} />
           </Field>
         )}
 
         {showDecisionCategory && (
           <Field label="Decision category">
-            <select name="decisionCategory" defaultValue={get("decisionCategory")} className={FIELD_INPUT_CLASS}>
-              <option value="">All categories</option>
-              {DECISION_CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {DECISION_CATEGORY_LABELS[c] ?? c}
-                </option>
-              ))}
-            </select>
+            <FormSelect name="decisionCategory" defaultValue={get("decisionCategory")} options={[{ value: "", label: "All categories" }, ...DECISION_CATEGORIES.map((c) => ({ value: c, label: DECISION_CATEGORY_LABELS[c] ?? c }))]} className="h-9 w-full text-sm" />
           </Field>
         )}
 
         {showPriority && (
           <Field label="Priority">
-            <select name="priority" defaultValue={get("priority")} className={FIELD_INPUT_CLASS}>
-              <option value="">All priorities</option>
-              {DECISION_PRIORITIES.map((p) => (
-                <option key={p} value={p}>
-                  {DECISION_PRIORITY_LABELS[p] ?? p}
-                </option>
-              ))}
-            </select>
+            <FormSelect name="priority" defaultValue={get("priority")} options={[{ value: "", label: "All priorities" }, ...DECISION_PRIORITIES.map((p) => ({ value: p, label: DECISION_PRIORITY_LABELS[p] ?? p }))]} className="h-9 w-full text-sm" />
           </Field>
         )}
 
         {showRecommendationStatus && (
           <Field label="Recommendation status">
-            <select name="recommendationStatus" defaultValue={get("recommendationStatus")} className={FIELD_INPUT_CLASS}>
-              <option value="">All statuses</option>
-              {DECISION_RECOMMENDATION_STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {DECISION_RECOMMENDATION_STATUS_LABELS[s] ?? s}
-                </option>
-              ))}
-            </select>
+            <FormSelect name="recommendationStatus" defaultValue={get("recommendationStatus")} options={[{ value: "", label: "All statuses" }, ...DECISION_RECOMMENDATION_STATUSES.map((s) => ({ value: s, label: DECISION_RECOMMENDATION_STATUS_LABELS[s] ?? s }))]} className="h-9 w-full text-sm" />
           </Field>
         )}
 
         {showLostSalesReason && (
           <Field label="Loss reason">
-            <select name="lostSalesReason" defaultValue={get("lostSalesReason")} className={FIELD_INPUT_CLASS}>
-              <option value="">All reasons</option>
-              {Object.keys(LOST_SALE_REASON_LABELS).map((value) => (
-                <option key={value} value={value}>
-                  {LOST_SALE_REASON_LABELS[value]}
-                </option>
-              ))}
-            </select>
+            <FormSelect name="lostSalesReason" defaultValue={get("lostSalesReason")} options={[{ value: "", label: "All reasons" }, ...Object.keys(LOST_SALE_REASON_LABELS).map((value) => ({ value: value, label: LOST_SALE_REASON_LABELS[value] }))]} className="h-9 w-full text-sm" />
           </Field>
         )}
 
         {showLostSaleSource && (
           <Field label="Loss source">
-            <select name="lostSaleSource" defaultValue={get("lostSaleSource")} className={FIELD_INPUT_CLASS}>
-              <option value="">All sources</option>
-              {LOST_SALE_SOURCE_VALUES.map((value) => (
-                <option key={value} value={value}>
-                  {LOST_SALE_SOURCE_LABELS[value]}
-                </option>
-              ))}
-            </select>
+            <FormSelect name="lostSaleSource" defaultValue={get("lostSaleSource")} options={[{ value: "", label: "All sources" }, ...LOST_SALE_SOURCE_VALUES.map((value) => ({ value: value, label: LOST_SALE_SOURCE_LABELS[value] }))]} className="h-9 w-full text-sm" />
           </Field>
         )}
 
         {statusFilter && (
           <Field label={statusFilter.label}>
-            <select name={statusFilter.queryKey} defaultValue={get(statusFilter.queryKey)} className={FIELD_INPUT_CLASS}>
-              <option value="">All statuses</option>
-              {statusFilter.options.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
+            <FormSelect name={statusFilter.queryKey} defaultValue={get(statusFilter.queryKey)} options={[{ value: "", label: "All statuses" }, ...statusFilter.options.map((o) => ({ value: o.value, label: o.label }))]} className="h-9 w-full text-sm" />
           </Field>
         )}
 
         <Field label="Demo data">
-          <label className="flex h-[38px] items-center gap-2 text-sm text-[#536158]">
-            <input type="checkbox" name="includeDemo" value="true" defaultChecked={get("includeDemo") === "true"} className="h-4 w-4 rounded border-gray-300" />
+          <Label className="flex h-9 items-center gap-2 text-sm font-normal text-[#536158]">
+            <Checkbox name="includeDemo" value="true" defaultChecked={get("includeDemo") === "true"} />
             Include demo records
-          </label>
+          </Label>
         </Field>
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-[#EEF1ED] pt-4">
-        <button type="submit" className="flex h-10 items-center gap-2 rounded-xl bg-[#183B2D] px-4 text-sm font-semibold text-white transition hover:bg-[#24513D]">
+        <Button type="submit" className="bg-[#183B2D] hover:bg-[#24513D]">
           Apply filters
-        </button>
-        <a href={viewAction} className="text-sm font-semibold text-[#718078] hover:text-[#17251E]">
-          Reset
-        </a>
+        </Button>
+        <Button asChild variant="link" className="text-[#718078] hover:text-[#17251E]">
+          <a href={viewAction}>Reset</a>
+        </Button>
         {exportAction && (
-          <button
-            type="submit"
-            formAction={exportAction}
-            className="ml-auto flex h-10 items-center gap-2 rounded-xl border border-[#D7E0D5] px-4 text-sm font-semibold text-[#17251E] transition hover:bg-gray-50"
-          >
+          <Button type="submit" variant="outline" formAction={exportAction} className="ml-auto">
             <Download size={15} />
             Export CSV
-          </button>
+          </Button>
         )}
       </div>
     </form>
@@ -323,10 +271,10 @@ export function ReportFilterBar({
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
-    <label className="block">
-      <span className="mb-1.5 block text-xs font-medium text-[#718078]">{label}</span>
+    <div className="block">
+      <Label className="mb-1.5 block text-xs font-medium text-[#718078]">{label}</Label>
       {children}
       {hint && <span className="mt-1 block text-[10px] text-[#A6AFA4]">{hint}</span>}
-    </label>
+    </div>
   );
 }

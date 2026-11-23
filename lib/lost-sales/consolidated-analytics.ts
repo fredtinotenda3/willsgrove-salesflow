@@ -177,7 +177,7 @@ function fromReturnedRow(row: ReturnedProductLostSaleRow): ConsolidatedLostSaleR
     claimId: row.claimId,
     claimReference: row.claimReference,
     returnReference: row.returnReference,
-    sapInvoiceId: row.sapInvoiceId,
+    sapInvoiceId: row.sapInvoiceId ?? undefined,
     condition: row.condition,
   };
 }

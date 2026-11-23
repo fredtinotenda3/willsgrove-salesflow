@@ -241,7 +241,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
             <MetricCard
               title="Unavailable quantity"
               value={formatQuantity(analytics.kpis.totalUnavailableQuantity)}
-              description={`≈ ${formatQuantity(analytics.kpis.totalEstimatedLostValue)} in estimated lost value -- see below for the confirmed figure`}
+              description={`≈ ${formatQuantity(analytics.kpis.totalEstimatedLostValue)} Lost Value (priced demands only) -- see below for the confirmed figure`}
               dataQuality="actual"
             />
             <MetricCard title="Outstanding (awaiting supply)" value={formatQuantity(analytics.kpis.totalOutstandingQuantity)} dataQuality="actual" />
@@ -250,7 +250,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
 
           <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard
-              title="Estimated lost value"
+              title="Lost Value"
               value={formatQuantity(analytics.kpis.totalEstimatedLostValue)}
               description={
                 analytics.kpis.demandsWithoutEstimate > 0
@@ -531,7 +531,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
             <RequestedVsUnavailableTrendChart data={analytics.trend} basePath={basePath} baseQuery={baseQuery} />
           </SectionCard>
 
-          <SectionCard title="Estimated lost value over time" description="A different scale (currency) from the quantity trend above -- its own chart, its own axis -- hover a point for the product-contribution table and the estimated-vs-confirmed split">
+          <SectionCard title="Lost Value over time" description="A different scale (currency) from the quantity trend above -- its own chart, its own axis -- hover a point for the product-contribution table and the estimated-vs-confirmed split">
             <EstimatedLostValueTrendChart data={analytics.trend} basePath={basePath} baseQuery={baseQuery} />
           </SectionCard>
 
@@ -687,8 +687,9 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
                       <th className="px-5 py-3 text-right font-semibold">Requested</th>
                       <th className="px-5 py-3 text-right font-semibold">Unavailable</th>
                       <th className="px-5 py-3 text-right font-semibold">Outstanding</th>
-                      <th className="px-5 py-3 text-right font-semibold">Lost</th>
-                      <th className="px-5 py-3 text-right font-semibold">Est. value</th>
+                      <th className="px-5 py-3 text-right font-semibold">Lost qty</th>
+                      <th className="px-5 py-3 text-right font-semibold">Unit price</th>
+                      <th className="px-5 py-3 text-right font-semibold">Lost Value</th>
                       <th className="px-5 py-3 font-semibold">Status</th>
                       <th className="px-5 py-3" />
                     </tr>
@@ -711,6 +712,9 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
                         <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">{demand.outstandingQuantity}</td>
                         <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">{demand.confirmedLostQuantity}</td>
                         <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">
+                          {demand.estimatedUnitPrice !== null ? `${formatQuantity(demand.estimatedUnitPrice)} ${demand.currencyCode ?? ""}`.trimEnd() : <span className="text-[#C3CBC5]">--</span>}
+                        </td>
+                        <td className="whitespace-nowrap px-5 py-3 text-right font-semibold text-[#17251E]">
                           {demand.estimatedValue !== null ? formatQuantity(demand.estimatedValue) : <span className="text-[#C3CBC5]">--</span>}
                         </td>
                         <td className="whitespace-nowrap px-5 py-3">

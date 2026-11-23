@@ -260,12 +260,12 @@ export default async function CustomerProfilePage({ params, searchParams }: Rout
             )}
             {lostSales.estimatedValueByCurrency.length > 0 && (
               <div className="mt-5">
-                <p className="mb-2 text-xs font-semibold text-[#718078]">Estimated lost value (never authoritative SAP data)</p>
+                <p className="mb-2 text-xs font-semibold text-[#718078]">Lost Value (never authoritative SAP data)</p>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {lostSales.estimatedValueByCurrency.map((row) => (
                     <MetricCard
                       key={row.currency}
-                      title={`Estimated value (${row.currency})`}
+                      title={`Lost Value (${row.currency})`}
                       value={row.totalEstimatedValue}
                       description={row.excludedCount > 0 ? `${row.excludedCount} record(s) excluded -- no estimated value recorded` : undefined}
                       dataQuality="provisional"

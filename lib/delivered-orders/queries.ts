@@ -3,6 +3,10 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { CLAIM_LINE_REASON_CATEGORY_LABELS, type AnyStoredClaimLineReasonCategory } from "@/lib/invoice-claims/validation";
 import { isNativelyRecordedInvoice } from "@/lib/invoice-recording/queries";
+import { computeOrderPricing, describePricingGaps, resolveVatRatePercent } from "@/lib/order-pricing";
+import { loadTaxRatesByCode } from "@/lib/order-price-resolution";
+import { loadDispatchAssignmentHistory } from "@/lib/fulfilment/assignment-history-queries";
+import type { AssignmentHistoryEntry } from "@/lib/fulfilment/assignment-history";
 
 /**
  * Management Analytics spec, Part 6: "Complete Delivered Orders
@@ -215,7 +219,33 @@ export type DeliveredOrderDetail = {
     salespersonName: string | null;
     originalSourceText: string | null;
     currency: string | null;
-    lines: { lineNumber: number; sapItemCode: string | null; description: string; requestedQuantity: string; unitPrice: string | null; lineTotal: string | null }[];
+    /** The order's stored status (frozen at READY_TO_INVOICE once picking is authorized) -- input to the lifecycle stepper. */
+    status: string;
+    lines: {
+      lineNumber: number;
+      sapItemCode: string | null;
+      description: string;
+      requestedQuantity: string;
+      unitPrice: string | null;
+      /** SAP-reconciled total if one was stored. */
+      lineTotal: string | null;
+      /** Derived from the stored price snapshot x quantity (+ configured tax); null when the line was never priced. */
+      lineSubtotal: string | null;
+      lineTax: string | null;
+      lineTotalDerived: string | null;
+    }[];
+    /** Order-level derived pricing (lib/order-pricing.ts) -- the same calculation the order detail page uses. */
+    pricing: {
+      subtotal: string | null;
+      taxTotal: string | null;
+      total: string | null;
+      isComplete: boolean;
+      gapsExplanation: string | null;
+    };
+    /** Order status transitions exactly as recorded (OrderStatusHistory) -- nothing synthesised. */
+    statusHistory: { id: string; fromStatus: string | null; toStatus: string; notes: string | null; createdAt: string; changedByName: string | null }[];
+    /** Files attached to the order (customer PO, supporting documents). */
+    documents: { id: string; documentType: string; originalFileName: string; fileSize: number; createdAt: string; uploadedByName: string | null; downloadUrl: string }[];
   } | null;
   // (B) Picking / fulfilment
   pickingSessions: {
@@ -254,6 +284,8 @@ export type DeliveredOrderDetail = {
     departedAt: string | null;
     departedByName: string | null;
     createdByName: string;
+    /** Recorded initial assignment + every later change of driver/assistant/vehicle (who, when, why). */
+    assignmentHistory: AssignmentHistoryEntry[];
     lines: { description: string; sapItemCode: string | null; invoicedQuantity: string | null; dispatchedQuantity: string }[];
     physicalDelivery: {
       outcome: string;
@@ -369,11 +401,29 @@ export async function getDeliveredOrderDetail(sapInvoiceId: string): Promise<Del
           createdAt: true,
           currency: true,
           originalSourceText: true,
+          status: true,
           customer: { select: { id: true, name: true, sapCustomerCode: true } },
           salesperson: { select: { name: true } },
           lines: {
             orderBy: { lineNumber: "asc" },
-            select: { lineNumber: true, sapItemCodeSnapshot: true, originalProductDescription: true, requestedQuantity: true, customerUnitPrice: true, approvedUnitPrice: true, lineTotal: true },
+            select: {
+              lineNumber: true,
+              sapItemCodeSnapshot: true,
+              originalProductDescription: true,
+              requestedQuantity: true,
+              customerUnitPrice: true,
+              approvedUnitPrice: true,
+              lineTotal: true,
+              product: { select: { vatCode: true } },
+            },
+          },
+          statusHistory: {
+            orderBy: { createdAt: "asc" },
+            select: { id: true, fromStatus: true, toStatus: true, notes: true, createdAt: true, changedBy: { select: { name: true } } },
+          },
+          documents: {
+            orderBy: { createdAt: "asc" },
+            select: { id: true, documentType: true, originalFileName: true, fileSize: true, createdAt: true, uploadedBy: { select: { name: true } } },
           },
           pickingSessions: {
             orderBy: { startedAt: "asc" },
@@ -444,7 +494,21 @@ export async function getDeliveredOrderDetail(sapInvoiceId: string): Promise<Del
 
   const order = sapInvoice.matchedOrder;
 
-  const purchaseOrder = order
+  // Derived pricing for the PO lines -- same single calculation as the order
+  // detail page (lib/order-pricing.ts), from the stored price snapshot.
+  const taxRates = order ? await loadTaxRatesByCode(order.lines.map((l) => l.product?.vatCode)) : new Map<string, string>();
+  const orderPricing = order
+    ? computeOrderPricing(
+        order.lines.map((l) => ({
+          quantity: l.requestedQuantity.toString(),
+          unitPrice: (l.approvedUnitPrice ?? l.customerUnitPrice)?.toString() ?? null,
+          vatRatePercent: resolveVatRatePercent(l.product?.vatCode, taxRates),
+        }))
+      )
+    : null;
+  const assignmentHistory = await loadDispatchAssignmentHistory((order?.dispatchRecords ?? []).map((d) => d.id));
+
+  const purchaseOrder = order && orderPricing
     ? {
         customerId: order.customer.id,
         customerName: order.customer.name,
@@ -457,13 +521,41 @@ export async function getDeliveredOrderDetail(sapInvoiceId: string): Promise<Del
         salespersonName: order.salesperson?.name ?? null,
         originalSourceText: order.originalSourceText,
         currency: order.currency,
-        lines: order.lines.map((l) => ({
+        status: order.status,
+        lines: order.lines.map((l, index) => ({
           lineNumber: l.lineNumber,
           sapItemCode: l.sapItemCodeSnapshot,
           description: l.originalProductDescription,
           requestedQuantity: l.requestedQuantity.toString(),
           unitPrice: (l.approvedUnitPrice ?? l.customerUnitPrice)?.toString() ?? null,
           lineTotal: l.lineTotal?.toString() ?? null,
+          lineSubtotal: orderPricing.lines[index].subtotal,
+          lineTax: orderPricing.lines[index].tax,
+          lineTotalDerived: orderPricing.lines[index].total,
+        })),
+        pricing: {
+          subtotal: orderPricing.subtotal,
+          taxTotal: orderPricing.taxTotal,
+          total: orderPricing.total,
+          isComplete: orderPricing.isComplete,
+          gapsExplanation: describePricingGaps(orderPricing),
+        },
+        statusHistory: order.statusHistory.map((entry) => ({
+          id: entry.id,
+          fromStatus: entry.fromStatus,
+          toStatus: entry.toStatus,
+          notes: entry.notes,
+          createdAt: entry.createdAt.toISOString(),
+          changedByName: entry.changedBy?.name ?? null,
+        })),
+        documents: order.documents.map((doc) => ({
+          id: doc.id,
+          documentType: doc.documentType,
+          originalFileName: doc.originalFileName,
+          fileSize: Number(doc.fileSize),
+          createdAt: doc.createdAt.toISOString(),
+          uploadedByName: doc.uploadedBy?.name ?? null,
+          downloadUrl: `/api/files/${doc.id}`,
         })),
       }
     : null;
@@ -517,6 +609,7 @@ export async function getDeliveredOrderDetail(sapInvoiceId: string): Promise<Del
     departedAt: dispatch.departedAt?.toISOString() ?? null,
     departedByName: dispatch.departedBy?.name ?? null,
     createdByName: dispatch.createdBy.name,
+    assignmentHistory: assignmentHistory.get(dispatch.id) ?? [],
     lines: dispatch.lines.map((line) => ({
       description: line.orderLine.originalProductDescription,
       sapItemCode: line.orderLine.sapItemCodeSnapshot,

@@ -129,8 +129,17 @@ describe("getOrderLifecycleSteps", () => {
     const departed = getOrderLifecycleSteps({ status: "READY_TO_INVOICE", dispatchStatuses: ["DEPARTED"], hasMatchedInvoice: false, delivered: false })!;
     expect(departed[6]!.state).toBe("current");
 
-    const delivered = getOrderLifecycleSteps({ status: "READY_TO_INVOICE", dispatchStatuses: ["DELIVERED"], hasMatchedInvoice: false, delivered: false })!;
-    expect(delivered[6]!.state).toBe("current");
+    // A mix of DEPARTED and DELIVERED dispatches is still in transit overall.
+    const mixed = getOrderLifecycleSteps({ status: "READY_TO_INVOICE", dispatchStatuses: ["DEPARTED", "DELIVERED"], hasMatchedInvoice: false, delivered: false })!;
+    expect(mixed[6]!.state).toBe("current");
+    expect(mixed[7]!.state).toBe("upcoming");
+  });
+
+  it("every non-cancelled dispatch DELIVERED completes all 8 steps even with no recorded invoice outcome -- the stepper agrees with the 'Delivered' header badge", () => {
+    const steps = getOrderLifecycleSteps({ status: "READY_TO_INVOICE", dispatchStatuses: ["DELIVERED"], hasMatchedInvoice: false, delivered: false })!;
+    expect(steps.every((s) => s.state === "done")).toBe(true);
+    const twoBatches = getOrderLifecycleSteps({ status: "READY_TO_INVOICE", dispatchStatuses: ["DELIVERED", "DELIVERED"], hasMatchedInvoice: true, delivered: false })!;
+    expect(twoBatches.every((s) => s.state === "done")).toBe(true);
   });
 
   it("a PLANNED-only dispatch does NOT push the stage past Ready for Invoice -- nothing has actually left yet", () => {

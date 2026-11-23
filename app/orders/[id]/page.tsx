@@ -51,6 +51,13 @@ import {
   ArrowUpRight,
   Truck,
 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import DispatchAssignmentHistory from "../../components/dispatch-assignment-history";
 import HandoverPanel from "./handover-panel";
 import SapIntegrationPanel from "./sap-integration-panel";
 
@@ -208,17 +215,13 @@ export default async function OrderDetailPage({ params }: RouteParams) {
               </a>
 
               {(() => {
-                // Real-world fix: this card still showed a bare "Pending
-                // pricing" even once every line had a price, because it
-                // called formatOrderAmount(order.total, ...) directly --
-                // order.total only ever holds the APPROVED total, which
-                // this business's (not-yet-built) approval workflow has
-                // never set. The Orders list column already solved this
-                // with an estimated-from-lines fallback
-                // (formatOrderAmountWithEstimate); this card just never
-                // got the same fix. Same convention: amber + a title
-                // explaining it's an estimate, never silently presented
-                // as the approved total.
+                // Order Total card. The approved/SAP-confirmed `order.total`
+                // wins when it exists; otherwise the derived total (line
+                // subtotals + tax at the rates configured for each product,
+                // lib/order-pricing.ts) is shown, marked "~" when it is
+                // incomplete so a partial figure is never passed off as the
+                // whole. "Pending pricing" now appears only when NO line has
+                // a price at all.
                 const amount = formatOrderAmountWithEstimate(
                   order.total,
                   order.estimatedTotal,
@@ -232,25 +235,19 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                       className={`mt-1 text-xl font-bold ${amount.isEstimate ? "text-amber-700" : "text-[#17251E]"}`}
                       title={
                         amount.isEstimate
-                          ? amount.isPartialEstimate
-                            ? "Estimated from the lines that have a price so far -- not every line is priced yet, and not the approved total."
-                            : "Estimated from each line's price at order entry -- not yet the approved total."
+                          ? (order.pricing.gapsExplanation ?? "Calculated from each line's price at order entry -- not yet the approved total.")
                           : undefined
                       }
                     >
                       {amount.text}
                     </p>
-                    {/* Real-world fix ("show real subtotal/tax/total... or a
-                        precise explanation if tax configuration is missing --
-                        do not invent a tax rate"): confirmed by reading
-                        OrderLine's own schema -- it has no tax/VAT/discount
-                        column at all (that resolution exists only on the
-                        separate Quotations module's QuotationLine). The
-                        figure above is therefore the full line total with no
-                        tax applied, which silence could misread either way
-                        ("tax-inclusive" or "zero-rated") -- this states the
-                        true reason plainly instead of fabricating a split. */}
-                    <p className="mt-1 text-[10px] text-gray-400">Excludes tax -- SalesFlow does not calculate tax on orders yet.</p>
+                    <p className="mt-1 text-[10px] text-gray-400">
+                      {order.pricing.pricedLineCount === 0
+                        ? "No line has a price yet."
+                        : order.pricing.taxUnconfiguredLineCount > 0
+                          ? "Tax added only where a rate is configured."
+                          : "Subtotal plus configured tax."}
+                    </p>
                   </div>
                 );
               })()}
@@ -272,21 +269,12 @@ export default async function OrderDetailPage({ params }: RouteParams) {
               own comment for what this closes. */}
           <RecordInvoicePanel orderId={order.id} />
 
-          {/* Real-world fix ("Do not show outdated development-milestone
-              messages... Replace them with actual information or accurate
-              empty states"): pricing is no longer unbuilt -- a customer's
-              assigned price list (or a manually entered price) now
-              populates customerUnitPrice live, confirmed this round on real
-              orders. Verification and approval are genuinely still not
-              built (no VERIFIED/APPROVED action exists anywhere on this
-              page), so that half of the old notice stays, corrected to say
-              only what's actually still true. */}
           <section className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
             <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-600" />
             <p className="text-xs text-amber-800">
-              Verification and approval workflows are not built yet. Pricing is live: a line shows its price once
-              it has one, from the customer&apos;s price list or entered manually -- a blank/&quot;Pending
-              pricing&quot; line genuinely has no price yet, not a disabled feature.
+              Verification and approval workflows are not built yet. Line prices are taken from the
+              customer&apos;s price list when the order is created (or entered manually) and are kept as a
+              snapshot, so later price-list changes never alter this order.
             </p>
           </section>
 
@@ -312,195 +300,199 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                     </p>
                   </div>
                 ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left">
-                      <thead>
-                        <tr className="border-y border-gray-100 bg-gray-50/70">
-                          <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                            #
-                          </th>
-                          <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                            Product
-                          </th>
-                          <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                            Quantity
-                          </th>
-                          <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                            Customer Price
-                          </th>
-                          <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                            Approved Price
-                          </th>
-                          <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                            Line Total
-                          </th>
-                          <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                            Verification
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {order.lines.map((line) => {
-                          const verificationLabel =
-                            VERIFICATION_STATUS_LABELS[line.verificationStatus as VerificationStatusValue] ??
-                            line.verificationStatus;
-                          const verificationStyle =
-                            VERIFICATION_STATUS_STYLES[line.verificationStatus as VerificationStatusValue] ??
-                            "bg-gray-100 text-gray-500";
+                  <Table className="table-fixed">
+                    <TableHeader>
+                      <TableRow className="bg-gray-50/70 hover:bg-gray-50/70">
+                        <TableHead className="w-10 px-4 text-[10px] uppercase tracking-wider text-gray-400">#</TableHead>
+                        <TableHead className="px-4 text-[10px] uppercase tracking-wider text-gray-400">Product</TableHead>
+                        <TableHead className="w-24 px-4 text-right text-[10px] uppercase tracking-wider text-gray-400">Qty</TableHead>
+                        <TableHead className="w-32 px-4 text-right text-[10px] uppercase tracking-wider text-gray-400">Unit Price</TableHead>
+                        <TableHead className="w-28 px-4 text-right text-[10px] uppercase tracking-wider text-gray-400">Tax</TableHead>
+                        <TableHead className="w-32 px-4 text-right text-[10px] uppercase tracking-wider text-gray-400">Line Total</TableHead>
+                        <TableHead className="hidden w-28 px-4 text-[10px] uppercase tracking-wider text-gray-400 xl:table-cell">Verification</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {order.lines.map((line) => {
+                        const verificationLabel =
+                          VERIFICATION_STATUS_LABELS[line.verificationStatus as VerificationStatusValue] ??
+                          line.verificationStatus;
+                        const verificationStyle =
+                          VERIFICATION_STATUS_STYLES[line.verificationStatus as VerificationStatusValue] ??
+                          "bg-gray-100 text-gray-500";
+                        // SAP-reconciled lineTotal wins once it exists; before that
+                        // the derived (subtotal + configured tax) total is shown.
+                        const lineAmount = formatLineAmountWithEstimate(line.lineTotal, line.estimatedLineTotal, order.currency);
 
-                          return (
-                            <tr key={line.id} className="border-b border-gray-50">
-                              <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-400">
-                                {line.lineNumber}
-                              </td>
-                              <td className="px-6 py-4">
-                                <p className="text-xs font-medium text-gray-700">
-                                  {line.originalProductDescription}
-                                </p>
-                                {line.sapItemCodeSnapshot && (
-                                  <p className="mt-1 text-[10px] text-gray-400">
-                                    SAP item: {line.sapItemCodeSnapshot}
-                                  </p>
-                                )}
-                                {line.salesNotes && (
-                                  <p className="mt-1 text-[10px] italic text-gray-400">{line.salesNotes}</p>
-                                )}
-                              </td>
-                              <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">
-                                {line.requestedQuantity} {line.requestedUnitCode}
-                              </td>
-                              <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">
-                                {line.customerUnitPrice !== null
-                                  ? `${order.currency} ${line.customerUnitPrice}`
-                                  : "Not provided"}
-                              </td>
-                              <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">
-                                {/* Real-world fix ("the column Approved
-                                    Price should have the Customer Price
-                                    if[] applicable"): falls back to the
-                                    customer's own price (clearly labelled
-                                    as such, never silently presented as
-                                    approved) when no price has actually
-                                    been approved yet -- better than an
-                                    uninformative "Pending" when there IS
-                                    a real price on file for this line,
-                                    it's simply not yet the approved one.
-                                    This is purely a display fallback:
-                                    OrderLine.approvedUnitPrice itself is
-                                    untouched, still only ever set by the
-                                    price-decision/approval workflow. */}
-                                {line.approvedUnitPrice !== null
-                                  ? `${order.currency} ${line.approvedUnitPrice}`
-                                  : line.customerUnitPrice !== null
-                                    ? `${order.currency} ${line.customerUnitPrice} (customer price)`
-                                    : "Pending"}
-                              </td>
-                              <td className="whitespace-nowrap px-6 py-4 text-xs font-semibold text-gray-700">
-                                {/* Real-world fix ("Line Total column... should derive
-                                    from unit price used when creating order, not keep
-                                    saying Pending"): lineTotal itself is only ever set
-                                    once a real SAP invoice exists for this line -- see
-                                    estimateLineTotal's own comment -- so for the entire
-                                    time an order is active, this showed "Pending" even
-                                    though a real customerUnitPrice was entered at order
-                                    creation. "~" marks it as a derived estimate, exactly
-                                    like the Order Total card's own "~" prefix just above. */}
-                                {(() => {
-                                  const { text, isEstimate } = formatLineAmountWithEstimate(line.lineTotal, line.estimatedLineTotal, order.currency);
-                                  return isEstimate ? <span title="Estimated from this line's own price -- not yet the real, SAP-confirmed total.">{text}</span> : text;
-                                })()}
-                              </td>
-                              <td className="whitespace-nowrap px-6 py-4">
-                                <span
-                                  className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${verificationStyle}`}
-                                >
-                                  {verificationLabel}
-                                </span>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
+                        return (
+                          <TableRow key={line.id}>
+                            <TableCell className="px-4 align-top text-xs text-gray-400">{line.lineNumber}</TableCell>
+                            <TableCell className="px-4 align-top whitespace-normal">
+                              <p className="text-xs font-medium text-gray-700">{line.originalProductDescription}</p>
+                              {line.sapItemCodeSnapshot && (
+                                <p className="mt-0.5 text-[10px] text-gray-400">SAP item: {line.sapItemCodeSnapshot}</p>
+                              )}
+                              {line.salesNotes && <p className="mt-0.5 text-[10px] italic text-gray-400">{line.salesNotes}</p>}
+                              <Badge className={`mt-1 xl:hidden ${verificationStyle}`}>{verificationLabel}</Badge>
+                            </TableCell>
+                            <TableCell className="px-4 text-right align-top text-xs text-gray-600">
+                              {line.requestedQuantity} {line.requestedUnitCode}
+                            </TableCell>
+                            <TableCell className="px-4 text-right align-top text-xs text-gray-600">
+                              {line.unitPrice !== null ? (
+                                <>
+                                  <span>
+                                    {order.currency} {line.unitPrice}
+                                  </span>
+                                  {line.priceSource === "PRICE_LIST_CURRENT" && (
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <Badge variant="outline" className="ml-1 border-amber-300 px-1.5 text-[9px] text-amber-700">
+                                          list
+                                        </Badge>
+                                      </TooltipTrigger>
+                                      <TooltipContent>
+                                        No price was saved on this line. Shown from the customer&apos;s current price list; it is not a stored price.
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  )}
+                                  {line.approvedUnitPrice !== null && (
+                                    <Badge variant="outline" className="ml-1 px-1.5 text-[9px]">
+                                      approved
+                                    </Badge>
+                                  )}
+                                </>
+                              ) : (
+                                <span className="text-gray-400">No price</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="px-4 text-right align-top text-xs text-gray-600">
+                              {line.lineTax !== null ? (
+                                `${order.currency} ${Number(line.lineTax).toFixed(2)}`
+                              ) : line.lineSubtotal !== null ? (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="cursor-help text-gray-400">Not set</span>
+                                  </TooltipTrigger>
+                                  <TooltipContent>No tax rate is configured for this product, so no tax is added.</TooltipContent>
+                                </Tooltip>
+                              ) : (
+                                <span className="text-gray-300">--</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="px-4 text-right align-top text-xs font-semibold text-gray-700">
+                              {lineAmount.isEstimate ? (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="cursor-help">{lineAmount.text}</span>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Calculated from this line&apos;s price (plus configured tax); not yet the SAP-confirmed total.</TooltipContent>
+                                </Tooltip>
+                              ) : (
+                                lineAmount.text
+                              )}
+                            </TableCell>
+                            <TableCell className="hidden px-4 align-top xl:table-cell">
+                              <Badge className={verificationStyle}>{verificationLabel}</Badge>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
                 )}
 
-                {/* Totals */}
+                {/* Totals: derived from the line snapshots (lib/order-pricing.ts); the
+                    approved/SAP-confirmed order-level amounts win when they exist. */}
                 <div className="flex justify-end border-t border-gray-100 px-6 py-4">
-                  <div className="w-64 space-y-2">
+                  <div className="w-full max-w-xs space-y-2">
                     <div className="flex justify-between text-xs text-gray-500">
                       <span>Subtotal</span>
-                      <span>{formatOrderAmount(order.subtotal, order.currency)}</span>
+                      <span>{formatOrderAmount(order.subtotal ?? order.pricing.subtotal, order.currency)}</span>
                     </div>
                     <div className="flex justify-between text-xs text-gray-500">
                       <span>Tax</span>
-                      <span>{formatOrderAmount(order.taxTotal, order.currency)}</span>
+                      <span>
+                        {order.taxTotal !== null
+                          ? formatOrderAmount(order.taxTotal, order.currency)
+                          : order.pricing.pricedLineCount === 0
+                            ? "--"
+                            : order.pricing.taxUnconfiguredLineCount === order.pricing.pricedLineCount
+                              ? "Not configured"
+                              : formatOrderAmount(order.pricing.taxTotal, order.currency)}
+                      </span>
                     </div>
                     <div className="flex justify-between border-t border-gray-100 pt-2 text-sm font-bold text-[#17251E]">
                       <span>Total</span>
-                      <span>{formatOrderAmount(order.total, order.currency)}</span>
+                      <span>{formatOrderAmount(order.total ?? order.pricing.total, order.currency)}</span>
                     </div>
+                    {order.pricing.gapsExplanation && order.total === null && (
+                      <p className="text-[10px] text-amber-700">{order.pricing.gapsExplanation}</p>
+                    )}
                   </div>
                 </div>
               </section>
 
-              {/* Documents */}
-              <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
-                <h2 className="text-[15px] font-bold text-[#17251E]">Documents</h2>
-                <p className="mt-1 text-xs text-gray-400">
-                  Original purchase order and any supporting files attached to this order.
-                </p>
+              {/* Original Message & Documents -- one compact section. The pasted
+                  message is collapsed behind a trigger (first lines previewed,
+                  full text in a height-capped scroll area) and attachments are
+                  single-line rows, so a long PO text or several files no longer
+                  push the rest of the page down. */}
+              <section className="rounded-xl border border-[#E8EBE6] bg-white p-4">
+                <div className="flex items-baseline justify-between gap-3">
+                  <h2 className="text-[15px] font-bold text-[#17251E]">Original Message &amp; Documents</h2>
+                  <p className="text-[10px] text-gray-400">
+                    {order.documents.length} file{order.documents.length === 1 ? "" : "s"}
+                    {order.originalSourceText ? " · pasted message" : ""}
+                  </p>
+                </div>
+
+                {order.originalSourceText && (
+                  <Collapsible className="mt-3 rounded-lg bg-gray-50">
+                    <div className="flex items-start gap-2 px-3 py-2">
+                      <p className="line-clamp-2 flex-1 whitespace-pre-wrap text-xs text-gray-600">{order.originalSourceText}</p>
+                      <CollapsibleTrigger asChild>
+                        <Button variant="ghost" size="xs" className="shrink-0 text-[11px] text-gray-500">
+                          Show full message
+                        </Button>
+                      </CollapsibleTrigger>
+                    </div>
+                    <CollapsibleContent>
+                      <ScrollArea className="max-h-48 border-t border-gray-100">
+                        <p className="whitespace-pre-wrap px-3 py-2 text-xs text-gray-600">{order.originalSourceText}</p>
+                      </ScrollArea>
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
 
                 {order.documents.length === 0 ? (
-                  <p className="mt-4 rounded-lg bg-gray-50 px-4 py-6 text-center text-xs text-gray-400">
-                    No documents have been uploaded for this order.
-                  </p>
+                  <p className="mt-3 text-xs text-gray-400">No documents have been uploaded for this order.</p>
                 ) : (
-                  <div className="mt-4 space-y-2">
+                  <ul className="mt-3 divide-y divide-gray-100 rounded-lg border border-gray-100">
                     {order.documents.map((doc) => (
-                      <div
-                        key={doc.id}
-                        className="flex items-center justify-between rounded-lg border border-gray-100 px-4 py-3"
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
-                            <FileText size={16} />
-                          </div>
-                          <div>
-                            <p className="text-xs font-semibold text-gray-700">{doc.originalFileName}</p>
-                            <p className="mt-0.5 text-[10px] text-gray-400">
-                              {DOCUMENT_TYPE_LABELS[doc.documentType as DocumentTypeValue] ?? doc.documentType} ·{" "}
-                              {formatFileSize(doc.fileSize)} · uploaded by {doc.uploadedBy?.name ?? "unknown"} on{" "}
-                              {formatOrderDateTime(doc.createdAt)}
-                            </p>
-                          </div>
+                      <li key={doc.id} className="flex items-center gap-3 px-3 py-2">
+                        <FileText size={14} className="shrink-0 text-blue-600" />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-xs font-semibold text-gray-700" title={doc.originalFileName}>
+                            {doc.originalFileName}
+                          </p>
+                          <p className="truncate text-[10px] text-gray-400">
+                            {DOCUMENT_TYPE_LABELS[doc.documentType as DocumentTypeValue] ?? doc.documentType} ·{" "}
+                            {formatFileSize(doc.fileSize)} · {doc.uploadedBy?.name ?? "unknown"} ·{" "}
+                            {formatOrderDateTime(doc.createdAt)}
+                          </p>
                         </div>
-
-                        <a
-                          href={doc.downloadUrl}
-                          className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-[11px] font-semibold text-gray-600 transition hover:bg-gray-50"
-                        >
-                          <Download size={13} />
-                          Download
-                        </a>
-                      </div>
+                        <Button asChild variant="outline" size="xs">
+                          <a href={doc.downloadUrl}>
+                            <Download />
+                            Download
+                          </a>
+                        </Button>
+                      </li>
                     ))}
-                  </div>
+                  </ul>
                 )}
               </section>
-
-              {/* Original message/PO text, as pasted in at intake */}
-              {order.originalSourceText && (
-                <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
-                  <h2 className="text-[15px] font-bold text-[#17251E]">Original Message</h2>
-                  <p className="mt-1 text-xs text-gray-400">
-                    The customer&apos;s message or PO text exactly as pasted in at intake.
-                  </p>
-                  <p className="mt-3 whitespace-pre-wrap rounded-lg bg-gray-50 px-4 py-3 text-xs text-gray-600">
-                    {order.originalSourceText}
-                  </p>
-                </section>
-              )}
 
               {/* Status history */}
               <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
@@ -580,6 +572,8 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                             {dispatch.departedAt ? `${formatOrderDateTime(dispatch.departedAt)} (${dispatch.departedByName ?? "Not Available"})` : "Not yet departed"}
                           </p>
                         </div>
+
+                        <DispatchAssignmentHistory entries={dispatch.assignmentHistory} />
 
                         {/* Real-world fix ("Order Fulfilment History should
                             include all products accepted and reject if

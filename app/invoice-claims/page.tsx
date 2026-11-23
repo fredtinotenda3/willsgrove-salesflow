@@ -3,6 +3,8 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { isValidId } from "@/lib/http";
 import { listInvoiceClaims, listRejectedDeliveriesAwaitingClaim } from "@/lib/invoice-claims/queries";
+import { listInvoiceRegister } from "@/lib/invoice-claims/invoice-register";
+import InvoiceRegister from "./invoice-register";
 import {
   CLAIM_STATUS_LABELS,
   CLAIM_STATUS_STYLES,
@@ -39,7 +41,7 @@ const STATUS_FILTERS = [
   "CLOSED",
 ];
 
-type RouteParams = { searchParams: Promise<{ page?: string; status?: string; search?: string; customerId?: string }> };
+type RouteParams = { searchParams: Promise<{ page?: string; status?: string; search?: string; customerId?: string; reg?: string }> };
 
 export default async function InvoiceClaimsPage({ searchParams }: RouteParams) {
   const user = await getCurrentUser();
@@ -54,6 +56,9 @@ export default async function InvoiceClaimsPage({ searchParams }: RouteParams) {
   const search = resolved.search?.trim() || undefined;
   const rawCustomerId = resolved.customerId?.trim();
   const customerId = rawCustomerId && isValidId(rawCustomerId) ? rawCustomerId : undefined;
+
+  const registerFilter = resolved.reg === "none" || resolved.reg === "with" ? resolved.reg : "all";
+  const register = await listInvoiceRegister({ search, customerId, claim: registerFilter }, 1, 50);
 
   const { rows: claims, total, totalPages } = await listInvoiceClaims({ status, search, customerId }, page, PAGE_SIZE);
 
@@ -120,6 +125,13 @@ export default async function InvoiceClaimsPage({ searchParams }: RouteParams) {
               claim&rsquo;s resolution is approved (Milestone 6B). {total} claim{total === 1 ? "" : "s"} total.
             </p>
           </section>
+
+          <InvoiceRegister
+            rows={register.rows}
+            total={register.total}
+            activeFilter={registerFilter}
+            filterHref={(claim) => query({ reg: claim === "all" ? undefined : claim })}
+          />
 
           {awaitingClaim.length > 0 && (
             <section className="overflow-hidden rounded-xl border border-amber-200 bg-amber-50/60">

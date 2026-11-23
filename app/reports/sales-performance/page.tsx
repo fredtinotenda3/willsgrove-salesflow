@@ -208,7 +208,7 @@ export default async function SalesPerformanceReportPage({ searchParams }: Route
               )}
               {report.lostSales.estimatedValueByCurrency.length > 0 && (
                 <div className="mt-4 border-t border-[#EEF1ED] pt-4 text-xs text-[#849087]">
-                  Estimated value (not an authoritative SAP figure), never summed across currency:
+                  Lost Value (not an authoritative SAP figure), never summed across currency:
                   {report.lostSales.estimatedValueByCurrency.map((row) => (
                     <span key={row.currency} className="ml-2 font-semibold text-[#17251E]">
                       {row.currency} {row.totalEstimatedValue}

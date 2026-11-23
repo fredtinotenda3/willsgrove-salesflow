@@ -4,7 +4,13 @@ import { getCurrentUser } from "@/lib/auth/current-user";
 import { getDeliveredOrderDetail } from "@/lib/delivered-orders/queries";
 import Sidebar from "../../components/sidebar";
 import { PageHeader, SectionCard, EmptyState } from "../../reports/_components/ui";
-import { ArrowLeft, ArrowUpRight } from "lucide-react";
+import OrderLifecycleStepper from "../../components/order-lifecycle-stepper";
+import DispatchAssignmentHistory from "../../components/dispatch-assignment-history";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { getOrderLifecycleSteps, formatFileSize, formatOrderAmount, ORDER_STATUS_LABELS, DOCUMENT_TYPE_LABELS, type OrderStatusValue, type DocumentTypeValue } from "@/lib/order-display";
+import { ArrowLeft, ArrowUpRight, Download } from "lucide-react";
 
 /**
  * Management Analytics spec, Part 6: the full lifecycle detail view for
@@ -114,6 +120,24 @@ export default async function DeliveredOrderDetailPage({ params }: { params: Pro
             }
           />
 
+          {/* Lifecycle: a delivered order has, by definition, completed every
+              stage -- derived by the same getOrderLifecycleSteps the order page
+              uses (delivered = an invoice delivery outcome is on record), never a
+              separate definition. */}
+          {(() => {
+            const steps = getOrderLifecycleSteps({
+              status: purchaseOrder?.status ?? "READY_TO_INVOICE",
+              dispatchStatuses: dispatches.map((d) => d.status),
+              hasMatchedInvoice: true,
+              delivered: true,
+            });
+            return steps ? (
+              <section className="rounded-xl border border-[#E8EBE6] bg-white p-4">
+                <OrderLifecycleStepper steps={steps} />
+              </section>
+            ) : null;
+          })()}
+
           {/* (A) Original PO */}
           <SectionCard title="A. Original purchase order" description="As received from the customer, before any approval or fulfilment">
             {purchaseOrder ? (
@@ -146,32 +170,50 @@ export default async function DeliveredOrderDetailPage({ params }: { params: Pro
                     <pre className="mt-2 whitespace-pre-wrap font-mono text-[11px]">{purchaseOrder.originalSourceText}</pre>
                   </details>
                 )}
-                <div className="overflow-x-auto rounded-lg border border-[#E7ECE7]">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-[#F7F8F6] text-[10px] uppercase tracking-wide text-[#849087]">
-                      <tr>
-                        <th className="px-3 py-2">#</th>
-                        <th className="px-3 py-2">Product code</th>
-                        <th className="px-3 py-2">Description</th>
-                        <th className="px-3 py-2 text-right">Qty requested</th>
-                        <th className="px-3 py-2 text-right">Unit price</th>
-                        <th className="px-3 py-2 text-right">Line total</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#F0F2EF]">
-                      {purchaseOrder.lines.map((l) => (
-                        <tr key={l.lineNumber}>
-                          <td className="px-3 py-2">{l.lineNumber}</td>
-                          <td className="px-3 py-2">{l.sapItemCode ?? "-"}</td>
-                          <td className="px-3 py-2">{l.description}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{l.requestedQuantity}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{l.unitPrice ?? "-"}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{l.lineTotal ?? "-"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <Table className="table-fixed text-xs">
+                  <TableHeader>
+                    <TableRow className="bg-[#F7F8F6] hover:bg-[#F7F8F6]">
+                      <TableHead className="w-8 px-3 text-[10px] uppercase tracking-wide text-[#849087]">#</TableHead>
+                      <TableHead className="px-3 text-[10px] uppercase tracking-wide text-[#849087]">Product</TableHead>
+                      <TableHead className="w-24 px-3 text-right text-[10px] uppercase tracking-wide text-[#849087]">Qty</TableHead>
+                      <TableHead className="w-24 px-3 text-right text-[10px] uppercase tracking-wide text-[#849087]">Unit price</TableHead>
+                      <TableHead className="hidden w-24 px-3 text-right text-[10px] uppercase tracking-wide text-[#849087] md:table-cell">Tax</TableHead>
+                      <TableHead className="w-28 px-3 text-right text-[10px] uppercase tracking-wide text-[#849087]">Line total</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {purchaseOrder.lines.map((l) => (
+                      <TableRow key={l.lineNumber}>
+                        <TableCell className="px-3 align-top">{l.lineNumber}</TableCell>
+                        <TableCell className="px-3 align-top whitespace-normal">
+                          {l.description}
+                          {l.sapItemCode && <span className="ml-1 text-[#A4ACA4]">({l.sapItemCode})</span>}
+                        </TableCell>
+                        <TableCell className="px-3 text-right align-top tabular-nums">{l.requestedQuantity}</TableCell>
+                        <TableCell className="px-3 text-right align-top tabular-nums">{l.unitPrice ?? "-"}</TableCell>
+                        <TableCell className="hidden px-3 text-right align-top tabular-nums md:table-cell">{l.lineTax ?? "-"}</TableCell>
+                        <TableCell className="px-3 text-right align-top tabular-nums">{l.lineTotal ?? l.lineTotalDerived ?? "-"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                  <TableFooter>
+                    <TableRow>
+                      <TableCell colSpan={5} className="px-3 text-right text-[#536158]">Subtotal</TableCell>
+                      <TableCell className="px-3 text-right tabular-nums">{formatOrderAmount(purchaseOrder.pricing.subtotal, purchaseOrder.currency ?? "USD")}</TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell colSpan={5} className="px-3 text-right text-[#536158]">Tax</TableCell>
+                      <TableCell className="px-3 text-right tabular-nums">{formatOrderAmount(purchaseOrder.pricing.taxTotal, purchaseOrder.currency ?? "USD")}</TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell colSpan={5} className="px-3 text-right font-semibold">Order total</TableCell>
+                      <TableCell className="px-3 text-right font-semibold tabular-nums">{formatOrderAmount(purchaseOrder.pricing.total, purchaseOrder.currency ?? "USD")}</TableCell>
+                    </TableRow>
+                  </TableFooter>
+                </Table>
+                {purchaseOrder.pricing.gapsExplanation && (
+                  <p className="text-[11px] text-amber-700">{purchaseOrder.pricing.gapsExplanation}</p>
+                )}
               </div>
             ) : (
               <EmptyState message="This invoice was never matched to a CustomerOrder in SalesFlow -- it may have been invoiced directly against an order placed outside this system." />
@@ -296,6 +338,9 @@ export default async function DeliveredOrderDetailPage({ params }: { params: Pro
                       <Field label="Departed" value={dispatch.departedAt ? `${formatDate(dispatch.departedAt)} (recorded by ${dispatch.departedByName ?? "Not Available"})` : "Not Available"} />
                       <Field label="Created by" value={dispatch.createdByName} />
                     </div>
+                    <div className="mb-3 -mt-1">
+                      <DispatchAssignmentHistory entries={dispatch.assignmentHistory} />
+                    </div>
                     <div className="overflow-x-auto rounded-lg border border-[#F0F2EF]">
                       <table className="w-full text-left text-xs">
                         <thead className="bg-[#F7F8F6] text-[10px] uppercase tracking-wide text-[#849087]">
@@ -414,6 +459,59 @@ export default async function DeliveredOrderDetailPage({ params }: { params: Pro
                   </div>
                 ))}
               </div>
+            )}
+          </SectionCard>
+
+          {/* (I) Order history and documents -- exactly what was recorded:
+              OrderStatusHistory rows and files attached to the order. Nothing
+              is synthesised; an order with no recorded history shows an empty
+              state, not an invented timeline. */}
+          <SectionCard title="I. Order history and documents" description="Status changes and files recorded against this order">
+            {purchaseOrder ? (
+              <div className="space-y-5">
+                {purchaseOrder.statusHistory.length === 0 ? (
+                  <EmptyState message="No status history was recorded for this order." />
+                ) : (
+                  <ol className="space-y-2">
+                    {purchaseOrder.statusHistory.map((entry) => (
+                      <li key={entry.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#536158]">
+                        <span className="tabular-nums text-[#849087]">{formatDate(entry.createdAt)}</span>
+                        <Badge variant="outline">
+                          {entry.fromStatus ? `${ORDER_STATUS_LABELS[entry.fromStatus as OrderStatusValue] ?? entry.fromStatus} → ` : ""}
+                          {ORDER_STATUS_LABELS[entry.toStatus as OrderStatusValue] ?? entry.toStatus}
+                        </Badge>
+                        <span>{entry.changedByName ?? "Not Available"}</span>
+                        {entry.notes && <span className="italic">— {entry.notes}</span>}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+
+                {purchaseOrder.documents.length === 0 ? (
+                  <EmptyState message="No documents were attached to this order." />
+                ) : (
+                  <ul className="divide-y divide-[#F0F2EF] rounded-lg border border-[#E7ECE7]">
+                    {purchaseOrder.documents.map((doc) => (
+                      <li key={doc.id} className="flex items-center gap-3 px-3 py-2 text-xs">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-semibold text-[#17251E]" title={doc.originalFileName}>{doc.originalFileName}</p>
+                          <p className="truncate text-[10px] text-[#849087]">
+                            {DOCUMENT_TYPE_LABELS[doc.documentType as DocumentTypeValue] ?? doc.documentType} · {formatFileSize(doc.fileSize)} · {doc.uploadedByName ?? "Not Available"} · {formatDate(doc.createdAt)}
+                          </p>
+                        </div>
+                        <Button asChild variant="outline" size="xs">
+                          <a href={doc.downloadUrl}>
+                            <Download />
+                            Download
+                          </a>
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ) : (
+              <EmptyState message="This invoice was never matched to a CustomerOrder in SalesFlow, so there is no order history to show." />
             )}
           </SectionCard>
 

@@ -3,6 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Sidebar from "../components/sidebar";
+import { DateRangePicker } from "../components/date-picker";
+import { FormSelect } from "../components/form-select";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { QUOTATION_STATUS_LABELS, QUOTATION_STATUS_STYLES } from "@/lib/quotations/display";
 import { initialsFor, avatarColorFor, formatOrderAmount as formatAmount } from "@/lib/order-display";
 import {
@@ -260,64 +266,57 @@ export default function QuotationsPage() {
           )}
 
           <section className="overflow-hidden rounded-xl border border-[#E8EBE6] bg-white">
-            <div className="flex gap-6 overflow-x-auto border-b border-gray-100 px-6">
-              <button
-                onClick={() => { setActiveStatus("ALL"); setPage(1); }}
-                className={`shrink-0 border-b-2 py-4 text-xs font-medium transition ${
-                  activeStatus === "ALL" ? "border-[#28583F] text-[#28583F]" : "border-transparent text-gray-400 hover:text-gray-700"
-                }`}
-              >
-                All
-              </button>
-              {STATUS_VALUES.map((status) => (
-                <button
-                  key={status}
-                  onClick={() => { setActiveStatus(status); setPage(1); }}
-                  className={`shrink-0 border-b-2 py-4 text-xs font-medium transition ${
-                    activeStatus === status ? "border-[#28583F] text-[#28583F]" : "border-transparent text-gray-400 hover:text-gray-700"
-                  }`}
-                >
-                  {QUOTATION_STATUS_LABELS[status]}
-                </button>
-              ))}
-            </div>
+            <Tabs value={activeStatus} onValueChange={(value) => { setActiveStatus(value as typeof activeStatus); setPage(1); }}>
+              <TabsList className="h-auto w-full justify-start gap-4 overflow-x-auto rounded-none border-b border-gray-100 bg-transparent px-6 py-0">
+                <TabsTrigger value="ALL" className="h-auto flex-none rounded-none border-0 border-b-2 border-transparent px-0 py-4 text-xs font-medium text-gray-400 shadow-none data-[state=active]:border-[#28583F] data-[state=active]:bg-transparent data-[state=active]:text-[#28583F] data-[state=active]:shadow-none">
+                  All
+                </TabsTrigger>
+                {STATUS_VALUES.map((status) => (
+                  <TabsTrigger
+                    key={status}
+                    value={status}
+                    className="h-auto flex-none rounded-none border-0 border-b-2 border-transparent px-0 py-4 text-xs font-medium text-gray-400 shadow-none data-[state=active]:border-[#28583F] data-[state=active]:bg-transparent data-[state=active]:text-[#28583F] data-[state=active]:shadow-none"
+                  >
+                    {QUOTATION_STATUS_LABELS[status]}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
 
             <div className="flex flex-wrap items-end gap-3 border-b border-gray-100 px-6 py-4">
               <div className="relative max-w-sm flex-1">
                 <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input
+                <Input
                   type="text"
                   placeholder="Search by number or customer..."
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
-                  className="h-10 w-full rounded-lg border border-gray-200 bg-white pl-9 pr-4 text-xs outline-none focus:border-[#7C9D87] focus:ring-2 focus:ring-green-50"
+                  className="h-10 pl-9 pr-4 text-xs md:text-xs"
                 />
               </div>
-              <select
+              <FormSelect
                 value={salespersonId}
-                onChange={(event) => { setSalespersonId(event.target.value); setPage(1); }}
-                className="h-10 rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
-              >
-                <option value="">All salespeople</option>
-                {salespeople.map((person) => (
-                  <option key={person.id} value={person.id}>{person.name}</option>
-                ))}
-              </select>
-              <input
+                onValueChange={(value) => { setSalespersonId(value); setPage(1); }}
+                options={[{ value: "", label: "All salespeople" }, ...salespeople.map((person) => ({ value: person.id, label: person.name }))]}
+                className="h-10 w-48 text-xs"
+                aria-label="Salesperson"
+              />
+              <Input
                 type="text"
                 placeholder="Currency (e.g. USD)"
                 value={currency}
                 onChange={(event) => { setCurrency(event.target.value.toUpperCase()); setPage(1); }}
-                className="h-10 w-32 rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
+                className="h-10 w-32 text-xs md:text-xs"
               />
-              <label className="flex items-center gap-1.5 text-[11px] text-gray-500">
-                From
-                <input type="date" value={dateFrom} onChange={(event) => { setDateFrom(event.target.value); setPage(1); }} className="h-10 rounded-lg border border-gray-200 px-2 text-xs outline-none focus:border-[#7C9D87]" />
-              </label>
-              <label className="flex items-center gap-1.5 text-[11px] text-gray-500">
-                To
-                <input type="date" value={dateTo} onChange={(event) => { setDateTo(event.target.value); setPage(1); }} className="h-10 rounded-lg border border-gray-200 px-2 text-xs outline-none focus:border-[#7C9D87]" />
-              </label>
+              <DateRangePicker
+                from={dateFrom}
+                to={dateTo}
+                onChange={(range) => {
+                  setDateFrom(range.from);
+                  setDateTo(range.to);
+                  setPage(1);
+                }}
+              />
               <p className="ml-auto whitespace-nowrap text-[11px] text-gray-400">
                 {pagination.totalItems} quotation{pagination.totalItems === 1 ? "" : "s"} found
               </p>
@@ -416,13 +415,13 @@ export default function QuotationsPage() {
                 Page {pagination.page} of {pagination.totalPages} · {pagination.totalItems} total
               </p>
               <div className="flex items-center gap-2">
-                <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={pagination.page <= 1} className="rounded-lg border border-gray-200 px-3 py-2 text-[11px] text-gray-500 disabled:cursor-not-allowed disabled:text-gray-300">
+                <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={pagination.page <= 1}>
                   Previous
-                </button>
-                <span className="rounded-lg bg-[#173D2E] px-3 py-2 text-[11px] font-semibold text-white">{pagination.page}</span>
-                <button onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))} disabled={pagination.page >= pagination.totalPages} className="rounded-lg border border-gray-200 px-3 py-2 text-[11px] text-gray-500 disabled:cursor-not-allowed disabled:text-gray-300">
+                </Button>
+                <Badge className="bg-[#173D2E] px-3 py-1.5 text-[11px] font-semibold text-white">{pagination.page}</Badge>
+                <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))} disabled={pagination.page >= pagination.totalPages}>
                   Next
-                </button>
+                </Button>
               </div>
             </div>
           </section>

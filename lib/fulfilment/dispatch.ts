@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { TRANSACTION_OPTIONS } from "@/lib/orders";
 import { parseScaledDecimal } from "@/lib/picking/validation";
 import { getOrderFulfilmentStatus } from "@/lib/fulfilment/queries";
-import type { CreateDispatchInput } from "@/lib/fulfilment/validation";
+import type { ChangeDispatchAssignmentInput, CreateDispatchInput } from "@/lib/fulfilment/validation";
 
 /**
  * Milestone 10 (Communication Channels & Fulfilment). Dispatch (spec
@@ -52,9 +52,9 @@ export async function createDispatchRecord(orderId: string, actorId: string, inp
   // after being selected in the UI is rejected here, same as any other
   // stale-selection race.
   const [driver, assistant, vehicle] = await Promise.all([
-    prisma.personnel.findUnique({ where: { id: input.driverId }, select: { id: true, role: true, status: true } }),
-    prisma.personnel.findUnique({ where: { id: input.assistantId }, select: { id: true, role: true, status: true } }),
-    prisma.vehicle.findUnique({ where: { id: input.vehicleId }, select: { id: true, status: true } }),
+    prisma.personnel.findUnique({ where: { id: input.driverId }, select: { id: true, name: true, role: true, status: true } }),
+    prisma.personnel.findUnique({ where: { id: input.assistantId }, select: { id: true, name: true, role: true, status: true } }),
+    prisma.vehicle.findUnique({ where: { id: input.vehicleId }, select: { id: true, registrationNumber: true, status: true } }),
   ]);
   if (!driver || driver.status !== "ACTIVE" || driver.role !== "DRIVER") {
     return { ok: false, status: 400, message: "The selected driver is not a registered, active driver." };
@@ -65,6 +65,10 @@ export async function createDispatchRecord(orderId: string, actorId: string, inp
   if (!vehicle || vehicle.status !== "ACTIVE") {
     return { ok: false, status: 400, message: "The selected vehicle is not a registered, active vehicle." };
   }
+
+  const driverName = driver.name;
+  const assistantName = assistant.name;
+  const vehicleRegistration = vehicle.registrationNumber;
 
   const fulfilment = await getOrderFulfilmentStatus(orderId);
   if (!fulfilment) {
@@ -123,7 +127,19 @@ export async function createDispatchRecord(orderId: string, actorId: string, inp
         action: "DISPATCH_RECORD_CREATED",
         entityType: "DispatchRecord",
         entityId: record.id,
-        afterData: { orderId, lines: input.lines, driverId: input.driverId, assistantId: input.assistantId, vehicleId: input.vehicleId },
+        afterData: {
+          orderId,
+          lines: input.lines,
+          driverId: input.driverId,
+          assistantId: input.assistantId,
+          vehicleId: input.vehicleId,
+          // Names are snapshotted into the history event so the initial
+          // assignment still reads correctly if a person/vehicle record is
+          // later renamed or deactivated.
+          driverName: driverName,
+          assistantName: assistantName,
+          vehicleRegistration: vehicleRegistration,
+        },
       },
     });
 
@@ -184,6 +200,115 @@ export async function cancelDispatchRecord(dispatchRecordId: string, actorId: st
     });
     await tx.auditEvent.create({
       data: { actorId, action: "DISPATCH_RECORD_CANCELLED", entityType: "DispatchRecord", entityId: dispatchRecordId, afterData: { reason } },
+    });
+  }, TRANSACTION_OPTIONS);
+
+  return { ok: true };
+}
+
+export type ChangeDispatchAssignmentResult = { ok: true } | { ok: false; status: number; message: string };
+
+/**
+ * Changes the driver, assistant and/or vehicle on a dispatch that has not
+ * finished yet, and records the change -- who, when, why, and the before and
+ * after values -- as an AuditEvent that the order's Fulfilment History
+ * (lib/fulfilment/assignment-history.ts) reads back. Nothing is invented: the
+ * history only ever contains events that were actually written here or at
+ * dispatch creation.
+ *
+ * Allowed while the dispatch is PLANNED or DEPARTED (a truck can break down
+ * mid-route); once DELIVERED or CANCELLED the assignment is a closed historical
+ * fact and cannot be rewritten. The same registered-and-active rules as
+ * createDispatchRecord apply, re-checked server-side. A request that would
+ * leave every field unchanged is rejected rather than writing an empty event.
+ * `orderId` is checked against the record so a dispatch cannot be changed
+ * through another order's URL.
+ */
+export async function changeDispatchAssignment(
+  orderId: string,
+  dispatchRecordId: string,
+  actorId: string,
+  input: ChangeDispatchAssignmentInput
+): Promise<ChangeDispatchAssignmentResult> {
+  const record = await prisma.dispatchRecord.findUnique({
+    where: { id: dispatchRecordId },
+    select: {
+      id: true,
+      orderId: true,
+      status: true,
+      driverId: true,
+      assistantId: true,
+      vehicleId: true,
+      driver: { select: { name: true } },
+      assistant: { select: { name: true } },
+      vehicle: { select: { registrationNumber: true } },
+    },
+  });
+  if (!record || record.orderId !== orderId) {
+    return { ok: false, status: 404, message: "Dispatch record not found." };
+  }
+  if (record.status !== "PLANNED" && record.status !== "DEPARTED") {
+    return {
+      ok: false,
+      status: 409,
+      message: `The assignment of a ${record.status === "DELIVERED" ? "delivered" : "cancelled"} dispatch is part of the historical record and cannot be changed.`,
+    };
+  }
+
+  const nextDriverId = input.driverId ?? record.driverId;
+  const nextAssistantId = input.assistantId ?? record.assistantId;
+  const nextVehicleId = input.vehicleId ?? record.vehicleId;
+  if (nextDriverId === record.driverId && nextAssistantId === record.assistantId && nextVehicleId === record.vehicleId) {
+    return { ok: false, status: 400, message: "Nothing would change: the selected driver, assistant and vehicle are already assigned." };
+  }
+
+  const [driver, assistant, vehicle] = await Promise.all([
+    nextDriverId ? prisma.personnel.findUnique({ where: { id: nextDriverId }, select: { id: true, name: true, role: true, status: true } }) : null,
+    nextAssistantId ? prisma.personnel.findUnique({ where: { id: nextAssistantId }, select: { id: true, name: true, role: true, status: true } }) : null,
+    nextVehicleId ? prisma.vehicle.findUnique({ where: { id: nextVehicleId }, select: { id: true, registrationNumber: true, status: true } }) : null,
+  ]);
+  // Only the fields actually being changed need to be registered AND active;
+  // an unchanged field is left alone even if that person was deactivated since.
+  if (input.driverId && input.driverId !== record.driverId && (!driver || driver.status !== "ACTIVE" || driver.role !== "DRIVER")) {
+    return { ok: false, status: 400, message: "The selected driver is not a registered, active driver." };
+  }
+  if (input.assistantId && input.assistantId !== record.assistantId && (!assistant || assistant.status !== "ACTIVE" || assistant.role !== "DRIVER_ASSISTANT")) {
+    return { ok: false, status: 400, message: "The selected driver's assistant is not a registered, active driver's assistant." };
+  }
+  if (input.vehicleId && input.vehicleId !== record.vehicleId && (!vehicle || vehicle.status !== "ACTIVE")) {
+    return { ok: false, status: 400, message: "The selected vehicle is not a registered, active vehicle." };
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.dispatchRecord.update({
+      where: { id: dispatchRecordId },
+      data: { driverId: nextDriverId, assistantId: nextAssistantId, vehicleId: nextVehicleId },
+    });
+    await tx.auditEvent.create({
+      data: {
+        actorId,
+        action: "DISPATCH_ASSIGNMENT_CHANGED",
+        entityType: "DispatchRecord",
+        entityId: dispatchRecordId,
+        beforeData: {
+          driverId: record.driverId,
+          assistantId: record.assistantId,
+          vehicleId: record.vehicleId,
+          driverName: record.driver?.name ?? null,
+          assistantName: record.assistant?.name ?? null,
+          vehicleRegistration: record.vehicle?.registrationNumber ?? null,
+        },
+        afterData: {
+          driverId: nextDriverId,
+          assistantId: nextAssistantId,
+          vehicleId: nextVehicleId,
+          driverName: driver?.name ?? null,
+          assistantName: assistant?.name ?? null,
+          vehicleRegistration: vehicle?.registrationNumber ?? null,
+          reason: input.reason,
+          dispatchStatusAtChange: record.status,
+        },
+      },
     });
   }, TRANSACTION_OPTIONS);
 

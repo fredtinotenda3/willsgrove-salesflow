@@ -1,5 +1,8 @@
 import { Prisma, OrderStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { computeOrderPricing, describePricingGaps, resolveVatRatePercent } from "@/lib/order-pricing";
+import { loadTaxRatesByCode, resolveCustomerPriceListPrices } from "@/lib/order-price-resolution";
+import { loadDispatchAssignmentHistory } from "@/lib/fulfilment/assignment-history-queries";
 
 export const ORDER_DEFAULT_PAGE_SIZE = 50;
 export const ORDER_MAX_PAGE_SIZE = 100;
@@ -82,103 +85,44 @@ const orderListSelect = {
   // price... ie Amount column on Workspace / Sales Management / Orders
   // page"): `total` above stays null until the (not-yet-built)
   // price-approval workflow sets it -- see createOrderCore's own comment
-  // in lib/orders.ts. Rather than show nothing, estimateOrderTotal below
+  // in lib/orders.ts. Rather than show nothing, summariseListOrderTotal below
   // sums each line's own customerUnitPrice x requestedQuantity as a
   // clearly-labelled estimate, using exactly the same per-line price this
   // order was actually submitted with.
-  lines: { select: { requestedQuantity: true, customerUnitPrice: true } },
+  lines: { select: { requestedQuantity: true, customerUnitPrice: true, approvedUnitPrice: true, product: { select: { vatCode: true } } } },
 } satisfies Prisma.CustomerOrderSelect;
 
-// Scaled-bigint decimal-string arithmetic (never floats), matching this
-// codebase's house convention for money (lib/fulfilment/decimal.ts /
-// lib/picking/validation.ts). Mirrors app/orders/new/page.tsx's own
-// computeLinePreviewTotal rather than importing across domains (see
-// lib/customers.ts's isUniqueViolation for why duplication is this
-// codebase's deliberate convention here).
-const ESTIMATE_DECIMAL_PATTERN = /^\d+(\.\d{1,4})?$/;
+// Order totals are derived from each line's stored unit-price snapshot by
+// the one shared calculation in lib/order-pricing.ts (line totals, subtotal,
+// configured tax, final total) -- the Orders list, the dashboard widget and
+// the order detail page all go through it, so they cannot disagree. An
+// order's own `total` column stays the APPROVED/SAP-confirmed amount and,
+// when present, always wins over the derived figure on screen.
+type PricedLineSource = {
+  requestedQuantity: { toString(): string };
+  customerUnitPrice: { toString(): string } | null;
+  approvedUnitPrice: { toString(): string } | null;
+  product: { vatCode: string | null } | null;
+};
 
-function parseEstimateScaledDecimal(value: string): bigint | null {
-  if (!ESTIMATE_DECIMAL_PATTERN.test(value)) return null;
-  const [intPart, fracPartRaw = ""] = value.split(".");
-  return BigInt(intPart) * BigInt(10_000) + BigInt(fracPartRaw.padEnd(4, "0"));
-}
-
-function formatEstimateScaledDecimal(scaled: bigint): string {
-  const intPart = scaled / BigInt(10_000);
-  const fracPart = scaled % BigInt(10_000);
-  return `${intPart}.${fracPart.toString().padStart(4, "0").slice(0, 2)}`;
-}
-
-/**
- * Sums requestedQuantity x customerUnitPrice across an order's lines.
- * Returns null (never a guessed/partial figure silently presented as
- * whole) when there are no lines, or ANY line is missing a resolvable
- * price/quantity -- isPartial distinguishes "no estimate possible" from
- * "some but not all lines priced" so the UI can caveat correctly rather
- * than quietly understating the real total.
- *
- * Exported (not just used by listOrders above): "Order Total" on the
- * order detail page (app/orders/[id]/page.tsx) and the dashboard's
- * recent-orders widget (app/page.tsx) both still called plain
- * formatOrderAmount(order.total, ...) directly -- the exact same
- * "Pending pricing" staleness this function's own fallback was built to
- * fix on the Orders list, just never wired to these other two callers.
- * getOrderById below now computes and returns the same
- * estimatedTotal/estimatedTotalIsPartial pair so every place that shows
- * an order's total uses the one shared estimate, never a second
- * reimplementation.
- */
-export function estimateOrderTotal(
-  lines: { requestedQuantity: { toString(): string }; customerUnitPrice: { toString(): string } | null }[]
-): { estimatedTotal: string | null; estimatedTotalIsPartial: boolean } {
-  if (lines.length === 0) return { estimatedTotal: null, estimatedTotalIsPartial: false };
-
-  let sum = BigInt(0);
-  let pricedLineCount = 0;
-
-  for (const line of lines) {
-    if (line.customerUnitPrice === null) continue;
-    const quantity = parseEstimateScaledDecimal(line.requestedQuantity.toString());
-    const unitPrice = parseEstimateScaledDecimal(line.customerUnitPrice.toString());
-    if (quantity === null || unitPrice === null) continue;
-    sum += (quantity * unitPrice) / BigInt(10_000);
-    pricedLineCount += 1;
-  }
-
-  if (pricedLineCount === 0) return { estimatedTotal: null, estimatedTotalIsPartial: false };
-  return {
-    estimatedTotal: formatEstimateScaledDecimal(sum),
-    estimatedTotalIsPartial: pricedLineCount < lines.length,
-  };
+function toPricingInputs(lines: PricedLineSource[], taxRates: ReadonlyMap<string, string>) {
+  return lines.map((line) => ({
+    quantity: line.requestedQuantity.toString(),
+    // Same `approvedUnitPrice ?? customerUnitPrice` convention used everywhere else in this codebase.
+    unitPrice: (line.approvedUnitPrice ?? line.customerUnitPrice)?.toString() ?? null,
+    vatRatePercent: resolveVatRatePercent(line.product?.vatCode, taxRates),
+  }));
 }
 
 /**
- * Real-world fix ("Line Total column... should derive from unit price
- * used when creating order, Total Pending pricing also pending"): the
- * same "Pending pricing" staleness estimateOrderTotal above was built to
- * fix at the ORDER level was never fixed at the individual LINE level --
- * app/orders/[id]/page.tsx's "Line Total" column read OrderLine.lineTotal
- * alone and showed "Pending" for the lifetime of every order up to
- * SAP invoice reconciliation (the only place lineTotal is ever actually
- * written -- confirmed by inspection: no order-creation/approval code
- * path in this codebase ever sets OrderLine.lineTotal or
- * approvedUnitPrice; only customerUnitPrice, entered at order creation,
- * is reliably populated). One line's estimate, not the whole order's --
- * same scaled-decimal arithmetic, same customerUnitPrice-only source (an
- * order that somehow had approvedUnitPrice set would also already have
- * lineTotal set by the same real pricing event, so there is nothing this
- * fallback would ever need from that column), same "null, never a
- * guessed figure" discipline as estimateOrderTotal.
+ * Derived total for the Orders list / dashboard: the full total (subtotal +
+ * configured tax) when every line is priced and taxed, and otherwise a
+ * clearly-partial figure from what IS known -- never a guessed value, and
+ * null (shown as "Pending pricing") only when no line has a price at all.
  */
-export function estimateLineTotal(
-  requestedQuantity: { toString(): string },
-  customerUnitPrice: { toString(): string } | null
-): string | null {
-  if (customerUnitPrice === null) return null;
-  const quantity = parseEstimateScaledDecimal(requestedQuantity.toString());
-  const unitPrice = parseEstimateScaledDecimal(customerUnitPrice.toString());
-  if (quantity === null || unitPrice === null) return null;
-  return formatEstimateScaledDecimal((quantity * unitPrice) / BigInt(10_000));
+function summariseListOrderTotal(lines: PricedLineSource[], taxRates: ReadonlyMap<string, string>) {
+  const pricing = computeOrderPricing(toPricingInputs(lines, taxRates));
+  return { estimatedTotal: pricing.total, estimatedTotalIsPartial: pricing.total !== null && !pricing.isComplete };
 }
 
 /**
@@ -273,9 +217,11 @@ export async function listOrders(query: OrderListQuery) {
     }),
   ]);
 
+  const taxRates = await loadTaxRatesByCode(rows.flatMap((order) => order.lines.map((line) => line.product?.vatCode)));
+
   return {
     orders: rows.map((order) => {
-      const { estimatedTotal, estimatedTotalIsPartial } = estimateOrderTotal(order.lines);
+      const { estimatedTotal, estimatedTotalIsPartial } = summariseListOrderTotal(order.lines, taxRates);
       return {
         id: order.id,
         reference: order.reference,
@@ -364,7 +310,7 @@ export async function getOrderById(id: string) {
           // callers of getOrderById (app/orders/[id]/page.tsx,
           // app/fulfilment/[id]/page.tsx, app/api/orders/[id]/route.ts)
           // are unaffected.
-          product: { select: { sapItemCode: true, itemName: true } },
+          product: { select: { sapItemCode: true, itemName: true, vatCode: true } },
         },
       },
       documents: {
@@ -500,6 +446,48 @@ export async function getOrderById(id: string) {
 
   if (!order) return null;
 
+  // Pricing (lib/order-pricing.ts). The price used for a line is its stored
+  // snapshot (approvedUnitPrice ?? customerUnitPrice) -- never re-resolved
+  // when one exists, which is what keeps historical orders on the price
+  // they were created with. Only a line with NO snapshot at all falls back
+  // to the customer's CURRENT price-list price, and that value is flagged
+  // (`priceSource: "PRICE_LIST_CURRENT"`) so the UI can say it is not a
+  // stored price. The fallback is skipped when the price list's currency
+  // differs from the order's: a price is never shown under a currency it
+  // wasn't quoted in.
+  const unsnapshottedProductIds = order.lines
+    .filter((line) => (line.approvedUnitPrice ?? line.customerUnitPrice) === null && line.productId)
+    .map((line) => line.productId as string);
+  const currentListPrices =
+    unsnapshottedProductIds.length > 0
+      ? await resolveCustomerPriceListPrices(prisma, order.customer.id, unsnapshottedProductIds)
+      : null;
+  const currentListPricesUsable = currentListPrices?.currencyCode === order.currency;
+  const taxRates = await loadTaxRatesByCode(order.lines.map((line) => line.product?.vatCode));
+  const assignmentHistory = await loadDispatchAssignmentHistory(order.dispatchRecords.map((dispatch) => dispatch.id));
+
+  const pricedLines = order.lines.map((line) => {
+    const snapshot = (line.approvedUnitPrice ?? line.customerUnitPrice)?.toString() ?? null;
+    const live =
+      snapshot === null && currentListPricesUsable && line.productId
+        ? (currentListPrices?.priceByProductId.get(line.productId) ?? null)
+        : null;
+    return {
+      unitPrice: snapshot ?? live,
+      priceSource: (snapshot !== null ? "SNAPSHOT" : live !== null ? "PRICE_LIST_CURRENT" : null) as
+        | "SNAPSHOT"
+        | "PRICE_LIST_CURRENT"
+        | null,
+    };
+  });
+  const pricing = computeOrderPricing(
+    order.lines.map((line, index) => ({
+      quantity: line.requestedQuantity.toString(),
+      unitPrice: pricedLines[index].unitPrice,
+      vatRatePercent: resolveVatRatePercent(line.product?.vatCode, taxRates),
+    }))
+  );
+
   return {
     id: order.id,
     reference: order.reference,
@@ -530,6 +518,10 @@ export async function getOrderById(id: string) {
       departedAt: dispatch.departedAt?.toISOString() ?? null,
       departedByName: dispatch.departedBy?.name ?? null,
       createdByName: dispatch.createdBy.name,
+      // Recorded initial assignment + every later change (who, when, why,
+      // before/after) -- lib/fulfilment/assignment-history.ts. Empty for a
+      // dispatch with no recorded events; never reconstructed.
+      assignmentHistory: assignmentHistory.get(dispatch.id) ?? [],
       // Real-world fix ("Order Fulfilment History should include all
       // products accepted and rejected, if any") -- null until a
       // delivery outcome has actually been recorded for this dispatch.
@@ -557,7 +549,21 @@ export async function getOrderById(id: string) {
     subtotal: order.subtotal?.toString() ?? null,
     taxTotal: order.taxTotal?.toString() ?? null,
     total: order.total?.toString() ?? null,
-    ...estimateOrderTotal(order.lines),
+    // Derived figures (never stored): see lib/order-pricing.ts. `total`
+    // above remains the approved/SAP-confirmed amount and wins on screen
+    // whenever it is present.
+    estimatedTotal: pricing.total,
+    estimatedTotalIsPartial: pricing.total !== null && !pricing.isComplete,
+    pricing: {
+      subtotal: pricing.subtotal,
+      taxTotal: pricing.taxTotal,
+      total: pricing.total,
+      pricedLineCount: pricing.pricedLineCount,
+      unpricedLineCount: pricing.unpricedLineCount,
+      taxUnconfiguredLineCount: pricing.taxUnconfiguredLineCount,
+      isComplete: pricing.isComplete,
+      gapsExplanation: describePricingGaps(pricing),
+    },
     originalSourceText: order.originalSourceText,
     internalNotes: order.internalNotes,
     isDemo: order.isDemo,
@@ -574,7 +580,7 @@ export async function getOrderById(id: string) {
     customer: order.customer,
     customerLocation: order.customerLocation,
     createdBy: order.createdBy,
-    lines: order.lines.map((line) => ({
+    lines: order.lines.map((line, index) => ({
       id: line.id,
       lineNumber: line.lineNumber,
       originalProductDescription: line.originalProductDescription,
@@ -584,13 +590,19 @@ export async function getOrderById(id: string) {
       requestedUnitCode: line.requestedUnitCode,
       customerUnitPrice: line.customerUnitPrice?.toString() ?? null,
       approvedUnitPrice: line.approvedUnitPrice?.toString() ?? null,
+      // SAP-reconciled total; null until invoice reconciliation sets it.
       lineTotal: line.lineTotal?.toString() ?? null,
-      // Real-world fix ("Line Total... should derive from unit price
-      // used when creating order") -- see estimateLineTotal's own
-      // comment. Null exactly when lineTotal is also null AND no
-      // customerUnitPrice was ever entered -- the page falls back to
-      // this only when the real lineTotal itself is null.
-      estimatedLineTotal: estimateLineTotal(line.requestedQuantity, line.customerUnitPrice),
+      // Unit price actually used for the derived figures below, and where
+      // it came from ("SNAPSHOT" = stored on the line; "PRICE_LIST_CURRENT"
+      // = no snapshot, taken from the customer's current price list).
+      unitPrice: pricedLines[index].unitPrice,
+      priceSource: pricedLines[index].priceSource,
+      // Derived per-line figures (lib/order-pricing.ts). Null exactly when
+      // the line has no usable price -- never a fabricated zero.
+      lineSubtotal: pricing.lines[index].subtotal,
+      lineTax: pricing.lines[index].tax,
+      lineTaxConfigured: pricing.lines[index].taxConfigured,
+      estimatedLineTotal: pricing.lines[index].total,
       verificationStatus: line.verificationStatus,
       salesNotes: line.salesNotes,
       // Milestone 3 completion. Null when this line's product has since

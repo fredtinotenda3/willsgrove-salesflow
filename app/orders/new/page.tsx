@@ -4,6 +4,16 @@ import { Fragment, useEffect, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import Sidebar from "../../components/sidebar";
+import { DatePicker } from "../../components/date-picker";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { ORDER_SOURCE_LABELS } from "@/lib/order-display";
 
 import {
@@ -21,6 +31,13 @@ import {
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
+
+// Radix Select cannot hold an empty-string value; "no selection" uses this sentinel.
+const NONE = "__none__";
+// Spreadsheet-style cell input: shadcn Input stripped to fill its table cell edge-to-edge.
+const CELL_INPUT =
+  "h-10 rounded-none border-0 bg-transparent px-2 text-xs shadow-none focus-visible:bg-[#F3F7F1] focus-visible:ring-0 md:text-xs";
+const FIELD_INPUT = "h-10 text-xs md:text-xs";
 
 type CustomerSummary = {
   id: string;
@@ -208,6 +225,9 @@ export default function NewOrderPage() {
   // empty-state copy below and on the order detail page).
   const [pastedText, setPastedText] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  // Currency of the price list that prefilled line prices. Sent with the order so
+  // the order is priced and denominated in the same currency as its snapshot prices.
+  const [priceListCurrency, setPriceListCurrency] = useState<string | null>(null);
   // Real-world fix (compact order-creation UI): open by default so the
   // card's existence isn't hidden on first visit, but collapsible once
   // the salesperson has decided neither field applies to this order.
@@ -555,6 +575,7 @@ export default function NewOrderPage() {
       .then((res) => res.json())
       .then((data: { success?: boolean; price?: { unitPrice: string; currencyCode: string; priceListCode: string } | null }) => {
         if (!data.success || !data.price) return;
+        setPriceListCurrency(data.price.currencyCode);
         setLines((prev) =>
           prev.map((line) =>
             line.key === key && line.productId === productId && line.customerUnitPrice.trim() === ""
@@ -686,6 +707,7 @@ export default function NewOrderPage() {
       })),
     };
 
+    if (priceListCurrency && startedLines.some((line) => line.priceListHint)) body.currency = priceListCurrency;
     if (customerLocationId) body.customerLocationId = customerLocationId;
     // Milestone 12 (Sales Performance Intelligence). Omitted entirely
     // when blank -- never sent as "" -- so the server's own
@@ -798,13 +820,15 @@ export default function NewOrderPage() {
                     {upload.status === "error" && (
                       <div className="mt-1">
                         <p className="text-[11px] text-red-600">{upload.message}</p>
-                        <button
+<Button
                           type="button"
+                          variant="outline"
+                          size="xs"
                           onClick={() => uploadOneDocument(createdOrder.id, index, upload.file)}
-                          className="mt-1 rounded border border-red-200 px-2 py-1 text-[11px] font-semibold text-red-700 hover:bg-red-100"
+                          className="mt-1 border-red-200 text-red-700 hover:bg-red-100"
                         >
                           Retry Upload
-                        </button>
+                        </Button>
                       </div>
                     )}
                   </div>
@@ -813,18 +837,12 @@ export default function NewOrderPage() {
             )}
 
             <div className="mt-6 flex items-center justify-center gap-3">
-              <Link
-                href={`/orders/${createdOrder.id}`}
-                className="rounded-lg bg-[#173D2E] px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#24543F]"
-              >
-                View Order
-              </Link>
-              <Link
-                href="/orders"
-                className="rounded-lg border border-gray-200 px-4 py-2.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-              >
-                Back to Orders
-              </Link>
+<Button asChild className="bg-[#173D2E] hover:bg-[#24543F]">
+                <Link href={`/orders/${createdOrder.id}`}>View Order</Link>
+              </Button>
+              <Button asChild variant="outline">
+                <Link href="/orders">Back to Orders</Link>
+              </Button>
             </div>
           </div>
         </main>
@@ -843,42 +861,44 @@ export default function NewOrderPage() {
             <h2 className="mt-1 text-lg font-bold text-[#17251E]">Receive New Order</h2>
           </div>
           <div className="flex items-center gap-5">
-            <button className="text-gray-400 hover:text-gray-700">
+<Button type="button" variant="ghost" size="icon" className="text-gray-400 hover:text-gray-700" aria-label="Search">
               <Search size={19} />
-            </button>
-            <button className="relative text-gray-400 hover:text-gray-700">
+            </Button>
+            <Button type="button" variant="ghost" size="icon" className="relative text-gray-400 hover:text-gray-700" aria-label="Notifications">
               <Bell size={19} />
-              <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-red-500" />
-            </button>
+              <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-red-500" />
+            </Button>
           </div>
         </header>
 
         <form onSubmit={handleSubmit} className="space-y-6 p-8">
           <div className="flex items-center justify-between">
-            <Link href="/orders" className="flex items-center gap-2 text-xs font-semibold text-gray-500 hover:text-gray-700">
-              <ArrowLeft size={14} />
-              Back to Orders
-            </Link>
+<Button asChild variant="ghost" size="sm" className="text-xs font-semibold text-gray-500">
+              <Link href="/orders">
+                <ArrowLeft size={14} />
+                Back to Orders
+              </Link>
+            </Button>
           </div>
 
           {repeatBannerText && (
-            <div className="flex items-center gap-2 rounded-lg border border-[#D9EFE0] bg-[#F0FBF4] px-4 py-3 text-xs text-[#1F7A43]">
-              <CheckCircle2 size={15} />
-              {repeatBannerText}
-            </div>
+<Alert className="border-[#D9EFE0] bg-[#F0FBF4] text-[#1F7A43]">
+              <CheckCircle2 />
+              <AlertDescription className="text-xs text-[#1F7A43]">{repeatBannerText}</AlertDescription>
+            </Alert>
           )}
           {repeatLoadError && (
-            <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">
-              <AlertCircle size={15} />
-              {repeatLoadError}
-            </div>
+<Alert variant="destructive">
+              <AlertCircle />
+              <AlertDescription className="text-xs">{repeatLoadError}</AlertDescription>
+            </Alert>
           )}
 
           {formError && (
-            <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">
-              <AlertCircle size={15} />
-              {formError}
-            </div>
+<Alert variant="destructive">
+              <AlertCircle />
+              <AlertDescription className="text-xs">{formError}</AlertDescription>
+            </Alert>
           )}
 
           {/* Real-world fix (compact order-creation UI, spec section 3):
@@ -889,54 +909,55 @@ export default function NewOrderPage() {
               field is required. Both remain fully independent of each
               other and of the manual lines below; nothing here is
               auto-extracted into lines (unchanged behavior). */}
-          <section className="rounded-xl border border-[#E8EBE6] bg-white">
-            <button
+<Card className="gap-0 rounded-xl border-[#E8EBE6] bg-white py-0 shadow-none">
+            <Button
               type="button"
+              variant="ghost"
               onClick={() => setMessageDocsExpanded((prev) => !prev)}
-              className="flex w-full items-center justify-between px-5 py-3.5"
+              className="h-auto w-full justify-between rounded-xl px-5 py-3.5 font-normal"
             >
               <span className="flex items-center gap-2 text-[13px] font-semibold text-[#17251E]">
                 Original Message &amp; Documents
-                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-400">Optional</span>
+                <Badge variant="secondary" className="text-[10px] font-medium text-gray-400">Optional</Badge>
                 {(pastedText.trim() || selectedFiles.length > 0) && (
-                  <span className="rounded-full bg-[#F0F5EF] px-2 py-0.5 text-[10px] font-semibold text-[#315C43]">
+                  <Badge variant="secondary" className="bg-[#F0F5EF] text-[10px] font-semibold text-[#315C43]">
                     {[pastedText.trim() ? "Message" : null, selectedFiles.length > 0 ? `${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"}` : null]
                       .filter(Boolean)
-                      .join(" · ")}
-                  </span>
+.join(" · ")}
+                  </Badge>
                 )}
               </span>
               {messageDocsExpanded ? <ChevronUp size={15} className="text-gray-400" /> : <ChevronDown size={15} className="text-gray-400" />}
-            </button>
+</Button>
 
             {messageDocsExpanded && (
               <div className="grid grid-cols-2 gap-5 border-t border-[#E8EBE6] px-5 py-4">
                 <div>
-                  <label className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500">
+                  <Label className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500">
                     <MessageSquare size={13} />
                     Customer&apos;s message or PO text
-                  </label>
-                  <textarea
+                  </Label>
+<Textarea
                     value={pastedText}
                     onChange={(event) => setPastedText(event.target.value)}
                     placeholder="Paste the customer's email or WhatsApp message here..."
                     rows={3}
                     maxLength={5000}
-                    className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-xs outline-none focus:border-[#7C9D87] focus:ring-2 focus:ring-green-50"
+                    className="mt-1 min-h-0 text-xs md:text-xs"
                   />
                 </div>
 
                 <div>
-                  <label className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500">
+                  <Label className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500">
                     <Upload size={13} />
                     Attach file(s)
-                  </label>
-                  <label className="mt-1 flex cursor-pointer items-center justify-center gap-2 rounded-lg border-2 border-dashed border-gray-200 py-3 text-center hover:border-[#7C9D87]">
+                  </Label>
+                  <Label className="mt-1 flex cursor-pointer items-center justify-center gap-2 rounded-lg border-2 border-dashed border-gray-200 py-3 text-center hover:border-[#7C9D87]">
                     <Upload size={15} className="text-gray-400" />
                     <span className="text-xs font-medium text-gray-600">
                       {selectedFiles.length > 0 ? "Click to add more" : "Click to select file(s) -- up to 20 MB each"}
                     </span>
-                    <input
+                    <Input
                       type="file"
                       multiple
                       className="hidden"
@@ -945,34 +966,33 @@ export default function NewOrderPage() {
                         event.target.value = "";
                       }}
                     />
-                  </label>
+                  </Label>
                   {selectedFiles.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {selectedFiles.map((file, index) => (
-                        <span
-                          key={`${file.name}-${index}`}
-                          className="flex items-center gap-1.5 rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[10px] text-gray-600"
-                        >
+<Badge key={`${file.name}-${index}`} variant="outline" className="gap-1.5 bg-gray-50 text-[10px] font-normal text-gray-600">
                           <span className="max-w-[140px] truncate">{file.name}</span>
-                          <button
+                          <Button
                             type="button"
+                            variant="ghost"
+                            size="icon-xs"
                             onClick={() => removeSelectedFile(index)}
-                            className="shrink-0 text-gray-400 hover:text-red-600"
+                            className="size-4 shrink-0 text-gray-400 hover:text-red-600"
                             aria-label={`Remove ${file.name}`}
                           >
                             <X size={11} />
-                          </button>
-                        </span>
+                          </Button>
+                        </Badge>
                       ))}
                     </div>
                   )}
                 </div>
               </div>
             )}
-          </section>
+</Card>
 
           {/* Customer */}
-          <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
+<Card className="gap-0 rounded-xl border-[#E8EBE6] bg-white p-6 shadow-none">
             <h2 className="text-[15px] font-bold text-[#17251E]">Customer</h2>
 
             {selectedCustomer ? (
@@ -983,21 +1003,23 @@ export default function NewOrderPage() {
                     <p className="text-[10px] text-gray-400">SAP code: {selectedCustomer.sapCustomerCode}</p>
                   )}
                 </div>
-                <button
+<Button
                   type="button"
+                  variant="ghost"
+                  size="xs"
                   onClick={() => {
                     setSelectedCustomer(null);
                     setCustomerQuery("");
                   }}
-                  className="text-[11px] font-semibold text-gray-400 hover:text-red-600"
+                  className="font-semibold text-gray-400 hover:text-red-600"
                 >
                   Change
-                </button>
+                </Button>
               </div>
             ) : (
               <div className="relative mt-4">
                 <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input
+<Input
                   type="text"
                   value={customerQuery}
                   onChange={(event) => {
@@ -1006,7 +1028,7 @@ export default function NewOrderPage() {
                   }}
                   onFocus={() => setShowCustomerResults(true)}
                   placeholder="Search customers by name or SAP code..."
-                  className="h-10 w-full rounded-lg border border-gray-200 pl-9 pr-4 text-xs outline-none focus:border-[#7C9D87] focus:ring-2 focus:ring-green-50"
+                  className="h-10 pl-9 pr-4 text-xs md:text-xs"
                 />
                 {showCustomerResults && customerQuery.trim() !== "" && (
                   <div className="absolute z-10 mt-1 w-full rounded-lg border border-gray-100 bg-white shadow-lg">
@@ -1018,9 +1040,10 @@ export default function NewOrderPage() {
                     )}
                     {!customerSearchLoading &&
                       customerResults.map((customer) => (
-                        <button
+<Button
                           key={customer.id}
                           type="button"
+                          variant="ghost"
                           onClick={() => {
                             setSelectedCustomer(customer);
                             setShowCustomerResults(false);
@@ -1036,13 +1059,13 @@ export default function NewOrderPage() {
                               }
                             }
                           }}
-                          className="block w-full px-4 py-3 text-left text-xs hover:bg-gray-50"
+className="h-auto w-full flex-col items-start gap-0 rounded-none px-4 py-3 text-left text-xs font-normal"
                         >
                           <p className="font-medium text-gray-700">{customer.name}</p>
                           {customer.primaryLocation && (
                             <p className="text-[10px] text-gray-400">{customer.primaryLocation.city}</p>
                           )}
-                        </button>
+                        </Button>
                       ))}
                   </div>
                 )}
@@ -1051,144 +1074,133 @@ export default function NewOrderPage() {
 
             {selectedCustomer && (
               <div className="mt-4">
-                <label className="text-[11px] font-semibold text-gray-500">Delivery Location</label>
+                <Label className="text-[11px] font-semibold text-gray-500">Delivery Location</Label>
                 {locationsLoading ? (
                   <p className="mt-1 text-xs text-gray-400">Loading locations...</p>
                 ) : locations.length === 0 ? (
                   <p className="mt-1 text-xs text-gray-400">No saved locations for this customer.</p>
                 ) : (
-                  <select
-                    value={customerLocationId}
-                    onChange={(event) => setCustomerLocationId(event.target.value)}
-                    className="mt-1 h-10 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
-                  >
-                    <option value="">No specific location</option>
-                    {locations.map((location) => (
-                      <option key={location.id} value={location.id}>
-                        {location.label ? `${location.label} — ` : ""}
-                        {location.addressLine1}, {location.city}
-                        {location.isDefault ? " (default)" : ""}
-                      </option>
-                    ))}
-                  </select>
+<Select value={customerLocationId || NONE} onValueChange={(value) => setCustomerLocationId(value === NONE ? "" : value)}>
+                    <SelectTrigger className="mt-1 h-10 w-full text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NONE}>No specific location</SelectItem>
+                      {locations.map((location) => (
+                        <SelectItem key={location.id} value={location.id}>
+                          {location.label ? `${location.label} — ` : ""}
+                          {location.addressLine1}, {location.city}
+                          {location.isDefault ? " (default)" : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 )}
               </div>
             )}
-          </section>
+</Card>
 
           {/* Order details */}
-          <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
+          <Card className="gap-0 rounded-xl border-[#E8EBE6] bg-white p-6 shadow-none">
             <h2 className="text-[15px] font-bold text-[#17251E]">Order Details</h2>
 
             <div className="mt-4 grid grid-cols-2 gap-4">
               <div>
-                <label className="text-[11px] font-semibold text-gray-500">Order Source</label>
-                <select
-                  value={source}
-                  onChange={(event) => setSource(event.target.value as "EMAIL" | "WHATSAPP" | "MANUAL")}
-                  className="mt-1 h-10 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
-                >
-                  {Object.entries(ORDER_SOURCE_LABELS).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
+                <Label className="text-[11px] font-semibold text-gray-500">Order Source</Label>
+<Select value={source} onValueChange={(value) => setSource(value as "EMAIL" | "WHATSAPP" | "MANUAL")}>
+                  <SelectTrigger className="mt-1 h-10 w-full text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(ORDER_SOURCE_LABELS).map(([value, label]) => (
+                      <SelectItem key={value} value={value}>
+                        {label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div>
-                <label className="text-[11px] font-semibold text-gray-500">Customer PO Reference</label>
-                <input
+                <Label className="text-[11px] font-semibold text-gray-500">Customer PO Reference</Label>
+<Input
                   type="text"
                   value={customerPoReference}
                   onChange={(event) => setCustomerPoReference(event.target.value)}
                   placeholder="e.g. PO-219246"
-                  className="mt-1 h-10 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
+                  className={`mt-1 ${FIELD_INPUT}`}
                 />
               </div>
 
               <div>
-                <label className="text-[11px] font-semibold text-gray-500">Order Date</label>
-                <input
-                  type="date"
-                  value={orderDate}
-                  onChange={(event) => setOrderDate(event.target.value)}
-                  className="mt-1 h-10 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
-                />
+                <Label className="text-[11px] font-semibold text-gray-500">Order Date</Label>
+<DatePicker value={orderDate} onValueChange={setOrderDate} placeholder="Pick a date" aria-label="Order date" className="mt-1" />
                 {fieldErrors.orderDate && <p className="mt-1 text-[11px] text-red-600">{fieldErrors.orderDate}</p>}
               </div>
 
               <div>
-                <label className="text-[11px] font-semibold text-gray-500">Requested Delivery Date</label>
-                <input
-                  type="date"
-                  value={requestedDeliveryDate}
-                  onChange={(event) => setRequestedDeliveryDate(event.target.value)}
-                  className="mt-1 h-10 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
-                />
+                <Label className="text-[11px] font-semibold text-gray-500">Requested Delivery Date</Label>
+<DatePicker value={requestedDeliveryDate} onValueChange={setRequestedDeliveryDate} placeholder="Pick a date" aria-label="Requested delivery date" className="mt-1" />
                 {fieldErrors.requestedDeliveryDate && (
                   <p className="mt-1 text-[11px] text-red-600">{fieldErrors.requestedDeliveryDate}</p>
                 )}
               </div>
 
               <div>
-                <label className="text-[11px] font-semibold text-gray-500">Salesperson</label>
-                <select
-                  value={salespersonId}
-                  onChange={(event) => setSalespersonId(event.target.value)}
-                  className="mt-1 h-10 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
-                >
-                  <option value="">— Unassigned —</option>
-                  {salespeople.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
+                <Label className="text-[11px] font-semibold text-gray-500">Salesperson</Label>
+<Select value={salespersonId || NONE} onValueChange={(value) => setSalespersonId(value === NONE ? "" : value)}>
+                  <SelectTrigger className="mt-1 h-10 w-full text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NONE}>— Unassigned —</SelectItem>
+                    {salespeople.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>
+                        {s.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <p className="mt-1 text-[10px] text-gray-400">
                   Who this order&apos;s deal belongs to, not who&apos;s typing it in -- left unassigned unless you pick someone.
                 </p>
               </div>
 
               <div className="col-span-2">
-                <label className="text-[11px] font-semibold text-gray-500">Delivery Address / Notes</label>
-                <input
+                <Label className="text-[11px] font-semibold text-gray-500">Delivery Address / Notes</Label>
+<Input
                   type="text"
                   value={deliveryAddress}
                   onChange={(event) => setDeliveryAddress(event.target.value)}
                   placeholder="Only needed if different from the selected location"
-                  className="mt-1 h-10 w-full rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-[#7C9D87]"
+                  className={`mt-1 ${FIELD_INPUT}`}
                 />
               </div>
 
               <div className="col-span-2">
-                <label className="text-[11px] font-semibold text-gray-500">Internal Notes</label>
-                <textarea
+                <Label className="text-[11px] font-semibold text-gray-500">Internal Notes</Label>
+<Textarea
                   value={internalNotes}
                   onChange={(event) => setInternalNotes(event.target.value)}
                   rows={2}
                   placeholder="Visible to Willsgrove staff only"
-                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-xs outline-none focus:border-[#7C9D87]"
+                  className="mt-1 min-h-0 text-xs md:text-xs"
                 />
               </div>
             </div>
-          </section>
+</Card>
 
           {/* Order lines */}
-          <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
+          <Card className="gap-0 rounded-xl border-[#E8EBE6] bg-white p-6 shadow-none">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-[15px] font-bold text-[#17251E]">Order Lines</h2>
                 <p className="mt-1 text-xs text-gray-400">Search by SAP code, name or barcode, or enter a line exactly as written on the PO.</p>
               </div>
-              <button
-                type="button"
-                onClick={addLine}
-                className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-[11px] font-semibold text-gray-600 hover:bg-gray-50"
-              >
+<Button type="button" variant="outline" size="sm" onClick={addLine}>
                 <Plus size={14} />
                 Add Line
-              </button>
+              </Button>
             </div>
 
             {/* Real-world fix ("Order Lines table should be like an excel,
@@ -1201,8 +1213,8 @@ export default function NewOrderPage() {
                 than letting the whole page grow) with its own header row
                 AND its own "Add Line" affordance both pinned via `sticky`
                 so neither scrolls out of reach while there are many lines. */}
-            <div className="mt-4 overflow-auto rounded-lg border border-gray-200" style={{ maxHeight: 560 }}>
-              <table className="w-full border-collapse text-xs" style={{ tableLayout: "fixed" }}>
+            <div className="mt-4 rounded-lg border border-gray-200">
+              <Table className="table-fixed border-collapse text-xs">
                 <colgroup>
                   <col style={{ width: 32 }} />
                   <col style={{ width: "19%" }} />
@@ -1214,49 +1226,50 @@ export default function NewOrderPage() {
                   <col style={{ width: "20%" }} />
                   <col style={{ width: 32 }} />
                 </colgroup>
-                <thead className="sticky top-0 z-10 bg-[#FAFBF9]">
-                  <tr className="border-b border-gray-200 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
-                    <th className="border-r border-gray-200 px-2 py-2" />
-                    <th className="border-r border-gray-200 px-2 py-2 text-left">Catalogue search</th>
-                    <th className="border-r border-gray-200 px-2 py-2 text-left">Description (PO) *</th>
-                    <th className="border-r border-gray-200 px-2 py-2 text-left">Qty *</th>
-                    <th className="border-r border-gray-200 px-2 py-2 text-left">Unit *</th>
-                    <th className="border-r border-gray-200 px-2 py-2 text-left">Unit Price</th>
-                    <th className="border-r border-gray-200 px-2 py-2 text-left">Total</th>
-                    <th className="border-r border-gray-200 px-2 py-2 text-left">Notes</th>
-                    <th className="px-2 py-2" />
-                  </tr>
-                </thead>
-                <tbody>
+                <TableHeader className="bg-[#FAFBF9]">
+                  <TableRow className="border-b border-gray-200 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+                    <TableHead className="border-r border-gray-200 px-2 py-2" />
+                    <TableHead className="border-r border-gray-200 px-2 py-2 text-left">Catalogue search</TableHead>
+                    <TableHead className="border-r border-gray-200 px-2 py-2 text-left">Description (PO) *</TableHead>
+                    <TableHead className="border-r border-gray-200 px-2 py-2 text-left">Qty *</TableHead>
+                    <TableHead className="border-r border-gray-200 px-2 py-2 text-left">Unit *</TableHead>
+                    <TableHead className="border-r border-gray-200 px-2 py-2 text-left">Unit Price</TableHead>
+                    <TableHead className="border-r border-gray-200 px-2 py-2 text-left">Total</TableHead>
+                    <TableHead className="border-r border-gray-200 px-2 py-2 text-left">Notes</TableHead>
+                    <TableHead className="px-2 py-2" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {lines.map((line, index) => (
                     <Fragment key={line.key}>
-                      <tr className="border-b border-gray-100 align-top">
-                        <td className="border-r border-gray-100 bg-gray-50 px-2 py-2 text-center text-[10px] text-gray-400">
+                      <TableRow className="border-b border-gray-100 align-top">
+                        <TableCell className="border-r border-gray-100 bg-gray-50 px-2 py-2 text-center text-[10px] text-gray-400">
                           {index + 1}
-                        </td>
-                        <td className="relative border-r border-gray-100 p-0">
-                          <input
+                        </TableCell>
+                        <TableCell className="relative border-r border-gray-100 p-0">
+                          <Input
                             type="text"
                             value={line.productQuery}
                             onChange={(event) => handleProductQueryChange(line.key, event.target.value)}
                             onFocus={() => updateLine(line.key, { showSuggestions: true })}
                             placeholder="SAP code, name or barcode..."
-                            className="h-10 w-full border-0 bg-transparent px-2 text-xs outline-none focus:bg-[#F3F7F1]"
+                            className={CELL_INPUT}
                           />
                           {line.showSuggestions && line.suggestions.length > 0 && (
                             <div className="absolute left-0 top-full z-20 w-64 rounded-lg border border-gray-100 bg-white shadow-lg">
                               {line.suggestions.map((product) => (
-                                <button
+                                <Button
                                   key={product.id}
                                   type="button"
+                                  variant="ghost"
                                   onClick={() => selectProduct(line.key, product)}
-                                  className="block w-full px-3 py-2 text-left text-xs hover:bg-gray-50"
+                                  className="h-auto w-full flex-col items-start gap-0 rounded-none px-3 py-2 text-left text-xs font-normal"
                                 >
                                   <p className="font-medium text-gray-700">{product.itemName}</p>
                                   {product.sapItemCode && (
                                     <p className="text-[10px] text-gray-400">{product.sapItemCode}</p>
                                   )}
-                                </button>
+                                </Button>
                               ))}
                             </div>
                           )}
@@ -1265,38 +1278,38 @@ export default function NewOrderPage() {
                               Linked{line.sapItemCodeSnapshot ? ` (${line.sapItemCodeSnapshot})` : ""}
                             </p>
                           )}
-                        </td>
-                        <td className="border-r border-gray-100 p-0">
-                          <input
+                        </TableCell>
+                        <TableCell className="border-r border-gray-100 p-0">
+                          <Input
                             type="text"
                             value={line.originalProductDescription}
                             onChange={(event) =>
                               updateLine(line.key, { originalProductDescription: event.target.value })
                             }
                             placeholder="e.g. Apples G/D Econ 1.5kg"
-                            className="h-10 w-full border-0 bg-transparent px-2 text-xs outline-none focus:bg-[#F3F7F1]"
+                            className={CELL_INPUT}
                           />
-                        </td>
-                        <td className="border-r border-gray-100 p-0">
-                          <input
+                        </TableCell>
+                        <TableCell className="border-r border-gray-100 p-0">
+                          <Input
                             type="text"
                             inputMode="decimal"
                             value={line.requestedQuantity}
                             onChange={(event) => updateLine(line.key, { requestedQuantity: event.target.value })}
                             placeholder="10"
-                            className="h-10 w-full border-0 bg-transparent px-2 text-xs outline-none focus:bg-[#F3F7F1]"
+                            className={CELL_INPUT}
                           />
-                        </td>
-                        <td className="border-r border-gray-100 p-0">
-                          <input
+                        </TableCell>
+                        <TableCell className="border-r border-gray-100 p-0">
+                          <Input
                             type="text"
                             value={line.requestedUnitCode}
                             onChange={(event) => updateLine(line.key, { requestedUnitCode: event.target.value })}
                             placeholder="KG / EA"
-                            className="h-10 w-full border-0 bg-transparent px-2 text-xs outline-none focus:bg-[#F3F7F1]"
+                            className={CELL_INPUT}
                           />
-                        </td>
-                        <td className="border-r border-gray-100 p-0">
+                        </TableCell>
+                        <TableCell className="border-r border-gray-100 p-0">
                           {/* Real-world fix ("customer price should
                               automatically fil[l] with customer price (Unit
                               price)... remove this column: Customer
@@ -1308,7 +1321,7 @@ export default function NewOrderPage() {
                               -- still fully editable, and still submitted
                               as the same customerUnitPrice field as
                               before. */}
-                          <input
+                          <Input
                             type="text"
                             inputMode="decimal"
                             value={line.customerUnitPrice}
@@ -1316,67 +1329,70 @@ export default function NewOrderPage() {
                               updateLine(line.key, { customerUnitPrice: event.target.value, priceListHint: null })
                             }
                             placeholder="Optional"
-                            className="h-10 w-full border-0 bg-transparent px-2 text-xs outline-none focus:bg-[#F3F7F1]"
+                            className={CELL_INPUT}
                           />
                           {line.priceListHint && (
                             <p className="truncate px-2 pb-1 text-[9px] text-green-600">{line.priceListHint}</p>
                           )}
-                        </td>
-                        <td className="border-r border-gray-100 bg-gray-50 px-2 py-2 text-gray-600">
+                        </TableCell>
+                        <TableCell className="border-r border-gray-100 bg-gray-50 px-2 py-2 text-gray-600">
                           {/* Real-world fix: live qty x unit price preview
                               -- see computeLinePreviewTotal's own comment
                               for why this is a client-side-only display
                               value, never OrderLine.lineTotal itself. */}
                           {computeLinePreviewTotal(line.requestedQuantity, line.customerUnitPrice) ?? "--"}
-                        </td>
-                        <td className="border-r border-gray-100 p-0">
-                          <input
+                        </TableCell>
+                        <TableCell className="border-r border-gray-100 p-0">
+                          <Input
                             type="text"
                             value={line.salesNotes}
                             onChange={(event) => updateLine(line.key, { salesNotes: event.target.value })}
                             placeholder="Optional"
-                            className="h-10 w-full border-0 bg-transparent px-2 text-xs outline-none focus:bg-[#F3F7F1]"
+                            className={CELL_INPUT}
                           />
-                        </td>
-                        <td className="px-1 py-2 text-center">
+                        </TableCell>
+                        <TableCell className="px-1 py-2 text-center">
                           {lines.length > 1 && (
-                            <button
+                            <Button
                               type="button"
+                              variant="ghost"
+                              size="icon-xs"
                               onClick={() => removeLine(line.key)}
                               className="text-gray-300 hover:text-red-600"
                               aria-label={`Remove line ${index + 1}`}
                             >
                               <Trash2 size={14} />
-                            </button>
+                            </Button>
                           )}
-                        </td>
-                      </tr>
+                        </TableCell>
+                      </TableRow>
                       {line.error && (
-                        <tr className="border-b border-gray-100">
-                          <td />
-                          <td colSpan={8} className="px-2 py-1 text-[11px] text-red-600">
+                        <TableRow className="border-b border-gray-100">
+                          <TableCell />
+                          <TableCell colSpan={8} className="px-2 py-1 text-[11px] text-red-600">
                             {line.error}
-                          </td>
-                        </tr>
+                          </TableCell>
+                        </TableRow>
                       )}
                     </Fragment>
                   ))}
-                </tbody>
-                <tfoot>
-                  <tr>
-                    <td colSpan={9} className="sticky bottom-0 border-t border-gray-200 bg-white p-0">
-                      <button
+                </TableBody>
+                <TableFooter className="bg-white">
+                  <TableRow>
+                    <TableCell colSpan={9} className="border-t border-gray-200 bg-white p-0">
+                      <Button
                         type="button"
+                        variant="ghost"
                         onClick={addLine}
-                        className="flex w-full items-center gap-1.5 px-3 py-2.5 text-[11px] font-semibold text-gray-600 hover:bg-gray-50"
+                        className="h-auto w-full justify-start rounded-none px-3 py-2.5 text-[11px] font-semibold text-gray-600"
                       >
                         <Plus size={14} />
                         Add Line
-                      </button>
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                </TableFooter>
+              </Table>
             </div>
 
             {/* Real-world fix ("Do not show outdated development-milestone
@@ -1388,24 +1404,17 @@ export default function NewOrderPage() {
               Note: a customer&apos;s submitted price is set here, but is never treated as the approved selling
               price -- approval is a separate, later step.
             </p>
-          </section>
+</Card>
 
           {/* Submit */}
           <div className="flex items-center justify-end gap-3">
-            <Link
-              href="/orders"
-              className="rounded-lg border border-gray-200 px-5 py-3 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-            >
-              Cancel
-            </Link>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="flex items-center gap-2 rounded-lg bg-[#173D2E] px-5 py-3 text-xs font-semibold text-white transition hover:bg-[#24543F] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {submitting && <Loader2 size={14} className="animate-spin" />}
+<Button asChild variant="outline">
+              <Link href="/orders">Cancel</Link>
+            </Button>
+            <Button type="submit" disabled={submitting} className="bg-[#173D2E] hover:bg-[#24543F]">
+              {submitting && <Loader2 className="animate-spin" />}
               {submitting ? "Submitting..." : "Submit Order"}
-            </button>
+            </Button>
           </div>
         </form>
       </main>

@@ -1,5 +1,10 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { DatePicker } from "../components/date-picker";
+import { FormSelect } from "../components/form-select";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { listDeliveredOrders, type DeliveredOrdersFilters } from "@/lib/delivered-orders/queries";
 import { getReportFilterOptions } from "@/lib/reporting/filter-options";
@@ -110,86 +115,57 @@ export default async function DeliveredOrdersPage({ searchParams }: RouteParams)
 
           <SectionCard title="Filters" description="Narrow the history below -- every filter combines with the others">
             <form method="GET" action={basePath} className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
-              <label className="space-y-1">
-                <span className="font-medium text-gray-600">Invoice number</span>
-                <input name="invoice" defaultValue={resolved.invoice ?? ""} className="w-full rounded-lg border border-gray-200 px-2 py-1.5" placeholder="SAP doc number" />
-              </label>
-              <label className="space-y-1">
-                <span className="font-medium text-gray-600">PO reference</span>
-                <input name="po" defaultValue={resolved.po ?? ""} className="w-full rounded-lg border border-gray-200 px-2 py-1.5" placeholder="Order ref or customer PO" />
-              </label>
-              <label className="space-y-1">
-                <span className="font-medium text-gray-600">Product</span>
-                <input name="product" defaultValue={resolved.product ?? ""} className="w-full rounded-lg border border-gray-200 px-2 py-1.5" placeholder="Item code or description" />
-              </label>
-              <label className="space-y-1">
-                <span className="font-medium text-gray-600">Customer</span>
-                <select name="customerId" defaultValue={resolved.customerId ?? ""} className="w-full rounded-lg border border-gray-200 px-2 py-1.5">
-                  <option value="">All customers</option>
-                  {filterOptions.customers.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="space-y-1">
-                <span className="font-medium text-gray-600">Salesperson</span>
-                <select name="salespersonId" defaultValue={resolved.salespersonId ?? ""} className="w-full rounded-lg border border-gray-200 px-2 py-1.5">
-                  <option value="">All salespeople</option>
-                  {filterOptions.salespeople.map((s) => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="space-y-1">
-                <span className="font-medium text-gray-600">Driver</span>
-                <select name="driverId" defaultValue={resolved.driverId ?? ""} className="w-full rounded-lg border border-gray-200 px-2 py-1.5">
-                  <option value="">All drivers</option>
-                  {drivers.map((d: { id: string; name: string }) => (
-                    <option key={d.id} value={d.id}>{d.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="space-y-1">
-                <span className="font-medium text-gray-600">Vehicle</span>
-                <select name="vehicleId" defaultValue={resolved.vehicleId ?? ""} className="w-full rounded-lg border border-gray-200 px-2 py-1.5">
-                  <option value="">All vehicles</option>
-                  {vehicles.map((v: { id: string; registrationNumber: string }) => (
-                    <option key={v.id} value={v.id}>{v.registrationNumber}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="space-y-1">
-                <span className="font-medium text-gray-600">Outcome</span>
-                <select name="outcome" defaultValue={resolved.outcome ?? ""} className="w-full rounded-lg border border-gray-200 px-2 py-1.5">
-                  <option value="">All outcomes</option>
-                  <option value="NO_CLAIM">No claim</option>
-                  <option value="WITH_CLAIM">With claim</option>
-                </select>
-              </label>
-              <label className="space-y-1">
-                <span className="font-medium text-gray-600">Rejection reason</span>
-                <select name="reason" defaultValue={resolved.reason ?? ""} className="w-full rounded-lg border border-gray-200 px-2 py-1.5">
-                  <option value="">All reasons</option>
-                  {CLAIM_LINE_REASON_CATEGORIES.map((value) => (
-                    <option key={value} value={value}>{CLAIM_LINE_REASON_CATEGORY_LABELS[value]}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="space-y-1">
-                <span className="font-medium text-gray-600">Delivery date from</span>
-                <input type="date" name="dateFrom" defaultValue={resolved.dateFrom ?? ""} className="w-full rounded-lg border border-gray-200 px-2 py-1.5" />
-              </label>
-              <label className="space-y-1">
-                <span className="font-medium text-gray-600">Delivery date to</span>
-                <input type="date" name="dateTo" defaultValue={resolved.dateTo ?? ""} className="w-full rounded-lg border border-gray-200 px-2 py-1.5" />
-              </label>
+              <div className="space-y-1">
+                <Label htmlFor="f-invoice" className="font-medium text-gray-600">Invoice number</Label>
+                <Input id="f-invoice" name="invoice" defaultValue={resolved.invoice ?? ""} className="h-9 text-xs md:text-xs" placeholder="SAP doc number" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="f-po" className="font-medium text-gray-600">PO reference</Label>
+                <Input id="f-po" name="po" defaultValue={resolved.po ?? ""} className="h-9 text-xs md:text-xs" placeholder="Order ref or customer PO" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="f-product" className="font-medium text-gray-600">Product</Label>
+                <Input id="f-product" name="product" defaultValue={resolved.product ?? ""} className="h-9 text-xs md:text-xs" placeholder="Item code or description" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="f-customerId" className="font-medium text-gray-600">Customer</Label>
+                <FormSelect id="f-customerId" name="customerId" defaultValue={resolved.customerId ?? ""} options={[{ value: "", label: "All customers" }, ...filterOptions.customers.map((c) => ({ value: c.id, label: c.name }))]} className="h-9 w-full text-xs" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="f-salespersonId" className="font-medium text-gray-600">Salesperson</Label>
+                <FormSelect id="f-salespersonId" name="salespersonId" defaultValue={resolved.salespersonId ?? ""} options={[{ value: "", label: "All salespeople" }, ...filterOptions.salespeople.map((s) => ({ value: s.id, label: s.name }))]} className="h-9 w-full text-xs" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="f-driverId" className="font-medium text-gray-600">Driver</Label>
+                <FormSelect id="f-driverId" name="driverId" defaultValue={resolved.driverId ?? ""} options={[{ value: "", label: "All drivers" }, ...drivers.map((d: { id: string; name: string }) => ({ value: d.id, label: d.name }))]} className="h-9 w-full text-xs" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="f-vehicleId" className="font-medium text-gray-600">Vehicle</Label>
+                <FormSelect id="f-vehicleId" name="vehicleId" defaultValue={resolved.vehicleId ?? ""} options={[{ value: "", label: "All vehicles" }, ...vehicles.map((v: { id: string; registrationNumber: string }) => ({ value: v.id, label: v.registrationNumber }))]} className="h-9 w-full text-xs" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="f-outcome" className="font-medium text-gray-600">Outcome</Label>
+                <FormSelect id="f-outcome" name="outcome" defaultValue={resolved.outcome ?? ""} options={[{ value: "", label: "All outcomes" }, { value: "NO_CLAIM", label: "No claim" }, { value: "WITH_CLAIM", label: "With claim" }]} className="h-9 w-full text-xs" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="f-reason" className="font-medium text-gray-600">Rejection reason</Label>
+                <FormSelect id="f-reason" name="reason" defaultValue={resolved.reason ?? ""} options={[{ value: "", label: "All reasons" }, ...CLAIM_LINE_REASON_CATEGORIES.map((value) => ({ value, label: CLAIM_LINE_REASON_CATEGORY_LABELS[value] }))]} className="h-9 w-full text-xs" />
+              </div>
+              <div className="space-y-1">
+                <span className="block font-medium text-gray-600">Delivery date from</span>
+                <DatePicker name="dateFrom" defaultValue={resolved.dateFrom ?? ""} placeholder="From" aria-label="Delivery date from" />
+              </div>
+              <div className="space-y-1">
+                <span className="block font-medium text-gray-600">Delivery date to</span>
+                <DatePicker name="dateTo" defaultValue={resolved.dateTo ?? ""} placeholder="To" aria-label="Delivery date to" />
+              </div>
               <div className="flex items-end gap-2">
-                <button type="submit" className="rounded-lg bg-[#173D2E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#122E23]">
+                <Button type="submit" size="sm" className="bg-[#173D2E] hover:bg-[#122E23]">
                   Apply filters
-                </button>
-                <Link href={basePath} className="rounded-lg border border-gray-200 px-4 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-50">
-                  Clear
-                </Link>
+                </Button>
+                <Button asChild variant="outline" size="sm">
+                  <Link href={basePath}>Clear</Link>
+                </Button>
               </div>
             </form>
           </SectionCard>

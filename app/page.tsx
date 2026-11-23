@@ -8,6 +8,7 @@ import { listOrders } from "@/lib/order-queries";
 import { getEffectiveOrderStatus, formatOrderDate, formatOrderAmountWithEstimate, initialsFor, avatarColorFor } from "@/lib/order-display";
 import type { ReportFilters } from "@/lib/reporting/types";
 import Sidebar from "./components/sidebar";
+import { Button } from "@/components/ui/button";
 
 import {
   Search,
@@ -255,19 +256,19 @@ export default async function Home() {
 
           <div className="flex items-center gap-5">
 
-            <button className="text-gray-400 transition hover:text-gray-700">
+            <Button type="button" variant="ghost" size="icon" className="text-gray-400 hover:text-gray-700" aria-label="Search">
               <Search size={19} />
-            </button>
+            </Button>
 
-            <button className="relative text-gray-400 transition hover:text-gray-700">
+            <Button type="button" variant="ghost" size="icon" className="relative text-gray-400 hover:text-gray-700" aria-label="Notifications">
               <Bell size={19} />
 
-              <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-red-500" />
-            </button>
+              <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-red-500" />
+            </Button>
 
             <div className="h-8 w-px bg-gray-200" />
 
-            <button className="flex items-center gap-2">
+            <Button type="button" variant="ghost" className="h-auto gap-2 px-2 py-1 font-normal">
               <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#D7F36B] text-xs font-bold text-[#173D2E]">
                 {initialsFor(user.name ?? user.email)}
               </div>
@@ -283,7 +284,7 @@ export default async function Home() {
               </div>
 
               <ChevronDown size={14} className="text-gray-400" />
-            </button>
+            </Button>
 
           </div>
 
@@ -356,7 +357,7 @@ export default async function Home() {
             </div>
             <div className="rounded-xl border border-[#E8EBE6] bg-white p-6">
               <SectionHeading
-                title="Estimated Lost Value (trend)"
+                title="Lost Value (trend)"
                 description="Supply-shortage lost-sales estimate by day, trailing 30 days"
                 action="Full analytics"
                 actionHref="/lost-sales/analytics"

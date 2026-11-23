@@ -5,6 +5,7 @@ import { prisma, type PrismaTransactionClient } from "@/lib/prisma";
 import type { CreateOrderInput } from "@/lib/order-validation";
 import { getOrderById } from "@/lib/order-queries";
 import { dateOnlyStringToUtcDate } from "@/lib/dates";
+import { resolveCustomerPriceListPrices } from "@/lib/order-price-resolution";
 
 export type MutationFailure = {
   ok: false;
@@ -92,6 +93,33 @@ export async function createOrderCore(
 ): Promise<OrderCreationCoreResult> {
   const now = new Date();
 
+  // Server-side price-list resolution (lib/order-price-resolution.ts). A
+  // line that arrives with no customerUnitPrice but a known product gets
+  // the price in effect TODAY from the customer's assigned price list, and
+  // that value is stored on the line -- which is the historical price
+  // snapshot: nothing re-resolves a line that already has a price, so a
+  // later price-list change never alters an existing order. A price the
+  // caller supplied is never overridden. Currency is never mixed: if the
+  // caller named a currency that differs from the price list's, the list
+  // price is NOT applied (the line stays unpriced, honestly) rather than
+  // being stored under the wrong currency; if the caller named none, the
+  // order adopts the price list's currency when a list price was used.
+  const productIdsNeedingPrice = input.lines
+    .filter((line) => line.customerUnitPrice == null && line.productId)
+    .map((line) => line.productId as string);
+  const resolvedPrices =
+    productIdsNeedingPrice.length > 0
+      ? await resolveCustomerPriceListPrices(tx, input.customerId, productIdsNeedingPrice, now)
+      : null;
+  const priceListCurrency = resolvedPrices?.currencyCode ?? null;
+  const canApplyListPrices = priceListCurrency !== null && (!input.currency || input.currency === priceListCurrency);
+  const listPriceFor = (productId: string | null | undefined): string | null =>
+    canApplyListPrices && productId ? (resolvedPrices?.priceByProductId.get(productId) ?? null) : null;
+  const priceListAppliedLineCount = input.lines.filter(
+    (line) => line.customerUnitPrice == null && listPriceFor(line.productId) !== null
+  ).length;
+  const orderCurrency = input.currency ?? (priceListAppliedLineCount > 0 && priceListCurrency ? priceListCurrency : "USD");
+
   const created = await tx.customerOrder.create({
     data: {
       reference,
@@ -116,7 +144,7 @@ export async function createOrderCore(
       orderDate: dateOnlyStringToUtcDate(input.orderDate),
       requestedDeliveryDate: dateOnlyStringToUtcDate(input.requestedDeliveryDate),
       deliveryAddress: input.deliveryAddress ?? null,
-      currency: input.currency ?? "USD",
+      currency: orderCurrency,
       originalSourceText: input.originalSourceText ?? null,
       internalNotes: input.internalNotes ?? null,
       idempotencyKey: input.idempotencyKey ?? null,
@@ -131,7 +159,11 @@ export async function createOrderCore(
           requestedQuantity: new Prisma.Decimal(line.requestedQuantity),
           requestedUnitCode: line.requestedUnitCode,
           customerUnitPrice:
-            line.customerUnitPrice != null ? new Prisma.Decimal(line.customerUnitPrice) : null,
+            line.customerUnitPrice != null
+              ? new Prisma.Decimal(line.customerUnitPrice)
+              : listPriceFor(line.productId) !== null
+                ? new Prisma.Decimal(listPriceFor(line.productId) as string)
+                : null,
           salesNotes: line.salesNotes ?? null,
           isDemo,
         })),
@@ -162,6 +194,14 @@ export async function createOrderCore(
         source: input.source,
         lineCount: input.lines.length,
         hasOriginalSourceText: Boolean(input.originalSourceText),
+        // Provenance of server-resolved prices (see the comment above the
+        // create call): how many lines were priced from the customer's
+        // price list at creation, and from which list/currency.
+        priceListResolution: {
+          priceListCode: resolvedPrices?.priceListCode ?? null,
+          currency: orderCurrency,
+          linesPricedFromPriceList: priceListAppliedLineCount,
+        },
         idempotencyKey: input.idempotencyKey ?? null,
         salespersonId: input.salespersonId ?? null,
         // Milestone 12 (Sales Performance Intelligence). Provenance for
@@ -190,12 +230,15 @@ export async function createOrderCore(
 /**
  * Creates a new customer order (the "order intake" step).
  *
- * Deliberately does NOT compute subtotal/taxTotal/total/lineTotal from the
- * customer-submitted prices: those fields represent Willsgrove's APPROVED
- * amounts, set later by the price-decision/approval workflow (a later
- * milestone -- see PROGRESS.md). Auto-filling them from customerUnitPrice
- * would silently let a customer's claimed price become the approved price,
- * which is exactly the rule the product spec calls out as never allowed.
+ * Deliberately does NOT write subtotal/taxTotal/total/lineTotal: those
+ * columns represent Willsgrove's APPROVED / SAP-invoiced amounts, and
+ * lineTotal in particular is owned by SAP invoice reconciliation.
+ * Auto-filling them here would let an entry-time price masquerade as an
+ * approved or invoiced one. What a person SEES for an order's line totals,
+ * subtotal, tax and total is instead derived at read time from the line's
+ * stored unit-price snapshot (customerUnitPrice, resolved from the
+ * customer's price list above when the caller supplied none) by the single
+ * calculation in lib/order-pricing.ts -- see lib/order-queries.ts.
  *
  * Idempotency: if idempotencyKey is provided and an order with that key
  * already exists, that existing order's id is returned instead of creating

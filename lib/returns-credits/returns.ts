@@ -7,6 +7,7 @@ import { parseScaledDecimal } from "@/lib/picking/validation";
 import { recomputeClaimStatusAfterActuals } from "@/lib/returns-credits/apply-status-recompute";
 import { returnConditionRequiresDetail, type RecordClaimReturnInput } from "@/lib/returns-credits/validation";
 import { recordClaimReturnLostSaleIfLoss } from "@/lib/returns-credits/return-lost-sale";
+import { checkReturnQuantity } from "@/lib/returns-credits/return-quantity";
 
 /**
  * Milestone 6B (Returns & Credit Notes). Recording that a physical return
@@ -26,6 +27,8 @@ export function generateReturnReference(): string {
   const randomPart = randomBytes(4).toString("hex").toUpperCase();
   return `RET-${datePart}-${randomPart}`;
 }
+
+class ReturnQuantityError extends Error {}
 
 export type RecordClaimReturnResult =
   | { ok: true; id: string; returnReference: string }
@@ -90,7 +93,27 @@ export async function recordClaimReturn(
     return { ok: false, status: 400, message: "A valid received date is required.", fieldErrors: { receivedDate: "Required." } };
   }
 
-  const created = await prisma.$transaction(async (tx) => {
+  let created: { id: string };
+  try {
+    created = await prisma.$transaction(async (tx) => {
+    // Server-side eligibility: cumulative returns against the named claim
+    // line (or, with no line named, the whole claim) may never exceed the
+    // quantity actually disputed/rejected. Checked inside the transaction.
+    const eligibleAgg = await tx.invoiceClaimLine.aggregate({
+      where: input.claimLineId ? { id: input.claimLineId, claimId } : { claimId, disputeType: "QUANTITY" },
+      _sum: { rejectedQuantity: true },
+    });
+    const returnedAgg = await tx.claimReturn.aggregate({
+      where: input.claimLineId ? { claimId, claimLineId: input.claimLineId } : { claimId },
+      _sum: { receivedQuantity: true },
+    });
+    const check = checkReturnQuantity({
+      receivedQuantity: input.receivedQuantity,
+      alreadyReturned: (returnedAgg._sum.receivedQuantity ?? 0).toString(),
+      eligibleQuantity: (eligibleAgg._sum.rejectedQuantity ?? 0).toString(),
+    });
+    if (!check.ok) throw new ReturnQuantityError(check.message);
+
     const record = await tx.claimReturn.create({
       data: {
         claimId,
@@ -138,7 +161,13 @@ export async function recordClaimReturn(
     await recomputeClaimStatusAfterActuals(tx, claimId, receivedById);
 
     return record;
-  }, TRANSACTION_OPTIONS);
+    }, TRANSACTION_OPTIONS);
+  } catch (error) {
+    if (error instanceof ReturnQuantityError) {
+      return { ok: false, status: 400, message: error.message, fieldErrors: { receivedQuantity: error.message } };
+    }
+    throw error;
+  }
 
   return { ok: true, id: created.id, returnReference };
 }

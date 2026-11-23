@@ -188,7 +188,15 @@ export function getOrderLifecycleSteps(input: OrderLifecycleInput): OrderLifecyc
   let stageIndex = statusStageIndex[status] ?? 0;
   if (hasMatchedInvoice) stageIndex = Math.max(stageIndex, 5);
   if (dispatchStatuses.some((s) => s === "DEPARTED" || s === "DELIVERED")) stageIndex = Math.max(stageIndex, 6);
-  if (delivered) stageIndex = Math.max(stageIndex, 7);
+  // An order is Delivered once EITHER the matched invoice's delivery outcome
+  // has been recorded (`delivered`) OR every non-cancelled dispatch has been
+  // physically delivered. The second signal matters for the native flow: the
+  // header badge (getEffectiveOrderStatus above) already says "Delivered" when
+  // every dispatch is DELIVERED, so the stepper must agree with it -- before
+  // this, a physically delivered order with no recorded invoice outcome showed
+  // a "Delivered" badge beside a stepper whose last step was still pending.
+  const allDispatchesDelivered = dispatchStatuses.length > 0 && dispatchStatuses.every((s) => s === "DELIVERED");
+  if (delivered || allDispatchesDelivered) stageIndex = Math.max(stageIndex, 7);
 
   // Real-world fix ("7 Dispatched, 8 Delivered -- not ticking even when
   // marked Delivered"): every stage before `stageIndex` has always been

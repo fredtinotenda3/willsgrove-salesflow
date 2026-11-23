@@ -41,7 +41,7 @@ const QUANTITY_CHART_CONFIG: ChartConfig = {
 };
 
 const VALUE_CHART_CONFIG: ChartConfig = {
-  estimatedLostValue: { label: "Estimated lost value", color: "var(--chart-1)" },
+  estimatedLostValue: { label: "Lost Value", color: "var(--chart-1)" },
 };
 
 const AXIS_TICK_STYLE = { fontSize: 11, fill: "var(--chart-muted-ink)" };

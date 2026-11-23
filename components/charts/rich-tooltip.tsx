@@ -136,7 +136,7 @@ export function TrendTooltipContent({
       <SummaryRow label="Unavailable" value={formatQty(point.unavailableQuantity, point.quantityUnitCode)} />
       <SummaryRow label="Availability rate" value={formatPercent(point.availabilityRatePercent)} />
       <SummaryRow label="Shortage rate" value={formatPercent(point.shortageRatePercent)} />
-      <SummaryRow label="Estimated lost value" value={formatPlainAmount(point.estimatedLostValue)} />
+      <SummaryRow label="Lost Value" value={formatPlainAmount(point.estimatedLostValue)} />
       <SummaryRow label="Confirmed lost value" value={formatPlainAmount(point.confirmedLostValue)} />
       <SummaryRow
         label="Affected orders / customers"
@@ -212,7 +212,7 @@ export function ProductBarTooltipContent({
         <SummaryRow label="Found value" value={formatPlainAmount(product.foundValue)} />
         <SummaryRow label="Unavailable" value={formatQty(product.unavailableQuantity, product.unitOfMeasure)} />
         <SummaryRow label="Shortage rate" value={formatPercent(product.shortageRatePercent)} />
-        <SummaryRow label="Estimated lost value" value={formatPlainAmount(product.estimatedValue)} />
+        <SummaryRow label="Lost Value" value={formatPlainAmount(product.estimatedValue)} />
         <SummaryRow label="Confirmed lost value" value={formatPlainAmount(product.confirmedLostValue)} />
         <SummaryRow label="Affected orders" value={product.affectedOrderCount} />
         <SummaryRow label="Affected customers" value={product.affectedCustomerCount} />
@@ -264,7 +264,7 @@ export function CustomerBarTooltipContent({
         <SummaryRow label="Found value" value={formatPlainAmount(customer.foundValue)} />
         <SummaryRow label="Unavailable" value={formatQty(customer.unavailableQuantity, null)} />
         <SummaryRow label="Shortage rate" value={formatPercent(customer.shortageRatePercent)} />
-        <SummaryRow label="Estimated lost value" value={formatPlainAmount(customer.estimatedValue)} />
+        <SummaryRow label="Lost Value" value={formatPlainAmount(customer.estimatedValue)} />
         <SummaryRow label="Confirmed lost value" value={formatPlainAmount(customer.confirmedLostValue)} />
         <SummaryRow label="Affected orders" value={customer.affectedOrderCount} />
         <SummaryRow label="Demand records" value={customer.demandCount} />
@@ -311,7 +311,7 @@ export function ValueTrendTooltipContent({
       <p className="mb-1.5 text-[10px] text-muted-foreground">
         Amounts below carry no currency code -- this figure is never split by currency in this system (a known, pre-existing limitation; see the Implementation Report).
       </p>
-      <SummaryRow label="Estimated exposure" value={formatPlainAmount(point.estimatedLostValue)} />
+      <SummaryRow label="Lost Value" value={formatPlainAmount(point.estimatedLostValue)} />
       <SummaryRow label="Confirmed loss" value={formatPlainAmount(point.confirmedLostValue)} />
       <SummaryRow label="Affected products" value={point.products.length + point.otherProductsCount} />
       <SummaryRow label="Affected orders" value={point.affectedOrderCount} />
@@ -326,7 +326,7 @@ export function ValueTrendTooltipContent({
                 <th className="text-left font-medium">Product</th>
                 <th className="text-right font-medium">Unavail.</th>
                 <th className="text-right font-medium">Avg. price</th>
-                <th className="text-right font-medium">Est. value</th>
+                <th className="text-right font-medium">Lost Value</th>
               </tr>
             </thead>
             <tbody>

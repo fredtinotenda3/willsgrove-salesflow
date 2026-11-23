@@ -145,7 +145,7 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
               <div>
                 <p className="text-lg font-bold text-[#17251E]">{automaticValue.estimatedValue}</p>
                 <p className="text-xs text-gray-400">
-                  Estimated lost value (current)
+                  Lost Value (current)
                   {automaticValue.demandsWithoutEstimate > 0
                     ? ` -- excludes ${automaticValue.demandsWithoutEstimate} demand(s) with no resolvable price`
                     : ""}
@@ -197,7 +197,8 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
                       <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Requested</th>
                       <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Unavailable</th>
                       <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Outstanding</th>
-                      <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Lost</th>
+                      <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Lost qty</th>
+                      <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Unit price</th>
                       <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Lost Value</th>
                       <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Status</th>
                       <th className="px-6 py-3" />
@@ -230,6 +231,9 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{demand.outstandingQuantity}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{demand.confirmedLostQuantity}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">
+                          {demand.estimatedUnitPrice !== null ? `${demand.estimatedUnitPrice} ${demand.currencyCode}` : <span className="text-gray-300">--</span>}
+                        </td>
+                        <td className="whitespace-nowrap px-6 py-4 text-right text-xs font-semibold text-gray-700">
                           {/* Real-world fix ("lost sales... show unit price/currency, confirm
                               valuation methodology"): "Lost Value" (renamed from "Est. Value")
                               is quantity x unit price, resolved once at creation from either

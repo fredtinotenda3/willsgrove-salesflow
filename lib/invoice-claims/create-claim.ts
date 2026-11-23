@@ -253,11 +253,12 @@ async function createSapAnchoredClaimCore(
   // computed-from-elsewhere field.
   const createdLines = await tx.invoiceClaimLine.findMany({ where: { claimId: created.id }, select: { id: true, sapInvoiceLineId: true } });
   const sapLineDetails = await tx.sapInvoiceLine.findMany({
-    where: { id: { in: createdLines.map((l) => l.sapInvoiceLineId) } },
+    where: { id: { in: createdLines.flatMap((l) => (l.sapInvoiceLineId ? [l.sapInvoiceLineId] : [])) } },
     select: { id: true, sapItemCode: true, sapItemDescription: true },
   });
   const sapDetailById = new Map(sapLineDetails.map((d) => [d.id, d]));
   for (const createdLine of createdLines) {
+    if (!createdLine.sapInvoiceLineId) continue;
     const detail = sapDetailById.get(createdLine.sapInvoiceLineId);
     if (!detail) continue;
     await tx.invoiceClaimLine.update({

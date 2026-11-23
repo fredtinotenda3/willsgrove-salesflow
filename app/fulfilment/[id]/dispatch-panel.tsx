@@ -3,6 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Loader2, Truck, PackageCheck, XCircle, Send, RotateCcw } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import ChangeAssignmentDialog from "./change-assignment-dialog";
+import { FormSelect } from "../../components/form-select";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { CLAIM_LINE_REASON_CATEGORIES, CLAIM_LINE_REASON_CATEGORY_LABELS, type ClaimLineReasonCategory } from "@/lib/invoice-claims/validation";
 
 /**
@@ -417,13 +423,12 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
               </p>
             </div>
             {dispatchableLines.length > 0 && (
-              <button
+              <Button variant="outline" size="xs"
                 type="button"
                 onClick={resetToInvoice}
-                className="flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-[11px] font-semibold text-gray-600 transition hover:bg-gray-50"
               >
                 <RotateCcw size={12} /> Reset to invoice
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -453,14 +458,13 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                       <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-500">{line.requestedUnitCode}</td>
                       <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">{line.outstandingQuantity}</td>
                       <td className="px-6 py-4">
-                        <input
+                        <Input
                           type="text"
                           inputMode="decimal"
                           value={effectiveQuantity(line.orderLineId)}
                           onChange={(e) => setQuantities((prev) => ({ ...prev, [line.orderLineId]: e.target.value }))}
                           placeholder="0"
-                          className="w-24 rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
-                        />
+                         className="w-24 h-8 text-xs md:text-xs" />
                       </td>
                     </tr>
                   ))}
@@ -472,42 +476,24 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                 Driver, assistant &amp; vehicle (required to confirm dispatch)
               </p>
               <div className="flex flex-wrap gap-2">
-                <select
+                <FormSelect
                   value={driverId}
-                  onChange={(e) => setDriverId(e.target.value)}
-                  className="rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-700"
-                >
-                  <option value="">Select driver…</option>
-                  {drivers.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.name}
-                    </option>
-                  ))}
-                </select>
-                <select
+                  onValueChange={setDriverId}
+                  options={[{ value: "", label: "Select driver…" }, ...drivers.map((option) => ({ value: option.id, label: option.name }))]}
+                  className="h-9 w-56 text-xs"
+                />
+                <FormSelect
                   value={assistantId}
-                  onChange={(e) => setAssistantId(e.target.value)}
-                  className="rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-700"
-                >
-                  <option value="">Select driver&apos;s assistant…</option>
-                  {assistants.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.name}
-                    </option>
-                  ))}
-                </select>
-                <select
+                  onValueChange={setAssistantId}
+                  options={[{ value: "", label: "Select driver's assistant…" }, ...assistants.map((option) => ({ value: option.id, label: option.name }))]}
+                  className="h-9 w-56 text-xs"
+                />
+                <FormSelect
                   value={vehicleId}
-                  onChange={(e) => setVehicleId(e.target.value)}
-                  className="rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-700"
-                >
-                  <option value="">Select vehicle…</option>
-                  {vehicleOptions.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.registrationNumber}
-                    </option>
-                  ))}
-                </select>
+                  onValueChange={setVehicleId}
+                  options={[{ value: "", label: "Select vehicle…" }, ...vehicleOptions.map((option) => ({ value: option.id, label: option.registrationNumber }))]}
+                  className="h-9 w-56 text-xs"
+                />
               </div>
               {(drivers.length === 0 || assistants.length === 0 || vehicleOptions.length === 0) && (
                 <p className="mt-2 text-[11px] text-gray-400">
@@ -518,15 +504,13 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
             </div>
             <div className="p-6">
               {createError && <p className="mb-3 text-[11px] text-[#9B3B3B]">{createError}</p>}
-              <button
+              <Button
                 type="button"
                 onClick={() => void createDispatch()}
-                disabled={creating}
-                className="flex items-center gap-2 rounded-lg bg-[#173D2E] px-4 py-2.5 text-xs font-semibold text-white transition hover:brightness-110 disabled:opacity-50"
-              >
+                disabled={creating} className="bg-[#173D2E] hover:bg-[#122E23]">
                 {creating ? <Loader2 size={14} className="animate-spin" /> : <Truck size={14} />}
                 Create dispatch
-              </button>
+              </Button>
             </div>
           </>
         )}
@@ -572,43 +556,56 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                       )}
                     </div>
                     <div className="flex items-center gap-2">
+                      {(dispatch.status === "PLANNED" || dispatch.status === "DEPARTED") && (
+                        <ChangeAssignmentDialog
+                          orderId={orderId}
+                          dispatchId={dispatch.id}
+                          current={{
+                            driverId: dispatch.driver?.id ?? null,
+                            assistantId: dispatch.assistant?.id ?? null,
+                            vehicleId: dispatch.vehicle?.id ?? null,
+                          }}
+                          drivers={drivers}
+                          assistants={assistants}
+                          vehicles={vehicleOptions}
+                          onChanged={() => void load()}
+                        />
+                      )}
                       {dispatch.status === "PLANNED" && (
                         <>
-                          <button
+                          <Button variant="outline" size="xs"
                             type="button"
                             onClick={() => void departDispatch(dispatch.id)}
                             disabled={actioningId === dispatch.id}
-                            className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-[11px] font-semibold text-gray-600 transition hover:bg-gray-50 disabled:opacity-50"
+                            
                           >
                             <Send size={12} /> Mark departed
-                          </button>
-                          <button
+                          </Button>
+                          <Button variant="outline" size="xs"
                             type="button"
                             onClick={() => void cancelDispatch(dispatch.id)}
-                            disabled={actioningId === dispatch.id}
-                            className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-[11px] font-semibold text-[#9B3B3B] transition hover:bg-red-50 disabled:opacity-50"
-                          >
+                            disabled={actioningId === dispatch.id} className="text-[#9B3B3B] hover:bg-red-50">
                             <XCircle size={12} /> Cancel
-                          </button>
+                          </Button>
                         </>
                       )}
                       {dispatch.status === "DEPARTED" && (
-                        <button
+                        <Button variant="outline" size="xs"
                           type="button"
                           onClick={() => void openDeliveryForm(dispatch.id)}
-                          className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-[11px] font-semibold text-gray-600 transition hover:bg-gray-50"
+                          
                         >
                           <PackageCheck size={12} /> Record delivery
-                        </button>
+                        </Button>
                       )}
                       {dispatch.deliveryOutcome && (
-                        <button
+                        <Button variant="outline" size="xs"
                           type="button"
                           onClick={() => void openDeliveryForm(dispatch.id)}
-                          className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-[11px] font-semibold text-gray-600 transition hover:bg-gray-50"
+                          
                         >
                           <PackageCheck size={12} /> View delivery detail
-                        </button>
+                        </Button>
                       )}
                     </div>
                   </div>
@@ -642,22 +639,22 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                                     Rejected: {deliveryLine.rejectedQuantity}
                                   </span>
                                   {rejected > 0 && (
-                                    <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+                                    <Badge variant="outline" className="border-amber-200 bg-amber-50 text-[10px] font-semibold text-amber-700">
                                       {deliveryLine.rejectionReason ?? "Not Available"}
-                                    </span>
+                                    </Badge>
                                   )}
                                 </div>
                               );
                             })}
                           </div>
                           {deliveryDetail.delivery.notes && <p className="text-gray-500">Notes: {deliveryDetail.delivery.notes}</p>}
-                          <button
+                          <Button variant="outline" size="xs"
                             type="button"
                             onClick={() => setDeliveryFormFor(null)}
-                            className="rounded-lg border border-gray-200 px-3 py-1.5 text-[11px] font-semibold text-gray-600 transition hover:bg-gray-50"
+                            
                           >
                             Close
-                          </button>
+                          </Button>
                         </div>
                       ) : (
                         <div className="space-y-3">
@@ -668,30 +665,28 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                                 <span className="w-56 font-medium text-gray-700">
                                   #{line.lineNumber} {line.originalProductDescription} ({line.dispatchedQuantity})
                                 </span>
-                                <label className="text-[10px] text-gray-400">
+                                <Label className="text-[10px] text-gray-400">
                                   Accepted
-                                  <input
+                                  <Input
                                     type="text"
                                     inputMode="decimal"
                                     value={input.accepted}
                                     onChange={(e) =>
                                       setDeliveryInputs((prev) => ({ ...prev, [line.id]: { ...input, accepted: e.target.value } }))
                                     }
-                                    className="ml-1 w-20 rounded-lg border border-gray-200 px-2 py-1 text-xs"
-                                  />
-                                </label>
-                                <label className="text-[10px] text-gray-400">
+                                   className="ml-1 w-20 h-8 text-xs md:text-xs" />
+                                </Label>
+                                <Label className="text-[10px] text-gray-400">
                                   Rejected
-                                  <input
+                                  <Input
                                     type="text"
                                     inputMode="decimal"
                                     value={input.rejected}
                                     onChange={(e) =>
                                       setDeliveryInputs((prev) => ({ ...prev, [line.id]: { ...input, rejected: e.target.value } }))
                                     }
-                                    className="ml-1 w-20 rounded-lg border border-gray-200 px-2 py-1 text-xs"
-                                  />
-                                </label>
+                                   className="ml-1 w-20 h-8 text-xs md:text-xs" />
+                                </Label>
                                 <Select
                                   value={input.reason || undefined}
                                   onValueChange={(value: string) =>
@@ -714,51 +709,47 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                           })}
 
                           <div className="flex flex-wrap gap-2 pt-2">
-                            <input
+                            <Input
                               type="text"
                               value={recipientName}
                               onChange={(e) => setRecipientName(e.target.value)}
                               placeholder="Recipient name (optional)"
-                              className="w-56 rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
-                            />
-                            <input
+                             className="w-56 h-8 text-xs md:text-xs" />
+                            <Input
                               type="text"
                               value={deliveryNotes}
                               onChange={(e) => setDeliveryNotes(e.target.value)}
                               placeholder="Notes (optional)"
-                              className="w-56 rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
-                            />
+                             className="w-56 h-8 text-xs md:text-xs" />
                           </div>
                           <div className="flex flex-wrap gap-4 pt-1 text-[11px] text-gray-500">
-                            <label className="flex items-center gap-2">
+                            <Label className="flex items-center gap-2">
                               Proof photo:
-                              <input type="file" accept="image/*" onChange={(e) => setPhotoFile(e.target.files?.[0] ?? null)} />
-                            </label>
-                            <label className="flex items-center gap-2">
+                              <Input type="file" accept="image/*" onChange={(e) => setPhotoFile(e.target.files?.[0] ?? null)}  />
+                            </Label>
+                            <Label className="flex items-center gap-2">
                               Signature:
-                              <input type="file" accept="image/*" onChange={(e) => setSignatureFile(e.target.files?.[0] ?? null)} />
-                            </label>
+                              <Input type="file" accept="image/*" onChange={(e) => setSignatureFile(e.target.files?.[0] ?? null)}  />
+                            </Label>
                           </div>
 
                           {deliveryError && <p className="text-[11px] text-[#9B3B3B]">{deliveryError}</p>}
 
                           <div className="flex items-center gap-2 pt-1">
-                            <button
+                            <Button
                               type="button"
                               onClick={() => void submitDelivery()}
-                              disabled={submittingDelivery}
-                              className="flex items-center gap-2 rounded-lg bg-[#173D2E] px-4 py-2 text-xs font-semibold text-white transition hover:brightness-110 disabled:opacity-50"
-                            >
+                              disabled={submittingDelivery} className="bg-[#173D2E] hover:bg-[#122E23]">
                               {submittingDelivery ? <Loader2 size={14} className="animate-spin" /> : <PackageCheck size={14} />}
                               Submit delivery outcome
-                            </button>
-                            <button
+                            </Button>
+                            <Button variant="outline" size="sm"
                               type="button"
                               onClick={() => setDeliveryFormFor(null)}
-                              className="rounded-lg border border-gray-200 px-4 py-2 text-xs font-semibold text-gray-600 transition hover:bg-gray-50"
+                              
                             >
                               Cancel
-                            </button>
+                            </Button>
                           </div>
                         </div>
                       )}
