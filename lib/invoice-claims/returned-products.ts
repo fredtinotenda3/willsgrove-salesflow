@@ -157,3 +157,31 @@ export async function listReturnedProducts(filter: ReturnedProductsFilter, page:
 
   return { rows, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
 }
+
+export type ReturnReasonSummaryRow = { reasonLabel: string; lineCount: number; rejectedQuantity: string };
+
+/**
+ * Management summary: why products are being rejected. One row per
+ * recorded delivery-outcome reason across every rejected delivery line
+ * (never limited to the current page), most frequent first.
+ */
+export async function getReturnReasonSummary(): Promise<ReturnReasonSummaryRow[]> {
+  const groups = await prisma.deliveryLine.groupBy({
+    by: ["rejectionReason"],
+    where: { rejectedQuantity: { gt: 0 }, dispatchLine: { orderLine: { order: { isDemo: false } } } },
+    _count: { _all: true },
+    _sum: { rejectedQuantity: true },
+  });
+  const merged = new Map<string, ReturnReasonSummaryRow>();
+  for (const group of groups) {
+    const label = resolveRejectionReasonLabel(group.rejectionReason, CLAIM_LINE_REASON_CATEGORY_LABELS) ?? "Reason not recorded";
+    const existing = merged.get(label);
+    const quantity = group._sum.rejectedQuantity?.toString() ?? "0";
+    merged.set(label, {
+      reasonLabel: label,
+      lineCount: (existing?.lineCount ?? 0) + group._count._all,
+      rejectedQuantity: sumQuantities([existing?.rejectedQuantity, quantity]),
+    });
+  }
+  return [...merged.values()].sort((a, b) => b.lineCount - a.lineCount);
+}

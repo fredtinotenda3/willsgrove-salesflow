@@ -11,6 +11,7 @@
     "start": "next start",
     "lint": "eslint",
     "db:seed": "tsx --conditions=react-server prisma/seed.ts",
+    "db:fresh-start": "tsx --conditions=react-server scripts/fresh-start.ts",
     "db:remove-demo": "tsx --conditions=react-server scripts/remove-demo-data.ts",
     "db:reset-operational-data": "tsx --conditions=react-server scripts/reset-operational-data.ts",
     "db:reset-to-user-and-product": "tsx --conditions=react-server scripts/reset-to-user-and-product.ts",

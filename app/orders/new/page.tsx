@@ -623,6 +623,12 @@ export default function NewOrderPage() {
       if (!line.requestedUnitCode.trim()) {
         return { error: "Every order line you've started needs a unit (e.g. KG, EA, BOX).", startedLines };
       }
+      if (!line.customerUnitPrice.trim()) {
+        return { error: "Every order line you've started needs a unit price.", startedLines };
+      }
+      if (!/^\d{1,14}(\.\d{1,4})?$/.test(line.customerUnitPrice.trim())) {
+        return { error: "Unit price must be a number with up to 4 decimal places.", startedLines };
+      }
     }
 
     const hasPastedText = pastedText.trim() !== "";
@@ -1233,7 +1239,7 @@ className="h-auto w-full flex-col items-start gap-0 rounded-none px-4 py-3 text-
                     <TableHead className="border-r border-gray-200 px-2 py-2 text-left">Description (PO) *</TableHead>
                     <TableHead className="border-r border-gray-200 px-2 py-2 text-left">Qty *</TableHead>
                     <TableHead className="border-r border-gray-200 px-2 py-2 text-left">Unit *</TableHead>
-                    <TableHead className="border-r border-gray-200 px-2 py-2 text-left">Unit Price</TableHead>
+                    <TableHead className="border-r border-gray-200 px-2 py-2 text-left">Unit Price *</TableHead>
                     <TableHead className="border-r border-gray-200 px-2 py-2 text-left">Total</TableHead>
                     <TableHead className="border-r border-gray-200 px-2 py-2 text-left">Notes</TableHead>
                     <TableHead className="px-2 py-2" />
@@ -1328,7 +1334,9 @@ className="h-auto w-full flex-col items-start gap-0 rounded-none px-4 py-3 text-
                             onChange={(event) =>
                               updateLine(line.key, { customerUnitPrice: event.target.value, priceListHint: null })
                             }
-                            placeholder="Optional"
+                            placeholder="Required"
+                            required
+                            aria-required="true"
                             className={CELL_INPUT}
                           />
                           {line.priceListHint && (

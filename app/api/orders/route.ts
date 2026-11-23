@@ -53,6 +53,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // A unit price is mandatory on every manually entered order line (the
+    // form pre-fills it from the customer's price list where one applies).
+    const missingPrice: Record<string, string> = {};
+    parsed.data.lines.forEach((line, index) => {
+      if (line.customerUnitPrice == null || String(line.customerUnitPrice).trim() === "") {
+        missingPrice[`lines.${index}.customerUnitPrice`] = "Unit price is required.";
+      }
+    });
+    if (Object.keys(missingPrice).length > 0) {
+      return NextResponse.json(
+        { success: false, message: "Every order line needs a unit price.", fieldErrors: missingPrice },
+        { status: 400 }
+      );
+    }
+
     const result = await createOrderAndReturn(parsed.data, user.id);
     if (!result.ok) {
       return NextResponse.json(

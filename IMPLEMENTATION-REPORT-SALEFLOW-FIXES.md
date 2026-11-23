@@ -71,3 +71,8 @@ Stored `estimatedUnitPrice/estimatedValue` on a demand can be null (demand creat
 
 ### Verification
 `npx tsc --noEmit`: 0 errors. `npm run lint`: 3 errors, all pre-existing. `npx vitest run`: 2 failures, both pre-existing (missing `test-data` file); new `tests/lost-value-and-returned-products.test.ts` passes. Not verified: no database or browser available — queries and toasts are type-checked, not exercised.
+
+### Round 3
+- `/orders/new`: Unit Price is mandatory (header marked *, `required` input, client check for presence and format) and enforced server-side in `POST /api/orders` (400 with `lines.N.customerUnitPrice` field errors). PO-intake and quotation conversion paths are unchanged.
+- `/invoice-claims`: returned products are grouped per invoice/order (invoice reference or "No invoice generated yet", order, customer, delivery date), each rejected product showing delivered/accepted/rejected/returned quantities and the claim reason recorded at "Record delivery" (e.g. Short Delivered), value, and the claim or a File a claim button. A reason summary strip (rejected quantity and line count per reason, across all pages) tells management why products are rejected.
+- Verification: tsc 0 errors; lint 3 pre-existing; vitest 2 pre-existing failures. Not exercised against a database or browser. The register lists the latest 50 rejected lines; an order's lines could split across pages.
