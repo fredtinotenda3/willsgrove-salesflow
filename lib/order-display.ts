@@ -190,10 +190,27 @@ export function getOrderLifecycleSteps(input: OrderLifecycleInput): OrderLifecyc
   if (dispatchStatuses.some((s) => s === "DEPARTED" || s === "DELIVERED")) stageIndex = Math.max(stageIndex, 6);
   if (delivered) stageIndex = Math.max(stageIndex, 7);
 
+  // Real-world fix ("7 Dispatched, 8 Delivered -- not ticking even when
+  // marked Delivered"): every stage before `stageIndex` has always been
+  // "done" (a tick), and `stageIndex` itself was always "current" (a
+  // highlighted number, no tick) -- correct for every stage EXCEPT the
+  // last one. "current" means "in progress, something still to reach" --
+  // true for Dispatched while still mid-transit, but once `delivered` is
+  // true there is nothing further to progress to: Delivered is a
+  // completed, terminal fact, not a step still underway, so it must
+  // render as "done" (ticked) exactly like every earlier stage, not as
+  // the same "current" highlight a merely-in-progress stage gets.
+  const lastIndex = LIFECYCLE_STAGE_LABELS.length - 1;
+
   return LIFECYCLE_STAGE_LABELS.map((label, index) => ({
     key: label,
     label,
-    state: index < stageIndex ? "done" : index === stageIndex ? "current" : "upcoming",
+    state:
+      index < stageIndex || (index === stageIndex && stageIndex === lastIndex)
+        ? "done"
+        : index === stageIndex
+          ? "current"
+          : "upcoming",
   }));
 }
 
@@ -327,6 +344,36 @@ export function formatOrderAmountWithEstimate(
     isEstimate: true,
     isPartialEstimate: estimatedTotalIsPartial,
   };
+}
+
+/**
+ * Real-world fix ("Line Total column... should derive from unit price
+ * used when creating order, not keep saying Pending"): the per-LINE
+ * equivalent of formatOrderAmountWithEstimate above -- same "real value
+ * first, clearly-marked estimate second, 'Pending' only when truly
+ * nothing is known" shape, simplified since a single line has no
+ * partial-estimate concept (it is either priced or it isn't).
+ */
+export function formatLineAmountWithEstimate(
+  lineTotal: string | null,
+  estimatedLineTotal: string | null,
+  currency: string
+): { text: string; isEstimate: boolean } {
+  if (lineTotal !== null) {
+    return { text: formatOrderAmount(lineTotal, currency), isEstimate: false };
+  }
+  if (estimatedLineTotal === null) {
+    return { text: "Pending", isEstimate: false };
+  }
+  const value = Number(estimatedLineTotal);
+  if (!Number.isFinite(value)) {
+    return { text: "Pending", isEstimate: false };
+  }
+  const formatted = `${currency} ${value.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+  return { text: `~${formatted}`, isEstimate: true };
 }
 
 export function formatFileSize(bytes: number): string {

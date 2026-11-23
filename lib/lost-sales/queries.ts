@@ -31,6 +31,14 @@ export type UnfulfilledDemandSummary = {
   estimatedUnitPrice: string | null;
   estimatedValue: string | null;
   estimatedValueSource: string | null;
+  // Real-world fix ("lost sales... show unit price/currency"):
+  // estimatedUnitPrice/estimatedValue were already resolved and stored,
+  // but carry no currency of their own -- a lost sale's value is always
+  // denominated in its own order's currency (the same order
+  // resolveEstimatedLostSaleValue priced this demand's line against), so
+  // this is read off the already-joined order relation, never invented
+  // or assumed to be a single global currency.
+  currencyCode: string;
   supersededByDemandId: string | null;
   status: string;
   expectedFollowUpDate: string | null;
@@ -41,7 +49,7 @@ export type UnfulfilledDemandSummary = {
 const DEMAND_SUMMARY_SELECT = {
   id: true,
   orderId: true,
-  order: { select: { reference: true } },
+  order: { select: { reference: true, currency: true } },
   customerId: true,
   customer: { select: { name: true } },
   productId: true,
@@ -67,7 +75,7 @@ const DEMAND_SUMMARY_SELECT = {
 type DemandSummaryRow = {
   id: string;
   orderId: string;
-  order: { reference: string };
+  order: { reference: string; currency: string };
   customerId: string;
   customer: { name: string };
   productId: string | null;
@@ -95,6 +103,7 @@ function toSummary(row: DemandSummaryRow): UnfulfilledDemandSummary {
     id: row.id,
     orderId: row.orderId,
     orderReference: row.order.reference,
+    currencyCode: row.order.currency,
     customerId: row.customerId,
     customerName: row.customer.name,
     productId: row.productId,

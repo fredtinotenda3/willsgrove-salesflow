@@ -498,4 +498,74 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Milestone 4: lost-sales management (
     const totalRecordsIncludingDemo = await prisma.lostSaleRecord.count();
     expect(after.recordsWithEstimate + after.recordsWithoutEstimate).toBe(totalRecordsIncludingDemo);
   });
+
+  it("real-world fix: a lost sale still resolves a real estimated value from OrderLine.customerUnitPrice when no separately-approved price was ever recorded (previously fell straight through to 'no price available')", async () => {
+    if (skipAll) return;
+    const { prisma } = await import("@/lib/prisma");
+    const { generateOrderReference } = await import("@/lib/orders");
+    const { startPickingSession } = await import("@/lib/picking/start-picking");
+    const { recordPickedLine } = await import("@/lib/picking/record-picked-line");
+    const { completePickingSession } = await import("@/lib/picking/complete-picking");
+    const { authorizePickingSession } = await import("@/lib/picking/authorize-picking");
+
+    const order = await prisma.customerOrder.create({
+      data: {
+        reference: generateOrderReference(),
+        customerId,
+        createdById: adminId,
+        source: "MANUAL",
+        status: "RECEIVED",
+        currency: "USD",
+        receivedAt: new Date(),
+        isDemo: true,
+        lines: {
+          create: [
+            {
+              lineNumber: 1,
+              originalProductDescription: `customerUnitPrice-only shortage ${uniqueSuffix}`,
+              requestedQuantity: "10.0000",
+              requestedUnitCode: "EA",
+              productId: productAId,
+              // approvedUnitPrice deliberately left unset -- this business's
+              // own workflow does not always populate it; customerUnitPrice
+              // (what was actually entered at order creation) is the only
+              // price this line has.
+              customerUnitPrice: "6.2500",
+              isDemo: true,
+            },
+          ],
+        },
+      },
+      select: { id: true, lines: { select: { id: true }, orderBy: { lineNumber: "asc" } } },
+    });
+    createdOrderIds.push(order.id);
+    const lineId = order.lines[0]!.id;
+
+    const started = await startPickingSession(order.id, adminId);
+    if (!started.ok) throw new Error(started.message);
+    // 4 found, 6 unavailable.
+    await recordPickedLine(started.session.id, lineId, "4.0000", "6.0000", undefined, adminId);
+    const completed = await completePickingSession(started.session.id, adminId);
+    if (!completed.ok) throw new Error(completed.message);
+    const authorized = await authorizePickingSession(started.session.id, adminId);
+    if (!authorized.ok) throw new Error(authorized.message);
+
+    const demand = await prisma.unfulfilledDemand.findFirst({
+      where: { orderLineId: lineId },
+      select: { id: true, estimatedUnitPrice: true, estimatedValue: true, estimatedValueSource: true },
+    });
+    expect(demand).not.toBeNull();
+    expect(demand!.estimatedUnitPrice?.toString()).toBe("6.2500");
+    // 6.25 * 6 = 37.5000
+    expect(demand!.estimatedValue?.toString()).toBe("37.5000");
+    expect(demand!.estimatedValueSource).toBe("ORDER_LINE_APPROVED_PRICE");
+
+    const lostSaleRecord = await prisma.lostSaleRecord.findFirst({
+      where: { unfulfilledDemandId: demand!.id },
+      select: { estimatedUnitPrice: true, estimatedValue: true },
+    });
+    expect(lostSaleRecord).not.toBeNull();
+    expect(lostSaleRecord!.estimatedUnitPrice?.toString()).toBe("6.2500");
+    expect(lostSaleRecord!.estimatedValue?.toString()).toBe("37.5000");
+  });
 });

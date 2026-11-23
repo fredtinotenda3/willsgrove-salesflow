@@ -216,7 +216,18 @@ export default async function DeliveredOrdersPage({ searchParams }: RouteParams)
                   <tbody className="divide-y divide-[#EEF1ED]">
                     {result.rows.map((row) => (
                       <tr key={row.invoiceDeliveryRecordId} className="hover:bg-gray-50">
-                        <td className="whitespace-nowrap px-5 py-3 font-semibold text-[#173D2E]">{row.sapDocNum}</td>
+                        <td className="whitespace-nowrap px-5 py-3 font-semibold text-[#173D2E]">
+                          {row.sapDocNum}
+                          {/* Real-world fix (native invoice recording): this invoice has
+                              no SAP import behind it at all -- recorded directly against
+                              its order in SalesFlow -- so it's labelled, never shown as
+                              indistinguishable from a real SAP-imported one. */}
+                          {row.isNativelyRecorded && (
+                            <span className="ml-2 rounded-full bg-cyan-50 px-2 py-0.5 text-[9px] font-semibold text-cyan-700" title="Recorded directly in SalesFlow -- not imported from a SAP export.">
+                              SalesFlow
+                            </span>
+                          )}
+                        </td>
                         <td className="px-5 py-3 text-[#17251E]">{row.customerName ?? "Unknown"}</td>
                         <td className="whitespace-nowrap px-5 py-3 text-[#17251E]">
                           {row.orderId ? (

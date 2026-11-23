@@ -2,6 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { CLAIM_LINE_REASON_CATEGORY_LABELS, type AnyStoredClaimLineReasonCategory } from "@/lib/invoice-claims/validation";
+import { isNativelyRecordedInvoice } from "@/lib/invoice-recording/queries";
 
 /**
  * Management Analytics spec, Part 6: "Complete Delivered Orders
@@ -43,6 +44,12 @@ export type DeliveredOrderRow = {
   vehicleRegistrations: string[];
   totalInvoiced: string | null;
   currencyCode: string | null;
+  // Real-world fix (native invoice recording): true when this invoice was
+  // recorded directly in SalesFlow (lib/invoice-recording/
+  // record-native-invoice.ts) rather than imported from a SAP export --
+  // see isNativelyRecordedInvoice's own comment for why this is the one
+  // place that distinction is decided.
+  isNativelyRecorded: boolean;
 };
 
 export type DeliveredOrdersFilters = {
@@ -134,6 +141,7 @@ export async function listDeliveredOrders(filters: DeliveredOrdersFilters, pagin
             matchedCustomerId: true,
             matchedCustomer: { select: { name: true } },
             customerName: true,
+            rawSourceData: true,
             matchedOrder: {
               select: {
                 id: true,
@@ -173,6 +181,7 @@ export async function listDeliveredOrders(filters: DeliveredOrdersFilters, pagin
       vehicleRegistrations,
       totalInvoiced: record.sapInvoice.total?.toString() ?? null,
       currencyCode: record.sapInvoice.currencyCode,
+      isNativelyRecorded: isNativelyRecordedInvoice(record.sapInvoice.rawSourceData),
     };
   });
 
@@ -228,6 +237,9 @@ export type DeliveredOrderDetail = {
     total: string | null;
     reconciliationStatus: string;
     isCancelledOrReversed: boolean;
+    // Real-world fix (native invoice recording): see DeliveredOrderRow's
+    // own comment above.
+    isNativelyRecorded: boolean;
     lines: { lineNumber: number; sapItemCode: string | null; description: string | null; quantityInvoiced: string; unitPrice: string | null; lineTotal: string | null }[];
   };
   // (D) Dispatch
@@ -342,6 +354,7 @@ export async function getDeliveredOrderDetail(sapInvoiceId: string): Promise<Del
       total: true,
       reconciliationStatus: true,
       isCancelledOrReversed: true,
+      rawSourceData: true,
       lines: {
         orderBy: { lineNumber: "asc" },
         select: { lineNumber: true, sapItemCode: true, sapItemDescription: true, quantityInvoiced: true, unitPrice: true, lineTotal: true },
@@ -482,6 +495,7 @@ export async function getDeliveredOrderDetail(sapInvoiceId: string): Promise<Del
     total: sapInvoice.total?.toString() ?? null,
     reconciliationStatus: sapInvoice.reconciliationStatus,
     isCancelledOrReversed: sapInvoice.isCancelledOrReversed,
+    isNativelyRecorded: isNativelyRecordedInvoice(sapInvoice.rawSourceData),
     lines: sapInvoice.lines.map((l) => ({
       lineNumber: l.lineNumber,
       sapItemCode: l.sapItemCode,

@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/current-user";
+import { isValidId } from "@/lib/http";
 import Sidebar from "../../components/sidebar";
-import NewClaimForm from "./new-claim-form";
+import NewClaimForm, { type NewClaimFormPrefill } from "./new-claim-form";
 
 /**
  * Milestone 6A. /invoice-claims/new -- the claim creation workflow (spec
@@ -23,10 +24,45 @@ import NewClaimForm from "./new-claim-form";
  */
 export const instant = false;
 
-export default async function NewInvoiceClaimPage() {
+type RouteParams = {
+  searchParams: Promise<{ orderId?: string; orderLineId?: string; rejectedQuantity?: string; reasonLabel?: string }>;
+};
+
+export default async function NewInvoiceClaimPage({ searchParams }: RouteParams) {
   const user = await getCurrentUser();
   if (!user) {
     redirect("/login");
+  }
+
+  // Real-world fix (Invoice Claims from a rejected delivery): a "File a
+  // claim" link from /invoice-claims' new "Awaiting a claim" section
+  // (see that page's own comment) arrives here with the rejected order
+  // line's own identity in the query string. Every piece is independently
+  // validated and the whole prefill is dropped -- never partially applied
+  // -- if orderId/orderLineId fail isValidId or rejectedQuantity isn't a
+  // real decimal string: a malformed or tampered link should land the
+  // user on a normal, empty claim form, not a form bound to an
+  // unvalidated order/line pair.
+  const resolved = await searchParams;
+  let prefill: NewClaimFormPrefill | undefined;
+  const rawOrderId = resolved.orderId?.trim();
+  const rawOrderLineId = resolved.orderLineId?.trim();
+  const rawRejectedQuantity = resolved.rejectedQuantity?.trim();
+  if (
+    rawOrderId &&
+    rawOrderLineId &&
+    isValidId(rawOrderId) &&
+    isValidId(rawOrderLineId) &&
+    rawRejectedQuantity &&
+    Number.isFinite(Number(rawRejectedQuantity)) &&
+    Number(rawRejectedQuantity) > 0
+  ) {
+    prefill = {
+      orderId: rawOrderId,
+      orderLineId: rawOrderLineId,
+      rejectedQuantity: rawRejectedQuantity,
+      reasonLabel: resolved.reasonLabel?.trim() || null,
+    };
   }
 
   return (
@@ -40,7 +76,7 @@ export default async function NewInvoiceClaimPage() {
           </div>
         </header>
         <div className="p-8">
-          <NewClaimForm />
+          <NewClaimForm prefill={prefill} />
         </div>
       </main>
     </div>

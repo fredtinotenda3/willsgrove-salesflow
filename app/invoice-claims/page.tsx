@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { isValidId } from "@/lib/http";
-import { listInvoiceClaims } from "@/lib/invoice-claims/queries";
+import { listInvoiceClaims, listRejectedDeliveriesAwaitingClaim } from "@/lib/invoice-claims/queries";
 import {
   CLAIM_STATUS_LABELS,
   CLAIM_STATUS_STYLES,
@@ -12,7 +12,7 @@ import {
 } from "@/lib/invoice-claims/display";
 import { initialsFor, avatarColorFor } from "@/lib/order-display";
 import Sidebar from "../components/sidebar";
-import { FileWarning, ChevronRight, ChevronLeft, Plus, BarChart3 } from "lucide-react";
+import { FileWarning, ChevronRight, ChevronLeft, Plus, BarChart3, AlertTriangle } from "lucide-react";
 
 /**
  * Milestone 6A (Invoice Claims Management).
@@ -56,6 +56,18 @@ export default async function InvoiceClaimsPage({ searchParams }: RouteParams) {
   const customerId = rawCustomerId && isValidId(rawCustomerId) ? rawCustomerId : undefined;
 
   const { rows: claims, total, totalPages } = await listInvoiceClaims({ status, search, customerId }, page, PAGE_SIZE);
+
+  // Real-world fix ("invoice-claims page... should show invoices with all
+  // claims that has products returned... on deliver the reason which we
+  // put if rejected"). See listRejectedDeliveriesAwaitingClaim's own
+  // comment: lib/fulfilment/delivery.ts always intended a physical
+  // delivery rejection to surface here as a link into /invoice-claims/new,
+  // but nothing ever built that link, so a real rejection sat invisible
+  // while this page kept showing "0 claims total". This is a worklist,
+  // not a report -- every row disappears from it the moment a claim is
+  // actually filed for that line, through either the native or
+  // SAP-anchored path.
+  const awaitingClaim = await listRejectedDeliveriesAwaitingClaim();
 
   const query = (overrides: Record<string, string | undefined>) => {
     const params = new URLSearchParams();
@@ -108,6 +120,67 @@ export default async function InvoiceClaimsPage({ searchParams }: RouteParams) {
               claim&rsquo;s resolution is approved (Milestone 6B). {total} claim{total === 1 ? "" : "s"} total.
             </p>
           </section>
+
+          {awaitingClaim.length > 0 && (
+            <section className="overflow-hidden rounded-xl border border-amber-200 bg-amber-50/60">
+              <div className="flex items-center gap-2 border-b border-amber-200 px-6 py-3">
+                <AlertTriangle size={16} className="text-amber-600" />
+                <h2 className="text-sm font-bold text-amber-900">
+                  Awaiting a claim ({awaitingClaim.length})
+                </h2>
+                <p className="text-xs text-amber-700">
+                  Product rejected on delivery, standardised reason recorded, no claim filed yet.
+                </p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="border-b border-amber-200/70 bg-amber-50/40">
+                      <th className="px-6 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700">Order</th>
+                      <th className="px-6 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700">Customer</th>
+                      <th className="px-6 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700">Product</th>
+                      <th className="px-6 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-amber-700">Rejected qty</th>
+                      <th className="px-6 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700">Reason</th>
+                      <th className="px-6 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700">Delivered</th>
+                      <th className="px-6 py-2.5" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {awaitingClaim.map((row) => {
+                      const claimParams = new URLSearchParams({
+                        orderId: row.orderId,
+                        orderLineId: row.orderLineId,
+                        rejectedQuantity: row.rejectedQuantity,
+                      });
+                      if (row.rejectionReason) claimParams.set("reasonLabel", row.rejectionReason);
+                      return (
+                        <tr key={`${row.dispatchRecordId}-${row.orderLineId}`} className="border-b border-amber-100 last:border-b-0">
+                          <td className="whitespace-nowrap px-6 py-3 text-xs font-semibold text-[#173D2E]">{row.orderReference}</td>
+                          <td className="whitespace-nowrap px-6 py-3 text-xs text-gray-700">{row.customerName}</td>
+                          <td className="px-6 py-3 text-xs text-gray-700">
+                            {row.description}
+                            {row.sapItemCode && <span className="ml-1.5 text-[10px] text-gray-400">({row.sapItemCode})</span>}
+                          </td>
+                          <td className="whitespace-nowrap px-6 py-3 text-right text-xs font-semibold text-amber-700">{row.rejectedQuantity}</td>
+                          <td className="whitespace-nowrap px-6 py-3 text-xs text-gray-700">{row.rejectionReason ?? "Not recorded"}</td>
+                          <td className="whitespace-nowrap px-6 py-3 text-xs text-gray-500">{new Date(row.deliveredAt).toLocaleDateString()}</td>
+                          <td className="whitespace-nowrap px-6 py-3 text-right">
+                            <Link
+                              href={`/invoice-claims/new?${claimParams.toString()}`}
+                              className="inline-flex items-center gap-1 rounded-lg bg-[#173D2E] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#122E23]"
+                            >
+                              File a claim
+                              <ChevronRight size={12} />
+                            </Link>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
 
           <section className="flex flex-wrap items-center gap-2">
             <Link

@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Loader2, Search, Plus, AlertTriangle } from "lucide-react";
 import { CLAIM_CATEGORY_LABELS, CLAIM_PRIORITY_LABELS } from "@/lib/invoice-claims/display";
 import { CLAIM_LINE_REASON_CATEGORIES, CLAIM_LINE_REASON_CATEGORY_LABELS } from "@/lib/invoice-claims/validation";
@@ -121,6 +122,36 @@ function emptyLineDraft(): LineDraft {
   return { disputed: false, disputeType: "QUANTITY", acceptedQuantity: "", rejectedQuantity: "", disputedAmount: "", disputedUnitPrice: "", reason: "", reasonCategory: "", evidenceNotes: "" };
 }
 
+// Real-world fix (Invoice Claims from a rejected delivery): a
+// dispatch-panel.tsx rejection stores DeliveryLine.rejectionReason as the
+// standardised LABEL text ("Poor Quality Product"), not the
+// reasonCategory KEY ("QUALITY_ISSUE") this form needs for its
+// pre-selected dropdown -- see CLAIM_LINE_REASON_CATEGORY_LABELS's own
+// comment for why that column is free text. This reverses the lookup, and
+// returns "" (never guesses) for an older free-text rejection reason that
+// predates the standardised 8, so that text still lands in the line's
+// free-text `reason` field for the user to categorise themselves rather
+// than being silently miscategorised.
+function reasonCategoryForLabel(label: string | null | undefined): string {
+  if (!label) return "";
+  const match = CLAIM_LINE_REASON_CATEGORIES.find((category) => CLAIM_LINE_REASON_CATEGORY_LABELS[category] === label);
+  return match ?? "";
+}
+
+// Real-world fix (Invoice Claims from a rejected delivery): /invoice-claims
+// now links a rejected-but-unclaimed delivery line straight into this
+// form (see app/invoice-claims/page.tsx's "Awaiting a claim" section),
+// pre-filling step 1 (the order) and pre-marking the rejected line as
+// disputed with its rejected quantity and standardised reason already
+// filled in -- so filing the claim the spec calls for is a few seconds of
+// review, not re-entering what was already recorded at delivery.
+export type NewClaimFormPrefill = {
+  orderId: string;
+  orderLineId: string;
+  rejectedQuantity: string;
+  reasonLabel: string | null;
+};
+
 async function readJson(response: Response): Promise<Record<string, unknown>> {
   try {
     const data: unknown = await response.json();
@@ -130,7 +161,7 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
   }
 }
 
-export default function NewClaimForm() {
+export default function NewClaimForm({ prefill }: { prefill?: NewClaimFormPrefill }) {
   const router = useRouter();
 
   const [anchorMode, setAnchorMode] = useState<ClaimAnchorMode>("ORDER");
@@ -197,7 +228,15 @@ export default function NewClaimForm() {
     }
   }
 
-  async function selectOrder(id: string) {
+  // Real-world fix (Invoice Claims from a rejected delivery): `linePrefill`
+  // carries over what a delivery rejection already recorded (see
+  // NewClaimFormPrefill's own comment) for exactly one of this order's
+  // lines. It is merged into that line's fresh draft HERE, in the same
+  // place the rest of the draft is built, rather than in a later effect
+  // reacting to this function's own state updates -- react-hooks'
+  // set-state-in-effect rule flags that pattern (a setState triggered by
+  // watching other state, instead of being derived once, at the source).
+  async function selectOrder(id: string, linePrefill?: { lineId: string; patch: Partial<LineDraft> }) {
     setLoadingOrder(true);
     setOrder(null);
     setLineDrafts({});
@@ -215,6 +254,9 @@ export default function NewClaimForm() {
         if (loaded.customer) setCustomerId(loaded.customer.id);
         const drafts: Record<string, LineDraft> = {};
         for (const line of loaded.lines) drafts[line.id] = emptyLineDraft();
+        if (linePrefill && linePrefill.lineId in drafts) {
+          drafts[linePrefill.lineId] = { ...drafts[linePrefill.lineId]!, ...linePrefill.patch };
+        }
         setLineDrafts(drafts);
       }
     } finally {
@@ -270,6 +312,32 @@ export default function NewClaimForm() {
   function updateLine(lineId: string, patch: Partial<LineDraft>) {
     setLineDrafts((prev) => ({ ...prev, [lineId]: { ...prev[lineId], ...patch } }));
   }
+
+  // Real-world fix (Invoice Claims from a rejected delivery): load the
+  // linked order exactly once on mount when arriving from the new
+  // "Awaiting a claim" worklist (see NewClaimFormPrefill's own comment),
+  // with the rejected line's own quantity/reason carried straight into
+  // selectOrder so it lands in that line's draft the moment it's built --
+  // see selectOrder's own comment for why that merge happens there and
+  // not in a second effect watching `order`/`lineDrafts`. Guarded by a
+  // ref, not just the `prefill` dependency, so this never double-fires
+  // (e.g. React Strict Mode's intentional double-invoke in development).
+  const prefillRequested = useRef(false);
+  useEffect(() => {
+    if (!prefill || prefillRequested.current) return;
+    prefillRequested.current = true;
+    void selectOrder(prefill.orderId, {
+      lineId: prefill.orderLineId,
+      patch: {
+        disputed: true,
+        disputeType: "QUANTITY",
+        rejectedQuantity: prefill.rejectedQuantity,
+        acceptedQuantity: "0",
+        reasonCategory: reasonCategoryForLabel(prefill.reasonLabel),
+        reason: prefill.reasonLabel ?? "",
+      },
+    });
+  }, [prefill]);
 
   async function submit() {
     setError(null);
@@ -356,13 +424,17 @@ export default function NewClaimForm() {
       });
       const data = await readJson(response);
       if (!response.ok || data.success !== true) {
-        setError(typeof data.message === "string" ? data.message : "Unable to create this claim.");
+        const message = typeof data.message === "string" ? data.message : "Unable to create this claim.";
+        setError(message);
+        toast.error(response.status === 403 ? "Permission denied." : "Unable to create claim", { description: message });
         if (data.fieldErrors && typeof data.fieldErrors === "object") setFieldErrors(data.fieldErrors as Record<string, string>);
         return;
       }
+      toast.success("Claim recorded", { description: data.claimReference as string | undefined });
       router.push(`/invoice-claims/${data.id as string}`);
     } catch {
       setError("A network error occurred.");
+      toast.error("Network error", { description: "Could not reach the server. Check your connection and try again." });
     } finally {
       setSubmitting(false);
     }

@@ -64,6 +64,8 @@ export async function GET(request: NextRequest) {
       unavailableQuantity: demand.unavailableQuantity,
       outstandingQuantity: demand.outstandingQuantity,
       confirmedLostQuantity: demand.confirmedLostQuantity,
+      estimatedUnitPrice: demand.estimatedUnitPrice ?? "",
+      currencyCode: demand.currencyCode,
       estimatedValue: demand.estimatedValue ?? "",
       estimatedValueSource: demand.estimatedValueSource ?? "",
       status: UNFULFILLED_DEMAND_STATUS_LABELS[demand.status] ?? demand.status,
@@ -82,6 +84,14 @@ export async function GET(request: NextRequest) {
       { key: "unavailableQuantity", header: "Unavailable quantity" },
       { key: "outstandingQuantity", header: "Outstanding quantity" },
       { key: "confirmedLostQuantity", header: "Confirmed lost quantity" },
+      // Real-world fix ("lost sales... show unit price/currency"): the
+      // unit price this estimate was actually computed from, and the
+      // currency every money column on this row is denominated in (this
+      // order's own currency -- never assumed to be one global currency
+      // across rows, since different customers/orders can use different
+      // ones).
+      { key: "estimatedUnitPrice", header: "Unit price used" },
+      { key: "currencyCode", header: "Currency" },
       { key: "estimatedValue", header: "Estimated lost value" },
       { key: "estimatedValueSource", header: "Estimate source" },
       { key: "status", header: "Status" },

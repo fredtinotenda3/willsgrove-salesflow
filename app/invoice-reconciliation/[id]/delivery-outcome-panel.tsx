@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Loader2, PackageCheck, AlertTriangle, Plus, Search } from "lucide-react";
 import { CLAIM_CATEGORY_LABELS, CLAIM_PRIORITY_LABELS } from "@/lib/invoice-claims/display";
 import { CLAIM_LINE_REASON_CATEGORIES, CLAIM_LINE_REASON_CATEGORY_LABELS } from "@/lib/invoice-claims/validation";
@@ -157,13 +158,17 @@ export default function DeliveryOutcomePanel({
         });
         const body = await readJson(response);
         if (!response.ok || !body.success) {
-          setError((body.message as string) ?? "Unable to record this delivery outcome.");
+          const message = (body.message as string) ?? "Unable to record this delivery outcome.";
+          setError(message);
+          toast.error(response.status === 403 ? "Permission denied." : "Unable to record delivery outcome", { description: message });
           return;
         }
         router.refresh();
         setRecord({ id: body.id as string, outcome: "NO_CLAIM", podReference: podReference || null, notes: notes || null, recordedByName: "You", recordedAt: new Date().toISOString(), claims: [] });
+        toast.success("Delivery completed", { description: "Recorded as No Claim." });
       } catch {
         setError("A network error occurred.");
+        toast.error("Network error", { description: "Could not reach the server. Check your connection and try again." });
       } finally {
         setSubmitting(false);
       }
@@ -242,7 +247,9 @@ export default function DeliveryOutcomePanel({
       });
       const body = await readJson(response);
       if (!response.ok || !body.success) {
-        setError(typeof body.message === "string" ? body.message : "Unable to record this delivery outcome.");
+        const message = typeof body.message === "string" ? body.message : "Unable to record this delivery outcome.";
+        setError(message);
+        toast.error(response.status === 403 ? "Permission denied." : "Unable to record delivery outcome", { description: message });
         if (body.fieldErrors && typeof body.fieldErrors === "object") setFieldErrors(body.fieldErrors as Record<string, string>);
         return;
       }
@@ -257,8 +264,10 @@ export default function DeliveryOutcomePanel({
         recordedAt: new Date().toISOString(),
         claims: claimIds.map((claimId) => ({ id: claimId, claimReference: claimId, category, status: "OPEN" })),
       });
+      toast.success("Delivery completed", { description: "Recorded as With Claim." });
     } catch {
       setError("A network error occurred.");
+      toast.error("Network error", { description: "Could not reach the server. Check your connection and try again." });
     } finally {
       setSubmitting(false);
     }

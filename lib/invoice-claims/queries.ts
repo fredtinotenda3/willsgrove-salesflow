@@ -263,3 +263,88 @@ export async function listClaimLinesForOrderLine(orderLineId: string) {
     orderBy: { createdAt: "asc" },
   });
 }
+
+export type RejectedDeliveryAwaitingClaim = {
+  dispatchRecordId: string;
+  orderId: string;
+  orderReference: string;
+  customerName: string;
+  deliveredAt: string;
+  orderLineId: string;
+  description: string;
+  sapItemCode: string | null;
+  rejectedQuantity: string;
+  rejectionReason: string | null;
+};
+
+/**
+ * Real-world fix ("invoice-claims page... should show invoices with
+ * products returned... on deliver the reason which we put if
+ * rejected"). lib/fulfilment/delivery.ts's own module comment already
+ * documents the intended design: recording a physical delivery
+ * rejection "never creates an InvoiceClaim itself... surfaced to the UI
+ * as a link into the EXISTING /invoice-claims/new flow" -- but nothing
+ * ever actually surfaced that link anywhere, so a rejected delivery with
+ * no claim filed for it was invisible: the Claims Queue only ever shows
+ * claims that already exist, and showed "0 claims total" even with real
+ * rejected product sitting unaddressed.
+ *
+ * Finds every DeliveryLine with rejectedQuantity > 0 whose order line has
+ * NO InvoiceClaimLine against it yet -- neither the native (orderLineId)
+ * nor the SAP-anchored (sapInvoiceLineId, via that SapInvoiceLine's own
+ * matchedOrderLineId) path, so a claim filed either way correctly
+ * removes the row from this list. Bounded the same way
+ * listUnfulfilledDemands/listInvoiceClaims already bound their own
+ * unfiltered lists (a page-sized, most-recent-first slice), since this
+ * is a worklist to action, not a report to paginate through.
+ */
+export async function listRejectedDeliveriesAwaitingClaim(limit = 25): Promise<RejectedDeliveryAwaitingClaim[]> {
+  const rejectedLines = await prisma.deliveryLine.findMany({
+    where: {
+      rejectedQuantity: { gt: 0 },
+      dispatchLine: {
+        orderLine: {
+          AND: [
+            { claimLines: { none: {} } },
+            { matchedSapInvoiceLines: { every: { claimLines: { none: {} } } } },
+          ],
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    select: {
+      rejectedQuantity: true,
+      rejectionReason: true,
+      createdAt: true,
+      deliveryRecord: { select: { recordedAt: true } },
+      dispatchLine: {
+        select: {
+          dispatchRecordId: true,
+          orderLine: {
+            select: {
+              id: true,
+              originalProductDescription: true,
+              sapItemCodeSnapshot: true,
+              product: { select: { sapItemCode: true } },
+              order: { select: { id: true, reference: true, customer: { select: { name: true } } } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  return rejectedLines.map((line) => ({
+    dispatchRecordId: line.dispatchLine.dispatchRecordId,
+    orderId: line.dispatchLine.orderLine.order.id,
+    orderReference: line.dispatchLine.orderLine.order.reference,
+    customerName: line.dispatchLine.orderLine.order.customer.name,
+    deliveredAt: line.deliveryRecord.recordedAt.toISOString(),
+    orderLineId: line.dispatchLine.orderLine.id,
+    description: line.dispatchLine.orderLine.originalProductDescription,
+    sapItemCode: line.dispatchLine.orderLine.product?.sapItemCode ?? line.dispatchLine.orderLine.sapItemCodeSnapshot ?? null,
+    rejectedQuantity: line.rejectedQuantity.toString(),
+    rejectionReason: line.rejectionReason,
+  }));
+}

@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
+import { toast } from "sonner";
 import Sidebar from "../../components/sidebar";
 import { ORDER_SOURCE_LABELS } from "@/lib/order-display";
 
@@ -17,6 +18,8 @@ import {
   CheckCircle2,
   AlertCircle,
   X,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 
 type CustomerSummary = {
@@ -205,6 +208,10 @@ export default function NewOrderPage() {
   // empty-state copy below and on the order detail page).
   const [pastedText, setPastedText] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  // Real-world fix (compact order-creation UI): open by default so the
+  // card's existence isn't hidden on first visit, but collapsible once
+  // the salesperson has decided neither field applies to this order.
+  const [messageDocsExpanded, setMessageDocsExpanded] = useState(true);
 
   const [source, setSource] = useState<"EMAIL" | "WHATSAPP" | "MANUAL">("EMAIL");
   const [customerQuery, setCustomerQuery] = useState("");
@@ -705,7 +712,9 @@ export default function NewOrderPage() {
       const data: CreateOrderResponse = await response.json();
 
       if (!response.ok || !data.success || !data.order) {
-        setFormError(data.message ?? "Unable to create the order.");
+        const message = data.message ?? "Unable to create the order.";
+        setFormError(message);
+        toast.error(response.status === 403 ? "Permission denied." : "Validation failed", { description: message });
         if (data.fieldErrors) {
           setFieldErrors(data.fieldErrors);
           // Best-effort: surface per-line validation errors (keys of the
@@ -731,6 +740,7 @@ export default function NewOrderPage() {
       }
 
       setCreatedOrder(data.order);
+      toast.success("Order created", { description: data.order.reference });
 
       if (selectedFiles.length > 0) {
         const initial: DocumentUploadState[] = selectedFiles.map((file) => ({
@@ -749,6 +759,7 @@ export default function NewOrderPage() {
       }
     } catch {
       setFormError("Could not reach the server. Check your connection and try again.");
+      toast.error("Network error", { description: "Could not reach the server. Check your connection and try again." });
     } finally {
       setSubmitting(false);
     }
@@ -870,77 +881,94 @@ export default function NewOrderPage() {
             </div>
           )}
 
-          {/* Original message / documents -- optional, combinable with each other and with the manual lines below */}
-          <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
-            <h2 className="text-[15px] font-bold text-[#17251E]">Original Message &amp; Documents</h2>
-            <p className="mt-1 text-xs text-gray-400">
-              Both optional, and not mutually exclusive with each other or with the order lines below --
-              paste the customer&apos;s message, attach their PO file(s), key in lines manually, or any
-              combination. Keeping the original wording and files is what lets someone verify the order
-              later. Nothing here is auto-extracted into lines yet (that&apos;s a later milestone), so an
-              order submitted with only a message or only a file still waits for a human to add lines.
-            </p>
-
-            <div className="mt-4 grid grid-cols-2 gap-6">
-              <div>
-                <label className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500">
-                  <MessageSquare size={13} />
-                  Customer&apos;s message or PO text
-                </label>
-                <textarea
-                  value={pastedText}
-                  onChange={(event) => setPastedText(event.target.value)}
-                  placeholder="Paste the customer's email or WhatsApp message here..."
-                  rows={6}
-                  maxLength={5000}
-                  className="mt-1 w-full rounded-lg border border-gray-200 px-4 py-3 text-xs outline-none focus:border-[#7C9D87] focus:ring-2 focus:ring-green-50"
-                />
-              </div>
-
-              <div>
-                <label className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500">
-                  <Upload size={13} />
-                  Attach file(s)
-                </label>
-                <label className="mt-1 flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-gray-200 py-7 text-center hover:border-[#7C9D87]">
-                  <Upload size={20} className="text-gray-400" />
-                  <span className="mt-2 text-xs font-medium text-gray-600">
-                    {selectedFiles.length > 0
-                      ? `${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} selected -- click to add more`
-                      : "Click to select the customer's PO file(s)"}
+          {/* Real-world fix (compact order-creation UI, spec section 3):
+              replaced the old full-height always-expanded card -- one
+              short hint line instead of a four-sentence paragraph, a
+              3-row textarea instead of 6, inline file chips instead of a
+              stacked list, and the whole thing collapsible since neither
+              field is required. Both remain fully independent of each
+              other and of the manual lines below; nothing here is
+              auto-extracted into lines (unchanged behavior). */}
+          <section className="rounded-xl border border-[#E8EBE6] bg-white">
+            <button
+              type="button"
+              onClick={() => setMessageDocsExpanded((prev) => !prev)}
+              className="flex w-full items-center justify-between px-5 py-3.5"
+            >
+              <span className="flex items-center gap-2 text-[13px] font-semibold text-[#17251E]">
+                Original Message &amp; Documents
+                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-400">Optional</span>
+                {(pastedText.trim() || selectedFiles.length > 0) && (
+                  <span className="rounded-full bg-[#F0F5EF] px-2 py-0.5 text-[10px] font-semibold text-[#315C43]">
+                    {[pastedText.trim() ? "Message" : null, selectedFiles.length > 0 ? `${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"}` : null]
+                      .filter(Boolean)
+                      .join(" · ")}
                   </span>
-                  <span className="mt-1 text-[10px] text-gray-400">Up to 20 MB each</span>
-                  <input
-                    type="file"
-                    multiple
-                    className="hidden"
-                    onChange={(event) => {
-                      handleFilesPicked(Array.from(event.target.files ?? []));
-                      event.target.value = "";
-                    }}
-                  />
-                </label>
-                {selectedFiles.length > 0 && (
-                  <ul className="mt-2 space-y-1">
-                    {selectedFiles.map((file, index) => (
-                      <li
-                        key={`${file.name}-${index}`}
-                        className="flex items-center justify-between gap-2 text-[11px] text-gray-500"
-                      >
-                        <span className="truncate">{file.name}</span>
-                        <button
-                          type="button"
-                          onClick={() => removeSelectedFile(index)}
-                          className="shrink-0 text-gray-300 hover:text-red-600"
-                        >
-                          <X size={12} />
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
                 )}
+              </span>
+              {messageDocsExpanded ? <ChevronUp size={15} className="text-gray-400" /> : <ChevronDown size={15} className="text-gray-400" />}
+            </button>
+
+            {messageDocsExpanded && (
+              <div className="grid grid-cols-2 gap-5 border-t border-[#E8EBE6] px-5 py-4">
+                <div>
+                  <label className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500">
+                    <MessageSquare size={13} />
+                    Customer&apos;s message or PO text
+                  </label>
+                  <textarea
+                    value={pastedText}
+                    onChange={(event) => setPastedText(event.target.value)}
+                    placeholder="Paste the customer's email or WhatsApp message here..."
+                    rows={3}
+                    maxLength={5000}
+                    className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-xs outline-none focus:border-[#7C9D87] focus:ring-2 focus:ring-green-50"
+                  />
+                </div>
+
+                <div>
+                  <label className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500">
+                    <Upload size={13} />
+                    Attach file(s)
+                  </label>
+                  <label className="mt-1 flex cursor-pointer items-center justify-center gap-2 rounded-lg border-2 border-dashed border-gray-200 py-3 text-center hover:border-[#7C9D87]">
+                    <Upload size={15} className="text-gray-400" />
+                    <span className="text-xs font-medium text-gray-600">
+                      {selectedFiles.length > 0 ? "Click to add more" : "Click to select file(s) -- up to 20 MB each"}
+                    </span>
+                    <input
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={(event) => {
+                        handleFilesPicked(Array.from(event.target.files ?? []));
+                        event.target.value = "";
+                      }}
+                    />
+                  </label>
+                  {selectedFiles.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {selectedFiles.map((file, index) => (
+                        <span
+                          key={`${file.name}-${index}`}
+                          className="flex items-center gap-1.5 rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[10px] text-gray-600"
+                        >
+                          <span className="max-w-[140px] truncate">{file.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => removeSelectedFile(index)}
+                            className="shrink-0 text-gray-400 hover:text-red-600"
+                            aria-label={`Remove ${file.name}`}
+                          >
+                            <X size={11} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
           </section>
 
           {/* Customer */}
@@ -1151,12 +1179,7 @@ export default function NewOrderPage() {
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-[15px] font-bold text-[#17251E]">Order Lines</h2>
-                <p className="mt-1 text-xs text-gray-400">
-                  Optional if you&apos;ve pasted the customer&apos;s message or attached their PO above --
-                  those wait for manual review since there&apos;s no automatic extraction yet. Search by SAP
-                  code, name or barcode to link a known catalogue item, or enter a line exactly as written
-                  on the PO.
-                </p>
+                <p className="mt-1 text-xs text-gray-400">Search by SAP code, name or barcode, or enter a line exactly as written on the PO.</p>
               </div>
               <button
                 type="button"
@@ -1356,9 +1379,14 @@ export default function NewOrderPage() {
               </table>
             </div>
 
+            {/* Real-world fix ("Do not show outdated development-milestone
+                messages to users"): the underlying point -- a customer's
+                submitted price is never the approved selling price -- is
+                still true and worth keeping; only the "milestone" framing
+                was internal-process language that didn't belong here. */}
             <p className="mt-4 rounded-lg bg-gray-50 px-4 py-3 text-[11px] text-gray-500">
-              Note: a customer&apos;s submitted price is never treated as the approved selling price. Pricing and
-              approval happen in a later step, not built yet in this milestone.
+              Note: a customer&apos;s submitted price is set here, but is never treated as the approved selling
+              price -- approval is a separate, later step.
             </p>
           </section>
 

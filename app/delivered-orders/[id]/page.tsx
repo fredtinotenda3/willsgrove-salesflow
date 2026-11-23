@@ -234,6 +234,15 @@ export default async function DeliveredOrderDetailPage({ params }: { params: Pro
             >
               View invoice reconciliation record <ArrowUpRight size={13} />
             </Link>
+            {/* Real-world fix (native invoice recording): this invoice has no
+                SAP import behind it -- recorded directly in SalesFlow
+                against its own order -- so that's stated plainly rather
+                than left to look like every other, SAP-imported row here. */}
+            {invoice.isNativelyRecorded && (
+              <p className="mb-4 rounded-lg bg-cyan-50 px-3 py-2 text-xs font-medium text-cyan-800">
+                Recorded directly in SalesFlow -- not imported from a SAP export.
+              </p>
+            )}
             <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
               <Field label="Invoice number" value={invoice.sapDocNum} />
               <Field label="Invoice date" value={formatDate(invoice.invoiceDate)} />

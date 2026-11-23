@@ -198,7 +198,7 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
                       <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Unavailable</th>
                       <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Outstanding</th>
                       <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Lost</th>
-                      <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Est. Value</th>
+                      <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-400">Lost Value</th>
                       <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Status</th>
                       <th className="px-6 py-3" />
                     </tr>
@@ -230,7 +230,28 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{demand.outstandingQuantity}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{demand.confirmedLostQuantity}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">
-                          {demand.estimatedValue !== null ? demand.estimatedValue : <span className="text-gray-300">--</span>}
+                          {/* Real-world fix ("lost sales... show unit price/currency, confirm
+                              valuation methodology"): "Lost Value" (renamed from "Est. Value")
+                              is quantity x unit price, resolved once at creation from either
+                              this order line's own price (approved, falling back to the price
+                              entered at order creation) or the customer's price list -- never
+                              a guessed figure (see resolveEstimatedLostSaleValue's own
+                              comment). The tooltip states which of the two it came from and
+                              the unit price it was computed from, so the methodology is never
+                              hidden behind a single number. */}
+                          {demand.estimatedValue !== null ? (
+                            <span
+                              title={`${demand.confirmedLostQuantity} x ${demand.estimatedUnitPrice} ${demand.currencyCode} -- priced from ${
+                                demand.estimatedValueSource === "ORDER_LINE_APPROVED_PRICE"
+                                  ? "this order line's own price (approved price, or the price entered at order creation if none was separately approved)"
+                                  : "the customer's assigned price list"
+                              }`}
+                            >
+                              {demand.estimatedValue} {demand.currencyCode}
+                            </span>
+                          ) : (
+                            <span className="text-gray-300">--</span>
+                          )}
                         </td>
                         <td className="whitespace-nowrap px-6 py-4">
                           <span

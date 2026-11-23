@@ -153,6 +153,35 @@ export function estimateOrderTotal(
 }
 
 /**
+ * Real-world fix ("Line Total column... should derive from unit price
+ * used when creating order, Total Pending pricing also pending"): the
+ * same "Pending pricing" staleness estimateOrderTotal above was built to
+ * fix at the ORDER level was never fixed at the individual LINE level --
+ * app/orders/[id]/page.tsx's "Line Total" column read OrderLine.lineTotal
+ * alone and showed "Pending" for the lifetime of every order up to
+ * SAP invoice reconciliation (the only place lineTotal is ever actually
+ * written -- confirmed by inspection: no order-creation/approval code
+ * path in this codebase ever sets OrderLine.lineTotal or
+ * approvedUnitPrice; only customerUnitPrice, entered at order creation,
+ * is reliably populated). One line's estimate, not the whole order's --
+ * same scaled-decimal arithmetic, same customerUnitPrice-only source (an
+ * order that somehow had approvedUnitPrice set would also already have
+ * lineTotal set by the same real pricing event, so there is nothing this
+ * fallback would ever need from that column), same "null, never a
+ * guessed figure" discipline as estimateOrderTotal.
+ */
+export function estimateLineTotal(
+  requestedQuantity: { toString(): string },
+  customerUnitPrice: { toString(): string } | null
+): string | null {
+  if (customerUnitPrice === null) return null;
+  const quantity = parseEstimateScaledDecimal(requestedQuantity.toString());
+  const unitPrice = parseEstimateScaledDecimal(customerUnitPrice.toString());
+  if (quantity === null || unitPrice === null) return null;
+  return formatEstimateScaledDecimal((quantity * unitPrice) / BigInt(10_000));
+}
+
+/**
  * Workflow/Navigation/Performance round, Part 2: once an invoice's
  * delivery outcome has been recorded (No Claim or With Claim), the
  * order behind it is DONE -- it must stop appearing in every active
@@ -364,7 +393,70 @@ export async function getOrderById(id: string) {
       },
       // Final completion phase, section 7 -- see orderListSelect's own
       // comment above for why this is needed and why CANCELLED is excluded.
-      dispatchRecords: { where: { status: { not: "CANCELLED" } }, select: { status: true } },
+      // Round-7 spec Section 7 follow-up: "Picking start time and picking
+      // end time must be preserved and displayed in the order history...
+      // Driver, assistant and vehicle assignments must be visible in the
+      // order's fulfilment history" -- this was already true on the
+      // Delivered Orders detail page (lib/delivered-orders/queries.ts's
+      // getDeliveredOrderDetail), but an order's OWN /orders/[id] page
+      // only ever showed the generic status-transition timeline below,
+      // never picking/dispatch detail. Same select shape as
+      // getDeliveredOrderDetail uses, reused here rather than redefined,
+      // so the two pages can never disagree about what a picking session
+      // or dispatch record looked like.
+      pickingSessions: {
+        orderBy: { startedAt: "asc" },
+        select: {
+          id: true,
+          status: true,
+          startedAt: true,
+          startedBy: { select: { name: true } },
+          completedAt: true,
+          completedBy: { select: { name: true } },
+          authorizedAt: true,
+          authorizedBy: { select: { name: true } },
+        },
+      },
+      dispatchRecords: {
+        where: { status: { not: "CANCELLED" } },
+        orderBy: { createdAt: "asc" },
+        select: {
+          id: true,
+          status: true,
+          plannedDepartureAt: true,
+          departedAt: true,
+          departedBy: { select: { name: true } },
+          createdBy: { select: { name: true } },
+          vehicleOrCourierReference: true,
+          driver: { select: { name: true } },
+          assistant: { select: { name: true } },
+          vehicle: { select: { registrationNumber: true } },
+          // Real-world fix ("Order Fulfilment History should include all
+          // products accepted and rejected, if any"): same deliveryRecord
+          // select shape lib/delivered-orders/queries.ts's
+          // getDeliveredOrderDetail already uses, reused here rather than
+          // redefined -- per-product accepted/rejected quantity and
+          // rejection reason, from the physical delivery outcome, not the
+          // SAP invoice. Absent entirely (never a fabricated "0 rejected")
+          // until a delivery outcome has actually been recorded.
+          deliveryRecord: {
+            select: {
+              outcome: true,
+              recordedAt: true,
+              recipientName: true,
+              recordedBy: { select: { name: true } },
+              lines: {
+                select: {
+                  acceptedQuantity: true,
+                  rejectedQuantity: true,
+                  rejectionReason: true,
+                  dispatchLine: { select: { orderLine: { select: { originalProductDescription: true, sapItemCodeSnapshot: true } } } },
+                },
+              },
+            },
+          },
+        },
+      },
       // Workflow/Navigation/Performance round, Part 3: real related-record
       // IDs for the order detail page's "related records" panel and
       // lifecycle indicator -- every relation here already exists on
@@ -414,6 +506,49 @@ export async function getOrderById(id: string) {
     customerPoReference: order.customerPoReference,
     status: order.status,
     dispatchStatuses: order.dispatchRecords.map((d) => d.status),
+    // Section 7 follow-up (see the select above's comment): same field
+    // names/shape as getDeliveredOrderDetail's pickingSessions/dispatches,
+    // deliberately, so a future shared component could render either.
+    pickingSessions: order.pickingSessions.map((session) => ({
+      id: session.id,
+      status: session.status,
+      startedByName: session.startedBy.name,
+      startedAt: session.startedAt.toISOString(),
+      completedByName: session.completedBy?.name ?? null,
+      completedAt: session.completedAt?.toISOString() ?? null,
+      authorizedByName: session.authorizedBy?.name ?? null,
+      authorizedAt: session.authorizedAt?.toISOString() ?? null,
+    })),
+    dispatches: order.dispatchRecords.map((dispatch) => ({
+      id: dispatch.id,
+      status: dispatch.status,
+      driverName: dispatch.driver?.name ?? null,
+      assistantName: dispatch.assistant?.name ?? null,
+      vehicleRegistration: dispatch.vehicle?.registrationNumber ?? null,
+      vehicleOrCourierReference: dispatch.vehicleOrCourierReference,
+      plannedDepartureAt: dispatch.plannedDepartureAt?.toISOString() ?? null,
+      departedAt: dispatch.departedAt?.toISOString() ?? null,
+      departedByName: dispatch.departedBy?.name ?? null,
+      createdByName: dispatch.createdBy.name,
+      // Real-world fix ("Order Fulfilment History should include all
+      // products accepted and rejected, if any") -- null until a
+      // delivery outcome has actually been recorded for this dispatch.
+      delivery: dispatch.deliveryRecord
+        ? {
+            outcome: dispatch.deliveryRecord.outcome,
+            recordedAt: dispatch.deliveryRecord.recordedAt.toISOString(),
+            recipientName: dispatch.deliveryRecord.recipientName,
+            recordedByName: dispatch.deliveryRecord.recordedBy.name,
+            lines: dispatch.deliveryRecord.lines.map((line) => ({
+              description: line.dispatchLine.orderLine.originalProductDescription,
+              sapItemCode: line.dispatchLine.orderLine.sapItemCodeSnapshot,
+              acceptedQuantity: line.acceptedQuantity.toString(),
+              rejectedQuantity: line.rejectedQuantity.toString(),
+              rejectionReason: line.rejectionReason,
+            })),
+          }
+        : null,
+    })),
     source: order.source,
     orderDate: order.orderDate?.toISOString() ?? null,
     requestedDeliveryDate: order.requestedDeliveryDate?.toISOString() ?? null,
@@ -450,6 +585,12 @@ export async function getOrderById(id: string) {
       customerUnitPrice: line.customerUnitPrice?.toString() ?? null,
       approvedUnitPrice: line.approvedUnitPrice?.toString() ?? null,
       lineTotal: line.lineTotal?.toString() ?? null,
+      // Real-world fix ("Line Total... should derive from unit price
+      // used when creating order") -- see estimateLineTotal's own
+      // comment. Null exactly when lineTotal is also null AND no
+      // customerUnitPrice was ever entered -- the page falls back to
+      // this only when the real lineTotal itself is null.
+      estimatedLineTotal: estimateLineTotal(line.requestedQuantity, line.customerUnitPrice),
       verificationStatus: line.verificationStatus,
       salesNotes: line.salesNotes,
       // Milestone 3 completion. Null when this line's product has since

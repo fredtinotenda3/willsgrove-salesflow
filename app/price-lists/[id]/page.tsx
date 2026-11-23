@@ -17,6 +17,7 @@
 
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
+import { toast } from "sonner";
 import { ArrowLeft, Search, Pencil, Check, X, AlertCircle } from "lucide-react";
 import Sidebar from "../../components/sidebar";
 
@@ -127,11 +128,15 @@ export default function PriceListDetailPage({ params }: { params: Promise<{ id: 
         const newPrice = (body as { unitPrice: string }).unitPrice;
         setEntries((prev) => prev.map((e) => (e.id === entryId ? { ...e, unitPrice: newPrice } : e)));
         setEditingId(null);
+        toast.success("Price updated", { description: newPrice });
       } else {
-        setRowError({ id: entryId, message: (body as { message?: string })?.message ?? "Unable to save this price." });
+        const message = (body as { message?: string })?.message ?? "Unable to save this price.";
+        setRowError({ id: entryId, message });
+        toast.error("Unable to update price", { description: message });
       }
     } catch {
       setRowError({ id: entryId, message: "Could not reach the server." });
+      toast.error("Network error", { description: "Could not reach the server. Check your connection and try again." });
     } finally {
       setSavingId(null);
     }
@@ -193,6 +198,13 @@ export default function PriceListDetailPage({ params }: { params: Promise<{ id: 
                 </div>
               </div>
 
+              {/* Real-world fix ("responsive tables app-wide"): this table had
+                  no horizontal-scroll wrapper, unlike every other table page
+                  in the app (app/lost-sales/page.tsx, app/customers/page.tsx,
+                  etc.) -- on a narrow screen its 5 columns would otherwise
+                  force the whole page to scroll sideways instead of just the
+                  table. */}
+              <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="bg-[#FAFBF9] text-[11px] uppercase tracking-wide text-[#89948D]">
                   <tr>
@@ -270,6 +282,7 @@ export default function PriceListDetailPage({ params }: { params: Promise<{ id: 
                     ))}
                 </tbody>
               </table>
+              </div>
 
               {totalPages > 1 && (
                 <div className="flex items-center justify-between border-t border-[#E8ECE7] px-5 py-3 text-xs text-[#89948D]">

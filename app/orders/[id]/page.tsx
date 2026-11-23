@@ -5,6 +5,7 @@ import { getOrderById } from "@/lib/order-queries";
 import { isValidId } from "@/lib/http";
 import Sidebar from "../../components/sidebar";
 import OrderLifecycleStepper from "../../components/order-lifecycle-stepper";
+import RecordInvoicePanel from "./record-invoice-panel";
 import {
   ORDER_STATUS_LABELS,
   getEffectiveOrderStatus,
@@ -17,6 +18,7 @@ import {
   formatOrderDateTime,
   formatOrderAmount,
   formatOrderAmountWithEstimate,
+  formatLineAmountWithEstimate,
   formatFileSize,
   initialsFor,
   avatarColorFor,
@@ -47,6 +49,7 @@ import {
   FileWarning,
   TrendingDown,
   ArrowUpRight,
+  Truck,
 } from "lucide-react";
 import HandoverPanel from "./handover-panel";
 import SapIntegrationPanel from "./sap-integration-panel";
@@ -237,6 +240,17 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                     >
                       {amount.text}
                     </p>
+                    {/* Real-world fix ("show real subtotal/tax/total... or a
+                        precise explanation if tax configuration is missing --
+                        do not invent a tax rate"): confirmed by reading
+                        OrderLine's own schema -- it has no tax/VAT/discount
+                        column at all (that resolution exists only on the
+                        separate Quotations module's QuotationLine). The
+                        figure above is therefore the full line total with no
+                        tax applied, which silence could misread either way
+                        ("tax-inclusive" or "zero-rated") -- this states the
+                        true reason plainly instead of fabricating a split. */}
+                    <p className="mt-1 text-[10px] text-gray-400">Excludes tax -- SalesFlow does not calculate tax on orders yet.</p>
                   </div>
                 );
               })()}
@@ -252,13 +266,27 @@ export default async function OrderDetailPage({ params }: RouteParams) {
             </section>
           )}
 
-          {/* Unbuilt-workflow notice -- honest, not a fake interactive panel */}
+          {/* Real-world fix (native invoice recording): renders nothing of
+              its own when this order has nothing dispatched-but-
+              uninvoiced (the common case) -- see record-invoice-panel.tsx's
+              own comment for what this closes. */}
+          <RecordInvoicePanel orderId={order.id} />
+
+          {/* Real-world fix ("Do not show outdated development-milestone
+              messages... Replace them with actual information or accurate
+              empty states"): pricing is no longer unbuilt -- a customer's
+              assigned price list (or a manually entered price) now
+              populates customerUnitPrice live, confirmed this round on real
+              orders. Verification and approval are genuinely still not
+              built (no VERIFIED/APPROVED action exists anywhere on this
+              page), so that half of the old notice stays, corrected to say
+              only what's actually still true. */}
           <section className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
             <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-600" />
             <p className="text-xs text-amber-800">
-              Product verification, pricing and approval are not built yet in this milestone. The data below
-              (customer, lines, documents, status history) is real and live; price/verification fields will
-              show &quot;Pending&quot; until that workflow exists.
+              Verification and approval workflows are not built yet. Pricing is live: a line shows its price once
+              it has one, from the customer&apos;s price list or entered manually -- a blank/&quot;Pending
+              pricing&quot; line genuinely has no price yet, not a disabled feature.
             </p>
           </section>
 
@@ -368,7 +396,19 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                                     : "Pending"}
                               </td>
                               <td className="whitespace-nowrap px-6 py-4 text-xs font-semibold text-gray-700">
-                                {line.lineTotal !== null ? `${order.currency} ${line.lineTotal}` : "Pending"}
+                                {/* Real-world fix ("Line Total column... should derive
+                                    from unit price used when creating order, not keep
+                                    saying Pending"): lineTotal itself is only ever set
+                                    once a real SAP invoice exists for this line -- see
+                                    estimateLineTotal's own comment -- so for the entire
+                                    time an order is active, this showed "Pending" even
+                                    though a real customerUnitPrice was entered at order
+                                    creation. "~" marks it as a derived estimate, exactly
+                                    like the Order Total card's own "~" prefix just above. */}
+                                {(() => {
+                                  const { text, isEstimate } = formatLineAmountWithEstimate(line.lineTotal, line.estimatedLineTotal, order.currency);
+                                  return isEstimate ? <span title="Estimated from this line's own price -- not yet the real, SAP-confirmed total.">{text}</span> : text;
+                                })()}
                               </td>
                               <td className="whitespace-nowrap px-6 py-4">
                                 <span
@@ -492,6 +532,91 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                   ))}
                 </div>
               </section>
+
+              {/* Fulfilment history (Section 7 follow-up): picking start/
+                  end times and driver/assistant/vehicle assignments, shown
+                  on THIS (active) order page too -- not only on Delivered
+                  Orders, where this detail already existed. Omitted
+                  entirely (not shown empty) when nothing has happened yet,
+                  same convention as the Original Message section above. */}
+              {(order.pickingSessions.length > 0 || order.dispatches.length > 0) && (
+                <section className="rounded-xl border border-[#E8EBE6] bg-white p-6">
+                  <h2 className="text-[15px] font-bold text-[#17251E]">Fulfilment History</h2>
+                  <p className="mt-1 text-xs text-gray-400">Picking and dispatch events recorded against this order.</p>
+
+                  <div className="mt-4 space-y-3">
+                    {order.pickingSessions.map((session) => (
+                      <div key={session.id} className="rounded-lg border border-[#F0F2EF] p-3">
+                        <div className="flex items-center gap-2">
+                          <PackageCheck size={14} className="text-[#315C43]" />
+                          <p className="text-xs font-semibold text-gray-700">Picking session · {session.status}</p>
+                        </div>
+                        <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] text-gray-500 sm:grid-cols-3">
+                          <p>Started: {formatOrderDateTime(session.startedAt)} ({session.startedByName})</p>
+                          <p>
+                            Completed:{" "}
+                            {session.completedAt ? `${formatOrderDateTime(session.completedAt)} (${session.completedByName ?? "Not Available"})` : "Not yet completed"}
+                          </p>
+                          <p>
+                            Authorized:{" "}
+                            {session.authorizedAt ? `${formatOrderDateTime(session.authorizedAt)} (${session.authorizedByName ?? "Not Available"})` : "Not yet authorized"}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+
+                    {order.dispatches.map((dispatch) => (
+                      <div key={dispatch.id} className="rounded-lg border border-[#F0F2EF] p-3">
+                        <div className="flex items-center gap-2">
+                          <Truck size={14} className="text-[#315C43]" />
+                          <p className="text-xs font-semibold text-gray-700">Dispatch · {dispatch.status}</p>
+                        </div>
+                        <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] text-gray-500 sm:grid-cols-2">
+                          <p>Driver: {dispatch.driverName ?? "Not Available"}</p>
+                          <p>Assistant: {dispatch.assistantName ?? "Not Available"}</p>
+                          <p>Vehicle: {dispatch.vehicleRegistration ?? dispatch.vehicleOrCourierReference ?? "Not Available"}</p>
+                          <p>
+                            Departed:{" "}
+                            {dispatch.departedAt ? `${formatOrderDateTime(dispatch.departedAt)} (${dispatch.departedByName ?? "Not Available"})` : "Not yet departed"}
+                          </p>
+                        </div>
+
+                        {/* Real-world fix ("Order Fulfilment History should
+                            include all products accepted and reject if
+                            any"): the physical delivery outcome, per
+                            product -- absent entirely (not shown empty)
+                            until a delivery outcome has actually been
+                            recorded for this dispatch, same convention as
+                            the rest of this section. */}
+                        {dispatch.delivery && (
+                          <div className="mt-2 border-t border-[#F0F2EF] pt-2">
+                            <p className="text-[11px] font-medium text-gray-600">
+                              Delivery outcome: {dispatch.delivery.outcome.replaceAll("_", " ")} ·{" "}
+                              {formatOrderDateTime(dispatch.delivery.recordedAt)} ({dispatch.delivery.recordedByName})
+                              {dispatch.delivery.recipientName && ` · received by ${dispatch.delivery.recipientName}`}
+                            </p>
+                            <div className="mt-1.5 space-y-1">
+                              {dispatch.delivery.lines.map((line, i) => (
+                                <p key={i} className="text-[11px] text-gray-500">
+                                  {line.description}
+                                  {line.sapItemCode && ` (${line.sapItemCode})`}: accepted {line.acceptedQuantity}
+                                  {Number(line.rejectedQuantity) > 0 && (
+                                    <span className="font-medium text-red-600">
+                                      {" "}
+                                      · rejected {line.rejectedQuantity}
+                                      {line.rejectionReason ? ` (${line.rejectionReason})` : ""}
+                                    </span>
+                                  )}
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
 
             {/* Right column */}

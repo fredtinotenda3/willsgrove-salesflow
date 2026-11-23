@@ -14,9 +14,26 @@ import { multiplyDecimalStrings } from "@/lib/lost-sales/validation";
  *
  * Tries, in order, the two real price sources this codebase already has:
  *
- *   1. OrderLine.approvedUnitPrice -- the price actually agreed for THIS
- *      order's line, when one exists. The most historically valid price
- *      there could possibly be for this specific lost quantity.
+ *   1. OrderLine.approvedUnitPrice, falling back to OrderLine.
+ *      customerUnitPrice when no separately-approved price was ever
+ *      recorded -- the exact same `approvedUnitPrice ?? customerUnitPrice`
+ *      fallback this codebase already uses everywhere else an order
+ *      line's own price is resolved (lib/invoice-recording/queries.ts,
+ *      lib/delivered-orders/queries.ts, lib/returns-credits/
+ *      return-lost-sale.ts, lib/invoice-claims/financial.ts and its own
+ *      UI). Real-world fix: this function was the one place in the
+ *      codebase that checked approvedUnitPrice alone -- since this
+ *      business's own workflow does not always populate a separately-
+ *      approved price (the customer's requested/quoted price IS the
+ *      real price whenever nothing overrode it), that meant most lost
+ *      sales fell straight through to a price list that often doesn't
+ *      exist either, surfacing as "no price available" even though the
+ *      order itself always carries a real price. Both still carry the
+ *      ORDER_LINE_APPROVED_PRICE source below (never a new enum value
+ *      needing a migration this sandbox cannot run/verify) -- the
+ *      meaningful distinction LostSaleValueSource exists to record is
+ *      "the order line's own price" vs. "a price list entry", not which
+ *      of the two order-line columns it came from.
  *   2. The customer's assigned PriceList, the most recent entry valid as
  *      of `asOf` for this product (by live productId first, then the
  *      frozen sapItemCodeSnapshot, same fallback order as everywhere else
@@ -47,11 +64,12 @@ export async function resolveEstimatedLostSaleValue(
 ): Promise<EstimatedLostSaleValue | null> {
   const orderLine = await tx.orderLine.findUnique({
     where: { id: params.orderLineId },
-    select: { approvedUnitPrice: true },
+    select: { approvedUnitPrice: true, customerUnitPrice: true },
   });
 
-  if (orderLine?.approvedUnitPrice) {
-    const unitPrice = orderLine.approvedUnitPrice.toString();
+  const orderLinePrice = orderLine?.approvedUnitPrice ?? orderLine?.customerUnitPrice;
+  if (orderLinePrice) {
+    const unitPrice = orderLinePrice.toString();
     const value = multiplyDecimalStrings(unitPrice, params.quantity);
     if (value !== null) {
       return { unitPrice, value, source: "ORDER_LINE_APPROVED_PRICE" };
