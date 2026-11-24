@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -14,7 +14,7 @@ type Plan = { eligible: { id: string; label: string; fromUserName: string | null
  * confirm=true. The server re-derives eligibility inside its transaction,
  * so anything that changed in between is skipped, never forced.
  */
-export function ReassignPanel({ entityType, rows, assignees }: { entityType: string; rows: Row[]; assignees: Assignee[] }) {
+export function ReassignPanel({ entityType, rows, assignees, rowActions }: { entityType: string; rows: Row[]; assignees: Assignee[]; /** Per-row buttons (edit, status, …) keyed by record id. */ rowActions?: Record<string, ReactNode> }) {
   const router = useRouter();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [toUserId, setToUserId] = useState("");
@@ -45,7 +45,7 @@ export function ReassignPanel({ entityType, rows, assignees }: { entityType: str
           <thead className="bg-[#F7F8F6] text-xs uppercase tracking-wide text-[#849087]">
             <tr>
               <th className="px-4 py-2"><input type="checkbox" aria-label="Select all on this page" checked={allOnPage} onChange={() => { setPlan(null); setSelected(allOnPage ? new Set() : new Set(rows.map((r) => r.id))); }} /></th>
-              <th className="px-4 py-2">Record</th><th className="px-4 py-2">Customer / detail</th><th className="px-4 py-2">Current owner</th><th className="px-4 py-2">Status</th><th className="px-4 py-2">Idle</th>
+              <th className="px-4 py-2">Record</th><th className="px-4 py-2">Customer / detail</th><th className="px-4 py-2">Current owner</th><th className="px-4 py-2">Status</th><th className="px-4 py-2">Idle</th>{rowActions ? <th className="px-4 py-2">Actions</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -57,6 +57,7 @@ export function ReassignPanel({ entityType, rows, assignees }: { entityType: str
                 <td className="px-4 py-2">{r.ownerName ?? <span className="rounded bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">Unassigned</span>}</td>
                 <td className="px-4 py-2 text-xs">{r.status.replace(/_/g, " ")}</td>
                 <td className="px-4 py-2 text-xs text-[#5F6F66]">{r.ageDays}d</td>
+                {rowActions ? <td className="px-4 py-2"><div className="flex flex-wrap gap-2">{rowActions[r.id]}</div></td> : null}
               </tr>
             ))}
           </tbody>

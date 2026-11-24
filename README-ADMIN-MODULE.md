@@ -74,3 +74,17 @@ One existing test was edited: `tests/m12-acceptance-criteria.test.ts` asserted t
 - Price-list entries, effective dates and import review use the existing price-list and import screens. There is no separate publish-approval workflow for prices.
 - Assignment history is read from the audit log (no new history table). Existing customers have no account manager until assigned.
 - Existing `PATCH /api/users/[id]` (Settings page) is kept for compatibility; it keeps the earlier self-deactivation rule only. The Administration screens use the stricter last-administrator guard.
+
+## CRUD coverage (added)
+
+| Area | Create | Edit | Remove / deactivate | Notes |
+|---|---|---|---|---|
+| Orders `/admin/orders` | via the normal order flow | details (PO ref, delivery date/address, internal notes) | Cancel, Reopen | Edit/cancel only DRAFT→APPROVED, never after picking, SAP hand-over, invoicing or with a pending approval. Reason required; status history + audit written. Orders are never deleted. |
+| Quotations `/admin/quotations` | New quotation | on the quotation screens | Cancel (reason), Expire, Reassign | Converted quotations keep their order link. |
+| Claims `/admin/claims` | New claim | workflow on the claim | Assign owner | Concluded claims keep their owner. |
+| Customers | Add | Edit | Deactivate / Reactivate | Never deleted. |
+| Price lists `/admin/price-lists[/id]` | New list, add price | rename, change price | Deactivate list, remove price | Overlapping dates rejected; orders/quotations keep snapshot prices. |
+| Drivers & vehicles `/admin/fleet` | Add | Edit | Deactivate; delete only if never dispatched | Uses existing `/api/personnel` and `/api/vehicles`. |
+| Users, products, settings | (earlier delivery) | | | |
+
+Known pre-existing failures: `tests/acceptance-item-0228.test.ts` (2 tests) needs `test-data/sample-*.csv`, which is not in the uploaded repository.

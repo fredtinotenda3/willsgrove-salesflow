@@ -42,8 +42,8 @@ export default async function AdminOverviewPage() {
         <Tile title="Active customers" value={o.customers.active} description={`${o.customers.inactive} inactive`} href="/admin/customers" />
         <Tile title="Active products" value={o.products.active} description={`${o.products.inactive} archived`} href="/admin/products" />
         <Tile title="Active price lists" value={o.priceLists.active} description={`${o.priceLists.inactive} inactive`} href="/admin/price-lists" />
-        <Tile title="Outstanding orders" value={o.orders.outstanding} description={`${o.orders.withoutSalesperson} unassigned · ${o.orders.stuck} idle ${o.orders.stuckDays}+ days`} href="/admin/assignments?type=ORDER&scope=all-open" />
-        <Tile title="Open claims" value={o.claims.open} description={`${o.claims.unassigned} without an owner`} href="/admin/assignments?type=CLAIM&scope=all-open" />
+        <Tile title="Outstanding orders" value={o.orders.outstanding} description={`${o.orders.withoutSalesperson} unassigned · ${o.orders.stuck} idle ${o.orders.stuckDays}+ days`} href="/admin/orders" />
+        <Tile title="Open claims" value={o.claims.open} description={`${o.claims.unassigned} without an owner`} href="/admin/claims" />
         <Tile title="Pending approvals" value={o.approvals.pending} description="Awaiting an approver" href="/approvals" />
         <Tile title="Open management actions" value={o.managementActions.open} description={`${o.managementActions.unassigned} unassigned`} href="/reports/management/actions" />
       </div>

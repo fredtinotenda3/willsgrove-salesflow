@@ -2,6 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma, type PrismaTransactionClient } from "@/lib/prisma";
 import { duplicateKey } from "./policy";
+import { windowsOverlap } from "./order-policy";
 import { fail, type AdminFailure } from "./types";
 
 const TX = { maxWait: 15000, timeout: 15000 };
@@ -130,5 +131,72 @@ export async function setPriceListStatus(id: string, status: "ACTIVE" | "INACTIV
     await tx.priceList.update({ where: { id }, data: { status } });
     await tx.auditEvent.create({ data: { actorId, action: status === "ACTIVE" ? "PRICE_LIST_ACTIVATE" : "PRICE_LIST_DEACTIVATE", entityType: "PriceList", entityId: id, beforeData: { status: existing.status }, afterData: { status, reason } } });
     return { ok: true as const, changed: true };
+  }, TX);
+}
+
+/* ------------------------- price list create / entries ------------------------- */
+
+export async function createPriceList(input: { code: string; name: string; currencyCode: "USD" | "ZWG" }, actorId: string): Promise<{ ok: true; id: string } | AdminFailure> {
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const dup = await tx.priceList.findFirst({ where: { code: { equals: input.code, mode: "insensitive" } }, select: { code: true } });
+      if (dup) return fail(409, `Price list ${dup.code} already exists.`, { code: "This code is already used." });
+      const created = await tx.priceList.create({ data: { ...input, isDemo: false }, select: { id: true } });
+      await tx.auditEvent.create({ data: { actorId, action: "PRICE_LIST_CREATE", entityType: "PriceList", entityId: created.id, beforeData: Prisma.JsonNull, afterData: input } });
+      return { ok: true as const, id: created.id };
+    }, TX);
+  } catch (e) {
+    if (isUnique(e)) return fail(409, "This price list code already exists.", { code: "This code is already used." });
+    throw e;
+  }
+}
+
+export async function getAdminPriceList(id: string) {
+  const list = await prisma.priceList.findUnique({ where: { id }, select: { id: true, code: true, name: true, currencyCode: true, status: true, _count: { select: { customers: true } } } });
+  if (!list) return null;
+  const customers = await prisma.customer.findMany({ where: { priceListId: id }, take: 10, orderBy: { name: "asc" }, select: { id: true, name: true } });
+  return { list, customers };
+}
+
+/** All entries for a list (bounded) with their validity, for current/expired/conflict classification. */
+export async function listEntriesForClassification(priceListId: string, search: string | undefined, page: number, pageSize: number) {
+  const where: Prisma.PriceListEntryWhereInput = { priceListId, ...(search ? { OR: [{ sapItemCodeSnapshot: { contains: search, mode: "insensitive" } }, { product: { itemName: { contains: search, mode: "insensitive" } } }] } : {}) };
+  const [total, rows, all] = await Promise.all([
+    prisma.priceListEntry.count({ where }),
+    prisma.priceListEntry.findMany({ where, orderBy: [{ sapItemCodeSnapshot: "asc" }, { validFrom: "desc" }], skip: (page - 1) * pageSize, take: pageSize, select: { id: true, sapItemCodeSnapshot: true, unitPrice: true, validFrom: true, validTo: true, product: { select: { itemName: true } } } }),
+    // Conflict detection needs every window for the codes on this page.
+    prisma.priceListEntry.findMany({ where: { priceListId }, select: { id: true, sapItemCodeSnapshot: true, unitPrice: true, validFrom: true, validTo: true }, take: 20000 }),
+  ]);
+  return { total, rows: rows.map((r) => ({ id: r.id, sapItemCode: r.sapItemCodeSnapshot, productName: r.product?.itemName ?? null, unitPrice: r.unitPrice.toString(), validFrom: r.validFrom, validTo: r.validTo })), all: all.map((r) => ({ id: r.id, sapItemCode: r.sapItemCodeSnapshot, unitPrice: r.unitPrice.toString(), validFrom: r.validFrom, validTo: r.validTo })) };
+}
+
+export async function createPriceEntry(priceListId: string, input: { sapItemCode: string; unitPrice: string; validFrom: string; validTo?: string | null; reason: string }, actorId: string): Promise<{ ok: true; id: string } | AdminFailure> {
+  return prisma.$transaction(async (tx) => {
+    const list = await tx.priceList.findUnique({ where: { id: priceListId }, select: { status: true, code: true, currencyCode: true } });
+    if (!list) return fail(404, "Price list not found.");
+    if (list.status !== "ACTIVE") return fail(409, "This price list is inactive. Activate it before adding prices.");
+    const product = await tx.product.findFirst({ where: { sapItemCode: { equals: input.sapItemCode, mode: "insensitive" } }, select: { id: true, sapItemCode: true } });
+    if (!product) return fail(404, `No product with SAP item code ${input.sapItemCode}.`, { sapItemCode: "Unknown SAP item code." });
+    const validFrom = new Date(`${input.validFrom}T00:00:00.000Z`);
+    const validTo = input.validTo ? new Date(`${input.validTo}T00:00:00.000Z`) : null;
+    const others = await tx.priceListEntry.findMany({ where: { priceListId, sapItemCodeSnapshot: product.sapItemCode }, select: { validFrom: true, validTo: true } });
+    if (others.some((o) => windowsOverlap({ validFrom, validTo }, o))) return fail(409, "Another price for this item overlaps these dates. Adjust the dates or end the other price first.", { validFrom: "Overlaps an existing price." });
+    const created = await tx.priceListEntry.create({ data: { priceListId, productId: product.id, sapItemCodeSnapshot: product.sapItemCode, unitPrice: input.unitPrice, validFrom, validTo, isDemo: false }, select: { id: true } });
+    await tx.auditEvent.create({ data: { actorId, action: "PRICE_ENTRY_CREATE", entityType: "PriceListEntry", entityId: created.id, beforeData: Prisma.JsonNull, afterData: { priceList: list.code, currency: list.currencyCode, sapItemCode: product.sapItemCode, unitPrice: input.unitPrice, validFrom: input.validFrom, validTo: input.validTo ?? null, reason: input.reason } } });
+    return { ok: true as const, id: created.id };
+  }, TX);
+}
+
+/**
+ * Removes one price entry. Orders and quotations snapshot their own prices,
+ * so historical transaction prices are unaffected; the removed row is kept in the audit trail.
+ */
+export async function deletePriceEntry(entryId: string, reason: string, actorId: string): Promise<{ ok: true } | AdminFailure> {
+  return prisma.$transaction(async (tx) => {
+    const e = await tx.priceListEntry.findUnique({ where: { id: entryId }, select: { id: true, priceListId: true, sapItemCodeSnapshot: true, unitPrice: true, validFrom: true, validTo: true } });
+    if (!e) return fail(404, "Price entry not found.");
+    await tx.priceListEntry.delete({ where: { id: entryId } });
+    await tx.auditEvent.create({ data: { actorId, action: "PRICE_ENTRY_DELETE", entityType: "PriceListEntry", entityId: entryId, beforeData: { priceListId: e.priceListId, sapItemCode: e.sapItemCodeSnapshot, unitPrice: e.unitPrice.toString(), validFrom: e.validFrom.toISOString(), validTo: e.validTo?.toISOString() ?? null }, afterData: { reason } } });
+    return { ok: true as const };
   }, TX);
 }

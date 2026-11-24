@@ -74,3 +74,34 @@ export const settingSchema = z.object({
 export const accountManagerSchema = z.object({ accountManagerId: id.nullable(), reason });
 
 export type ReassignEntityType = z.infer<typeof reassignSchema>["entityType"];
+
+const dateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a YYYY-MM-DD date.").refine((v) => !Number.isNaN(Date.parse(`${v}T00:00:00Z`)), "Invalid date.");
+const nullableText = (max: number) => z.string().trim().max(max).nullable().optional().transform((v) => (v === undefined ? undefined : v === null || v === "" ? null : v));
+
+export const orderUpdateSchema = z
+  .object({
+    customerPoReference: nullableText(100),
+    requestedDeliveryDate: dateOnly.nullable().optional(),
+    deliveryAddress: nullableText(500),
+    internalNotes: nullableText(2000),
+    reason,
+  })
+  .strict();
+
+export const reasonOnlySchema = z.object({ reason }).strict();
+
+export const priceListCreateSchema = z.object({
+  code: z.string().trim().min(1).max(40).regex(/^[A-Za-z0-9._\-/]+$/, "Codes may contain letters, digits and . _ - / only."),
+  name: z.string().trim().min(2).max(120),
+  currencyCode: z.enum(["USD", "ZWG"]),
+});
+
+export const priceEntryCreateSchema = z
+  .object({
+    sapItemCode: z.string().trim().min(1).max(50),
+    unitPrice: z.string().trim().regex(/^\d{1,14}(\.\d{1,4})?$/, "Enter a positive price with up to 4 decimals.").refine((v) => Number(v) > 0, "Price must be above zero."),
+    validFrom: dateOnly,
+    validTo: dateOnly.nullable().optional(),
+    reason,
+  })
+  .refine((v) => !v.validTo || v.validTo >= v.validFrom, { message: "Valid to must not be before valid from.", path: ["validTo"] });

@@ -8,8 +8,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * successful change writes an audit event with before/after and the reason.
  */
 const { tx, prismaMock, revokeAll } = vi.hoisted(() => {
-  const model = () => ({ findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: vi.fn(), count: vi.fn(), create: vi.fn(), upsert: vi.fn(), deleteMany: vi.fn(), createMany: vi.fn() });
-  const tx = { user: model(), customerOrder: model(), quotation: model(), customer: model(), invoiceClaim: model(), managementAction: model(), product: model(), priceList: model(), systemSetting: model(), auditEvent: model() };
+  const model = () => ({ findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: vi.fn(), count: vi.fn(), create: vi.fn(), upsert: vi.fn(), deleteMany: vi.fn(), createMany: vi.fn(), findUniqueOrThrow: vi.fn(), delete: vi.fn() });
+  const tx = { user: model(), customerOrder: model(), quotation: model(), customer: model(), invoiceClaim: model(), managementAction: model(), product: model(), priceList: model(), priceListEntry: model(), approvalRequest: model(), orderStatusHistory: model(), systemSetting: model(), auditEvent: model() };
   const prismaMock = { ...tx, $transaction: async (fn: (t: typeof tx) => unknown) => fn(tx) };
   return { tx, prismaMock, revokeAll: vi.fn() };
 });
@@ -156,7 +156,8 @@ describe("catalogue administration", () => {
     tx.product.findUnique.mockResolvedValue({ status: "ACTIVE" });
     expect(await setProductStatus("p1", "INACTIVE", "discontinued", "a1")).toEqual({ ok: true, changed: true });
     expect(tx.product.update).toHaveBeenCalledWith({ where: { id: "p1" }, data: { status: "INACTIVE" } });
-    expect((tx.product as Record<string, unknown>).delete).toBeUndefined();
+    expect(tx.product.delete).not.toHaveBeenCalled();
+    expect(tx.product.deleteMany).not.toHaveBeenCalled();
   });
   it("won't deactivate a price list that customers still use", async () => {
     tx.priceList.findUnique.mockResolvedValue({ status: "ACTIVE", code: "RETAIL", _count: { customers: 4 } });
@@ -190,5 +191,102 @@ describe("configuration changes", () => {
     expect(await changeSetting({ key: "admin.stuckOrderDays", value: null, reason: "back to default", actorId: "a1" })).toEqual({ ok: true });
     expect(tx.systemSetting.deleteMany).toHaveBeenCalledWith({ where: { key: "admin.stuckOrderDays" } });
     expect(audit()[0]).toMatchObject({ action: "SYSTEM_SETTING_RESET", beforeData: { value: 14 }, afterData: { value: 7 } });
+  });
+});
+
+import { cancelOrder, reopenOrder, updateOrderDetails } from "@/lib/admin/order-admin";
+import { createPriceEntry, createPriceList, deletePriceEntry } from "@/lib/admin/catalogue-admin";
+
+const orderRow = (o: Record<string, unknown> = {}) => ({ reference: "ORD-1", status: "APPROVED", handedToSapAt: null, invoicedAt: null, _count: { pickingSessions: 0, matchedSapInvoices: 0 }, ...o });
+
+describe("order administration", () => {
+  it("cancels an approved order with a status-history row and an audit event", async () => {
+    tx.customerOrder.findUnique.mockResolvedValue(orderRow());
+    tx.approvalRequest.count.mockResolvedValue(0);
+    tx.customerOrder.updateMany.mockResolvedValue({ count: 1 });
+        expect(await cancelOrder("o1", "customer withdrew", "a1")).toEqual({ ok: true });
+    expect(tx.customerOrder.updateMany).toHaveBeenCalledWith({ where: { id: "o1", status: "APPROVED" }, data: { status: "CANCELLED" } });
+    expect(tx.orderStatusHistory.create.mock.calls[0][0].data).toMatchObject({ fromStatus: "APPROVED", toStatus: "CANCELLED", changedById: "a1" });
+    expect(audit()[0]).toMatchObject({ action: "ORDER_ADMIN_CANCEL", beforeData: { status: "APPROVED" }, afterData: { status: "CANCELLED", reason: "customer withdrew" } });
+  });
+  it("refuses to cancel during picking, after SAP hand-over, or with a pending approval", async () => {
+    tx.approvalRequest.count.mockResolvedValue(0);
+    tx.customerOrder.findUnique.mockResolvedValue(orderRow({ _count: { pickingSessions: 1, matchedSapInvoices: 0 } }));
+    expect(await cancelOrder("o1", "no longer needed", "a1")).toMatchObject({ ok: false, status: 409 });
+    tx.customerOrder.findUnique.mockResolvedValue(orderRow({ handedToSapAt: new Date() }));
+    expect(await cancelOrder("o1", "no longer needed", "a1")).toMatchObject({ ok: false, status: 409 });
+    tx.customerOrder.findUnique.mockResolvedValue(orderRow());
+    tx.approvalRequest.count.mockResolvedValue(1);
+    expect(await cancelOrder("o1", "no longer needed", "a1")).toMatchObject({ ok: false, status: 409 });
+    expect(tx.customerOrder.updateMany).not.toHaveBeenCalled();
+    expect(audit()).toHaveLength(0);
+  });
+  it("a concurrent status change turns cancellation into a conflict, not an overwrite", async () => {
+    tx.customerOrder.findUnique.mockResolvedValue(orderRow());
+    tx.approvalRequest.count.mockResolvedValue(0);
+    tx.customerOrder.updateMany.mockResolvedValue({ count: 0 });
+    expect(await cancelOrder("o1", "customer withdrew", "a1")).toMatchObject({ ok: false, status: 409 });
+    expect(audit()).toHaveLength(0);
+  });
+  it("reopens a cancelled order to RECEIVED but never an invoiced one", async () => {
+    tx.approvalRequest.count.mockResolvedValue(0);
+        tx.customerOrder.findUnique.mockResolvedValue(orderRow({ status: "CANCELLED", invoicedAt: new Date() }));
+    expect(await reopenOrder("o1", "invoice reversed", "a1")).toMatchObject({ ok: false, status: 409 });
+    tx.customerOrder.findUnique.mockResolvedValue(orderRow({ status: "CANCELLED" }));
+    tx.customerOrder.updateMany.mockResolvedValue({ count: 1 });
+    expect(await reopenOrder("o1", "customer came back", "a1")).toEqual({ ok: true });
+    expect(tx.customerOrder.updateMany).toHaveBeenCalledWith({ where: { id: "o1", status: "CANCELLED" }, data: { status: "RECEIVED" } });
+  });
+  it("edits only permitted fields, only changed values, and refuses orders in fulfilment", async () => {
+    tx.approvalRequest.count.mockResolvedValue(0);
+    tx.customerOrder.findUnique.mockResolvedValueOnce(orderRow({ status: "PICKING" }));
+    expect(await updateOrderDetails("o1", { internalNotes: "x", reason: "fix" }, "a1")).toMatchObject({ ok: false, status: 409 });
+    tx.customerOrder.findUnique.mockResolvedValueOnce(orderRow());
+    tx.customerOrder.findUniqueOrThrow.mockResolvedValue({ customerPoReference: "PO-1", requestedDeliveryDate: null, deliveryAddress: "A", internalNotes: null });
+    const r = await updateOrderDetails("o1", { customerPoReference: "PO-2", deliveryAddress: "A", requestedDeliveryDate: "2026-12-01", reason: "PO typo" }, "a1");
+    expect(r).toEqual({ ok: true, changed: true });
+    const data = tx.customerOrder.update.mock.calls[0][0].data;
+    expect(Object.keys(data).sort()).toEqual(["customerPoReference", "requestedDeliveryDate"]);
+    expect(audit()[0]).toMatchObject({ action: "ORDER_ADMIN_UPDATE", beforeData: { customerPoReference: "PO-1" }, afterData: { customerPoReference: "PO-2", reason: "PO typo" } });
+  });
+});
+
+describe("price list administration", () => {
+  it("rejects a duplicate price list code", async () => {
+    tx.priceList.findFirst.mockResolvedValue({ code: "RETAIL" });
+    expect(await createPriceList({ code: "retail", name: "Retail", currencyCode: "USD" }, "a1")).toMatchObject({ ok: false, status: 409 });
+    expect(tx.priceList.create).not.toHaveBeenCalled();
+  });
+  it("creates a price list and audits it", async () => {
+    tx.priceList.findFirst.mockResolvedValue(null);
+    tx.priceList.create.mockResolvedValue({ id: "pl9" });
+    expect(await createPriceList({ code: "WHOLE", name: "Wholesale", currencyCode: "ZWG" }, "a1")).toEqual({ ok: true, id: "pl9" });
+    expect(audit()[0]).toMatchObject({ action: "PRICE_LIST_CREATE", entityId: "pl9" });
+  });
+  it("rejects a price whose dates overlap another price for the same item", async () => {
+    tx.priceList.findUnique.mockResolvedValue({ status: "ACTIVE", code: "RETAIL", currencyCode: "USD" });
+    tx.product.findFirst.mockResolvedValue({ id: "p1", sapItemCode: "FV-1" });
+    tx.priceListEntry.findMany.mockResolvedValue([{ validFrom: new Date("2026-01-01T00:00:00Z"), validTo: null }]);
+    const r = await createPriceEntry("pl1", { sapItemCode: "fv-1", unitPrice: "0.50", validFrom: "2026-06-01", reason: "new season" }, "a1");
+    expect(r).toMatchObject({ ok: false, status: 409 });
+    expect(tx.priceListEntry.create).not.toHaveBeenCalled();
+  });
+  it("refuses unknown items and inactive lists; stores the price as an exact string", async () => {
+    tx.priceList.findUnique.mockResolvedValueOnce({ status: "INACTIVE", code: "OLD", currencyCode: "USD" });
+    expect(await createPriceEntry("pl1", { sapItemCode: "FV-1", unitPrice: "1", validFrom: "2026-01-01", reason: "add" }, "a1")).toMatchObject({ ok: false, status: 409 });
+    tx.priceList.findUnique.mockResolvedValue({ status: "ACTIVE", code: "RETAIL", currencyCode: "USD" });
+    tx.product.findFirst.mockResolvedValueOnce(null);
+    expect(await createPriceEntry("pl1", { sapItemCode: "NOPE", unitPrice: "1", validFrom: "2026-01-01", reason: "add" }, "a1")).toMatchObject({ ok: false, status: 404 });
+    tx.product.findFirst.mockResolvedValue({ id: "p1", sapItemCode: "FV-1" });
+    tx.priceListEntry.findMany.mockResolvedValue([]);
+    tx.priceListEntry.create.mockResolvedValue({ id: "e1" });
+    expect(await createPriceEntry("pl1", { sapItemCode: "FV-1", unitPrice: "0.4500", validFrom: "2026-01-01", reason: "add" }, "a1")).toEqual({ ok: true, id: "e1" });
+    expect(tx.priceListEntry.create.mock.calls[0][0].data.unitPrice).toBe("0.4500");
+  });
+  it("removing a price keeps the removed row in the audit trail", async () => {
+    tx.priceListEntry.findUnique.mockResolvedValue({ id: "e1", priceListId: "pl1", sapItemCodeSnapshot: "FV-1", unitPrice: { toString: () => "0.45" }, validFrom: new Date("2026-01-01T00:00:00Z"), validTo: null });
+    expect(await deletePriceEntry("e1", "wrong item", "a1")).toEqual({ ok: true });
+    expect(tx.priceListEntry.delete).toHaveBeenCalledWith({ where: { id: "e1" } });
+    expect(audit()[0]).toMatchObject({ action: "PRICE_ENTRY_DELETE", beforeData: { sapItemCode: "FV-1", unitPrice: "0.45" }, afterData: { reason: "wrong item" } });
   });
 });

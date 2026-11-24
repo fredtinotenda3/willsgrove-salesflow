@@ -14,7 +14,8 @@ const svc = vi.hoisted(() => ({ fn: vi.fn() }));
 vi.mock("@/lib/prisma", () => ({ prisma: new Proxy({}, { get: () => svc.fn }) }));
 vi.mock("@/lib/admin/user-admin", () => ({ updateUserProfile: svc.fn, setUserStatus: svc.fn, adminPasswordAction: svc.fn }));
 vi.mock("@/lib/admin/assignment-admin", () => ({ executeReassignment: svc.fn, planReassignment: svc.fn, collectUserOwnedIds: svc.fn }));
-vi.mock("@/lib/admin/catalogue-admin", () => ({ createProduct: svc.fn, updateProduct: svc.fn, setProductStatus: svc.fn, updatePriceList: svc.fn, setPriceListStatus: svc.fn }));
+vi.mock("@/lib/admin/catalogue-admin", () => ({ createPriceList: svc.fn, createPriceEntry: svc.fn, deletePriceEntry: svc.fn, createProduct: svc.fn, updateProduct: svc.fn, setProductStatus: svc.fn, updatePriceList: svc.fn, setPriceListStatus: svc.fn }));
+vi.mock("@/lib/admin/order-admin", () => ({ updateOrderDetails: svc.fn, cancelOrder: svc.fn, reopenOrder: svc.fn }));
 vi.mock("@/lib/admin/settings-store", () => ({ changeSetting: svc.fn }));
 vi.mock("@/lib/admin/audit-queries", () => ({ listAuditEvents: svc.fn, auditRowsToCsv: svc.fn }));
 
@@ -34,6 +35,12 @@ const cases: Case[] = [
   { name: "products/[id]/status POST", load: () => import("@/app/api/admin/products/[id]/status/route") as never, method: "POST", body: { status: "INACTIVE", reason }, withCtx: true },
   { name: "price-lists/[id] PATCH", load: () => import("@/app/api/admin/price-lists/[id]/route") as never, method: "PATCH", body: { name: "Retail", reason }, withCtx: true },
   { name: "price-lists/[id]/status POST", load: () => import("@/app/api/admin/price-lists/[id]/status/route") as never, method: "POST", body: { status: "INACTIVE", reason }, withCtx: true },
+  { name: "orders/[id] PATCH", load: () => import("@/app/api/admin/orders/[id]/route") as never, method: "PATCH", body: { internalNotes: "call before delivery", reason }, withCtx: true },
+  { name: "orders/[id]/cancel POST", load: () => import("@/app/api/admin/orders/[id]/cancel/route") as never, method: "POST", body: { reason }, withCtx: true },
+  { name: "orders/[id]/reopen POST", load: () => import("@/app/api/admin/orders/[id]/reopen/route") as never, method: "POST", body: { reason }, withCtx: true },
+  { name: "price-lists POST", load: () => import("@/app/api/admin/price-lists/route") as never, method: "POST", body: { code: "RETAIL", name: "Retail", currencyCode: "USD" }, withCtx: false },
+  { name: "price-lists/[id]/entries POST", load: () => import("@/app/api/admin/price-lists/[id]/entries/route") as never, method: "POST", body: { sapItemCode: "FV-1", unitPrice: "0.45", validFrom: "2026-01-01", reason }, withCtx: true },
+  { name: "price-lists/entries/[id] DELETE", load: () => import("@/app/api/admin/price-lists/entries/[id]/route") as never, method: "DELETE", body: { reason }, withCtx: true },
   { name: "settings POST", load: () => import("@/app/api/admin/settings/route") as never, method: "POST", body: { key: "admin.stuckOrderDays", value: 9, reason }, withCtx: false },
 ];
 
