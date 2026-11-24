@@ -148,7 +148,8 @@ const UPDATABLE_KEYS = [
 
 export async function updateCustomer(
   id: string,
-  changes: UpdateCustomerInput
+  changes: UpdateCustomerInput,
+  actorId: string | null = null
 ): Promise<UpdateCustomerResult> {
   try {
     return await prisma.$transaction(async (tx) => {
@@ -194,11 +195,25 @@ export async function updateCustomer(
         return { ok: true, changed: false } as const;
       }
 
+      // Administration module: an INACTIVE price list cannot be newly
+      // attached to a customer (detaching, or keeping the current one, is fine).
+      if (changes.priceListId && changes.priceListId !== existing.priceListId) {
+        const target = await tx.priceList.findUnique({ where: { id: changes.priceListId }, select: { status: true } });
+        if (target && target.status !== "ACTIVE") {
+          return {
+            ok: false,
+            status: 409,
+            message: "This price list is inactive and cannot be assigned to customers.",
+            fieldErrors: { priceListId: "Choose an active price list." },
+          } satisfies MutationFailure;
+        }
+      }
+
       await tx.customer.update({ where: { id }, data });
 
       await tx.auditEvent.create({
         data: {
-          actorId: null,
+          actorId,
           action: "CUSTOMER_UPDATE",
           entityType: "Customer",
           entityId: id,
@@ -267,11 +282,20 @@ export async function bulkAssignPriceList(
   if (targetPriceListId !== null) {
     const priceList = await prisma.priceList.findUnique({
       where: { id: targetPriceListId },
-      select: { id: true },
+      select: { id: true, status: true },
     });
 
     if (!priceList) {
       return unknownPriceListFailure;
+    }
+
+    if (priceList.status !== "ACTIVE") {
+      return {
+        ok: false,
+        status: 409,
+        message: "This price list is inactive and cannot be assigned to customers.",
+        fieldErrors: { priceListId: "Choose an active price list." },
+      };
     }
   }
 

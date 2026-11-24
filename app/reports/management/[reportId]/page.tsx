@@ -32,6 +32,7 @@ import type { FinancialExposureReport } from "@/lib/reporting/financial-exposure
 import type { OrderStatusBreakdownRow, ProductShortageBreakdownRow, DeliveryOutcomeBreakdownRow, CommunicationFailureBreakdownRow, LostSalesManagementReport } from "@/lib/reporting/management-reports";
 import { AlertCircle } from "lucide-react";
 import { getReportIntelligence } from "@/lib/management-intelligence/queries";
+import { getManagementThresholds } from "@/lib/admin/settings-store";
 import { listAssignableUsers, listTrackedActions } from "@/lib/management-intelligence/actions";
 import { IntelligenceSection } from "../_components/intelligence-section";
 
@@ -199,8 +200,9 @@ export default async function ManagementReportDetailPage({ params, searchParams 
   const [result, filterOptions] = await Promise.all([runManagementReport(reportId, filters, pagination, period), getReportFilterOptions()]);
   // Intelligence reuses this page's own summary data (no second query) and
   // is computed live; only the human decisions on a finding are stored.
+  const thresholds = await getManagementThresholds();
   const [intelligence, trackedActions, assignees] = await Promise.all([
-    getReportIntelligence(reportId, filters, { period, summaryData: result.kind === "summary" ? result.data : undefined }),
+    getReportIntelligence(reportId, filters, { period, thresholds, summaryData: result.kind === "summary" ? result.data : undefined }),
     listTrackedActions(),
     listAssignableUsers(),
   ]);
@@ -269,7 +271,7 @@ export default async function ManagementReportDetailPage({ params, searchParams 
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900">{config.note}</div>
           )}
 
-          <IntelligenceSection intelligence={intelligence} tracked={trackedActions} assignees={assignees} />
+          <IntelligenceSection intelligence={intelligence} tracked={trackedActions} assignees={assignees} thresholds={thresholds} />
 
           {result.kind === "summary" ? (
             <>

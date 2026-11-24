@@ -35,7 +35,9 @@ describe("Milestone 12 acceptance criteria", () => {
     const source = readFileSync(join(process.cwd(), "app/quotations/new/page.tsx"), "utf8");
     // Checks the actual JSX invocation, not prose -- this file's own
     // explanatory comment legitimately mentions the removed prop by name.
-    expect(source).toMatch(/<NewQuotationForm\s*\/>/);
+    // The only prop the page may pass is the administrator-configured
+    // default validity (Administration > Configuration); never a salesperson.
+    expect(source).toMatch(/<NewQuotationForm(\s+defaultValidityDays=\{[^}]*\})?\s*\/>/);
     expect(source).not.toMatch(/<NewQuotationForm[^>]*defaultSalespersonId/);
   });
 });

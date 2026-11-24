@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import Sidebar from "../../components/sidebar";
 import NewQuotationForm from "./new-quotation-form";
+import { getSettingValues } from "@/lib/admin/settings-store";
 
 /**
  * Milestone 7. /quotations/new -- quotation creation (spec section 3):
@@ -30,6 +31,8 @@ export default async function NewQuotationPage() {
     redirect("/login");
   }
 
+  const settings = await getSettingValues();
+
   return (
     <div className="min-h-screen bg-[#F7F8F6]">
       <Sidebar />
@@ -49,7 +52,7 @@ export default async function NewQuotationPage() {
               default. See new-quotation-form.tsx and
               lib/quotations/create.ts's salespersonAssignment audit
               provenance. */}
-          <NewQuotationForm />
+          <NewQuotationForm defaultValidityDays={settings["quotation.defaultValidityDays"]} />
         </div>
       </main>
     </div>

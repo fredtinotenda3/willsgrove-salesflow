@@ -413,19 +413,19 @@ export default function SettingsPage() {
 
   function showSaved(message: string) {
     setSavedMessage(message);
-    window.setTimeout(() => setSavedMessage(""), 3000);
+    window.setTimeout(() => setSavedMessage(""), 6000);
   }
 
   function saveWorkspace() {
-    showSaved("Workspace settings saved in this prototype.");
+    showSaved("Not saved: workspace details are display-only. Stored business settings are under Administration > Configuration.");
   }
 
   function saveRules() {
-    showSaved("Order processing preferences saved in this prototype.");
+    showSaved("Not saved: these are display-only. Quotation validity and management thresholds are configured under Administration > Configuration; approval thresholds under Approval policies.");
   }
 
   function saveNotifications() {
-    showSaved("Notification preferences saved in this prototype.");
+    showSaved("Not saved: per-user notification preferences are not supported yet. Notifications are always delivered in-app.");
   }
 
   async function addUser() {
@@ -719,8 +719,10 @@ export default function SettingsPage() {
                 application users, and only an Administrator account can
                 add a user or change a user&apos;s status. Workspace,
                 Order Processing, Notifications and System Information are
-                still prototype sections -- changes there are held in local
-                page state and are not saved to a database.
+                display-only -- changes there are not stored. Stored business
+                configuration (quotation validity, management thresholds,
+                idle-order days) is under Administration &gt; Configuration,
+                available to Administrators.
               </p>
             </div>
           </div>

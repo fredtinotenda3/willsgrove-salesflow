@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ACTION_STATUS_LABELS } from "@/lib/management-intelligence/action-state";
 import type { TrackedAction } from "@/lib/management-intelligence/actions";
-import { THRESHOLD_DESCRIPTIONS } from "@/lib/management-intelligence/thresholds";
+import { describeThresholds, type IntelligenceThresholds } from "@/lib/management-intelligence/thresholds";
 import { PRIORITY_LABELS, RESPONSIBLE_FUNCTION_LABELS, type FindingPriority, type ManagementFinding, type ManagementIntelligence } from "@/lib/management-intelligence/types";
 import { actionKey } from "@/lib/management-intelligence/action-state";
 import { SectionCard } from "../../_components/ui";
@@ -80,7 +80,7 @@ export function FindingCard({ finding, tracked, assignees, reportName }: { findi
  * about it and who should do it. Every figure comes from the report's own
  * data; where the data is too thin the section says so instead of advising.
  */
-export function IntelligenceSection({ intelligence, tracked, assignees }: { intelligence: ManagementIntelligence; tracked: TrackedAction[]; assignees: Assignee[] }) {
+export function IntelligenceSection({ intelligence, tracked, assignees, thresholds }: { intelligence: ManagementIntelligence; tracked: TrackedAction[]; assignees: Assignee[]; thresholds?: IntelligenceThresholds }) {
   const byKey = new Map(tracked.map((t) => [t.findingKey, t]));
   return (
     <SectionCard title="Management intelligence" description="What this report's data shows, what to do about it, who should do it and how to tell it worked. Computed from the figures on this page, not stored.">
@@ -108,7 +108,7 @@ export function IntelligenceSection({ intelligence, tracked, assignees }: { inte
       <details className="mt-4 text-xs text-[#52605A]">
         <summary className="cursor-pointer font-semibold">Rule parameters used (flags for review, not targets)</summary>
         <ul className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1 md:grid-cols-2">
-          {THRESHOLD_DESCRIPTIONS.map((t) => (
+          {describeThresholds(thresholds).map((t) => (
             <li key={t.label}>
               {t.label}: <span className="font-semibold">{t.value}</span>
             </li>

@@ -42,6 +42,8 @@ import {
   buildPickingShortagesIntelligence,
   buildQuotationsIntelligence,
 } from "./rules";
+import { getManagementThresholds } from "@/lib/admin/settings-store";
+import type { IntelligenceThresholds } from "./thresholds";
 import { sortFindings, type ManagementFinding, type ManagementIntelligence } from "./types";
 import { getCommunicationsMonitoringReport } from "@/lib/reporting/communications-monitoring";
 
@@ -70,50 +72,53 @@ export type IntelligenceOptions = {
   /** Reuse the page's own already-fetched summary data to avoid a second query. */
   summaryData?: unknown;
   unified?: UnifiedLoad;
+  /** Administrator-configured rule parameters; loaded from settings when not supplied. */
+  thresholds?: IntelligenceThresholds;
 };
 
 export async function getReportIntelligence(reportId: ManagementReportId, filters: ReportFilters, options: IntelligenceOptions = {}): Promise<ManagementIntelligence> {
   const period = options.period ?? "monthly";
+  const T = options.thresholds ?? (await getManagementThresholds());
   switch (reportId) {
     case "operational-summary": {
       const data = (options.summaryData as Awaited<ReturnType<typeof getOperationalSummaryReport>> | undefined) ?? (await getOperationalSummaryReport(filters, period));
-      return buildOperationalSummaryIntelligence(operationalFacts(data));
+      return buildOperationalSummaryIntelligence(operationalFacts(data), T);
     }
     case "quotations-performance": {
       const data = (options.summaryData as Awaited<ReturnType<typeof getQuotationsPerformanceReport>> | undefined) ?? (await getQuotationsPerformanceReport(filters));
-      return buildQuotationsIntelligence(quotationFacts(data));
+      return buildQuotationsIntelligence(quotationFacts(data), T);
     }
     case "lost-sales": {
       const [summary, unified] = await Promise.all([
         (options.summaryData as Awaited<ReturnType<typeof getLostSalesManagementReport>> | undefined) ?? getLostSalesManagementReport(filters),
         options.unified ?? loadUnified(filters),
       ]);
-      return buildLostSalesIntelligence(lostSalesFacts({ periodLabel: "all dates", summary, unified: unified.unified, reasons: unified.reasons }));
+      return buildLostSalesIntelligence(lostSalesFacts({ periodLabel: "all dates", summary, unified: unified.unified, reasons: unified.reasons }), T);
     }
     case "invoice-claims-exposure": {
       const [financial, unified] = await Promise.all([
         (options.summaryData as Awaited<ReturnType<typeof getInvoiceClaimsExposureManagementReport>> | undefined) ?? getInvoiceClaimsExposureManagementReport(filters),
         options.unified ?? loadUnified(filters),
       ]);
-      return buildInvoiceClaimsIntelligence(claimsExposureFacts({ financial, unified: unified.unified, reasons: unified.reasons }));
+      return buildInvoiceClaimsIntelligence(claimsExposureFacts({ financial, unified: unified.unified, reasons: unified.reasons }), T);
     }
     case "outstanding-orders": {
       const [list, breakdown] = await Promise.all([listOutstandingOrders(filters, RULE_PAGE), getOutstandingOrdersBreakdown(filters)]);
-      return buildOutstandingOrdersIntelligence(outstandingOrderFacts({ rows: list.rows, totalItems: list.pagination.totalItems }, breakdown));
+      return buildOutstandingOrdersIntelligence(outstandingOrderFacts({ rows: list.rows, totalItems: list.pagination.totalItems }, breakdown, T), T);
     }
     case "awaiting-fulfilment": {
       const [list, breakdown] = await Promise.all([listOrdersAwaitingFulfilment(filters, RULE_PAGE), getAwaitingFulfilmentBreakdown(filters)]);
-      return buildAwaitingFulfilmentIntelligence(awaitingFulfilmentFacts({ rows: list.rows, totalItems: list.pagination.totalItems }, breakdown));
+      return buildAwaitingFulfilmentIntelligence(awaitingFulfilmentFacts({ rows: list.rows, totalItems: list.pagination.totalItems }, breakdown, T), T);
     }
     case "picking-shortages":
-      return buildPickingShortagesIntelligence(shortageFacts(await getPickingShortagesBreakdown(filters)));
+      return buildPickingShortagesIntelligence(shortageFacts(await getPickingShortagesBreakdown(filters)), T);
     case "delivery-exceptions": {
       const [list, breakdown] = await Promise.all([listDeliveryExceptions(filters, RULE_PAGE), getDeliveryExceptionsBreakdown(filters)]);
-      return buildDeliveryExceptionsIntelligence(deliveryExceptionFacts({ rows: list.rows, totalItems: list.pagination.totalItems }, breakdown));
+      return buildDeliveryExceptionsIntelligence(deliveryExceptionFacts({ rows: list.rows, totalItems: list.pagination.totalItems }, breakdown), T);
     }
     case "communication-failures": {
       const [list, breakdown, communications] = await Promise.all([listCommunicationFailures(filters, RULE_PAGE), getCommunicationFailuresBreakdown(filters), getCommunicationsMonitoringReport(filters)]);
-      return buildCommunicationFailuresIntelligence(communicationFacts({ report: { rows: list.rows, totalItems: list.pagination.totalItems }, breakdown, communications }));
+      return buildCommunicationFailuresIntelligence(communicationFacts({ report: { rows: list.rows, totalItems: list.pagination.totalItems }, breakdown, communications }), T);
     }
   }
 }
@@ -131,9 +136,10 @@ export type AllIntelligence = {
  * Every report's findings, built from the same data the reports themselves
  * show. The Action Centre is this aggregation, not a separate analysis.
  */
-export async function getAllIntelligence(filters: ReportFilters = defaultManagementFilters()): Promise<AllIntelligence> {
+export async function getAllIntelligence(filters: ReportFilters = defaultManagementFilters(), thresholds?: IntelligenceThresholds): Promise<AllIntelligence> {
+  const T = thresholds ?? (await getManagementThresholds());
   const unified = await loadUnified(filters);
-  const byReport = await Promise.all(MANAGEMENT_REPORT_CATALOGUE.map((r) => getReportIntelligence(r.id, filters, { period: "monthly", unified })));
+  const byReport = await Promise.all(MANAGEMENT_REPORT_CATALOGUE.map((r) => getReportIntelligence(r.id, filters, { period: "monthly", unified, thresholds: T })));
 
   const byTopic = new Map<string, AggregatedFinding>();
   for (const intel of byReport) {

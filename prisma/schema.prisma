@@ -212,6 +212,12 @@ model User {
   // once the user sets their own password.
   mustChangePassword Boolean @default(false)
 
+  // Administration module. The operational function this person works in
+  // (reuses ManagementFunction so a management action can be routed to the
+  // right department). Informational and for filtering/assignment screens;
+  // it grants no permissions -- the role does that.
+  department ManagementFunction?
+
   // True only for rows created by prisma/seed.ts for demo/testing purposes.
   // Never true for a real account such as the seeded admin.
   isDemo Boolean @default(false)
@@ -231,6 +237,8 @@ model User {
   statusChanges     OrderStatusHistory[]  @relation("StatusChangeUser")
   auditEvents       AuditEvent[]          @relation("AuditActor")
   sessions          Session[]
+  managedCustomers  Customer[]            @relation("CustomerAccountManager")
+  settingChanges    SystemSetting[]       @relation("SystemSettingUpdater")
 
   // Milestone 2B.
   reviewedExtractedLines ExtractedOrderLine[] @relation("ExtractedLineReviewer")
@@ -441,6 +449,12 @@ model Customer {
   priceListId String?
   priceList   PriceList? @relation(fields: [priceListId], references: [id], onDelete: SetNull)
 
+  // Administration module: the salesperson / account manager responsible
+  // for this customer. Nullable -- existing customers have none until an
+  // administrator assigns one; nothing is backfilled or guessed.
+  accountManagerId String?
+  accountManager   User?   @relation("CustomerAccountManager", fields: [accountManagerId], references: [id], onDelete: SetNull)
+
   isDemo Boolean @default(false)
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
@@ -483,6 +497,7 @@ model Customer {
   @@index([isDemo])
   @@index([priceListId])
   @@index([storeCode])
+  @@index([accountManagerId])
 }
 
 // Milestone 1 (Master data from SAP). A real business partner in SAP B1
@@ -645,6 +660,11 @@ model PriceList {
   code         String @unique
   name         String
   currencyCode String // "USD" | "ZWG"
+
+  // Administration module. INACTIVE lists cannot be newly assigned to
+  // customers and cannot be deactivated while customers still use them.
+  // Existing entries and historical transaction prices are untouched.
+  status RecordStatus @default(ACTIVE)
 
   isDemo Boolean @default(false)
 
@@ -4640,6 +4660,23 @@ model ManagementActionEvent {
   actor            User?            @relation("ManagementActionEventActor", fields: [actorId], references: [id], onDelete: Restrict)
 
   @@index([managementActionId])
+}
+
+// ============================================================================
+// Administration module: validated, audited business configuration. Only
+// keys defined in lib/admin/settings-registry.ts can be stored (the code
+// whitelists, bounds and documents each one); a missing row means "use the
+// registry default". Security rules and financial calculations are
+// deliberately NOT configurable here.
+// ============================================================================
+model SystemSetting {
+  key         String   @id
+  value       Json
+  updatedById String?
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  updatedBy User? @relation("SystemSettingUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
 }
 
 // ============================================================================

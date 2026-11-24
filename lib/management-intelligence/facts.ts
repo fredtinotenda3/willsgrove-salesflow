@@ -4,7 +4,7 @@ import type { CommunicationsMonitoringReport } from "@/lib/reporting/communicati
 import type { SalesPipelineReport } from "@/lib/reporting/sales-pipeline";
 import type { FinancialExposureReport } from "@/lib/reporting/financial-exposure";
 import type { LostSalesManagementReport, OutstandingOrderRow, ProductShortageBreakdownRow, DeliveryExceptionRow, CommunicationFailureRow } from "@/lib/reporting/management-reports";
-import { INTELLIGENCE_THRESHOLDS as T } from "./thresholds";
+import { INTELLIGENCE_THRESHOLDS as DEFAULT_THRESHOLDS, type IntelligenceThresholds } from "./thresholds";
 import type {
   ClaimsExposureFacts,
   CommunicationFacts,
@@ -70,10 +70,10 @@ export function orderAgeFacts(
   };
 }
 
-export function outstandingOrderFacts(report: { rows: OutstandingOrderRow[]; totalItems: number }, breakdown: { byStatus: { status: string; count: number }[] }): OrderAgeFacts {
+export function outstandingOrderFacts(report: { rows: OutstandingOrderRow[]; totalItems: number }, breakdown: { byStatus: { status: string; count: number }[] }, T: IntelligenceThresholds = DEFAULT_THRESHOLDS): OrderAgeFacts {
   return orderAgeFacts(report, breakdown, T.outstandingOrderAgeDays, T.outstandingOrderCriticalAgeDays);
 }
-export function awaitingFulfilmentFacts(report: { rows: OutstandingOrderRow[]; totalItems: number }, breakdown: { byStatus: { status: string; count: number }[] }): OrderAgeFacts {
+export function awaitingFulfilmentFacts(report: { rows: OutstandingOrderRow[]; totalItems: number }, breakdown: { byStatus: { status: string; count: number }[] }, T: IntelligenceThresholds = DEFAULT_THRESHOLDS): OrderAgeFacts {
   return orderAgeFacts(report, breakdown, T.awaitingFulfilmentAgeDays, T.awaitingFulfilmentCriticalAgeDays);
 }
 

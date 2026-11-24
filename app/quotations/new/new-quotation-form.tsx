@@ -90,7 +90,7 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
   }
 }
 
-export default function NewQuotationForm() {
+export default function NewQuotationForm({ defaultValidityDays }: { defaultValidityDays?: number }) {
   const router = useRouter();
 
   const [customerQuery, setCustomerQuery] = useState("");
@@ -99,7 +99,13 @@ export default function NewQuotationForm() {
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerSummary | null>(null);
 
   const [quotationDate, setQuotationDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [validUntil, setValidUntil] = useState("");
+  // Pre-filled from the administrator-configured default validity (Administration > Configuration); always editable.
+  const [validUntil, setValidUntil] = useState(() => {
+    if (!defaultValidityDays) return "";
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + defaultValidityDays);
+    return d.toISOString().slice(0, 10);
+  });
   const [currency, setCurrency] = useState("USD");
   const [customerReference, setCustomerReference] = useState("");
   // Milestone 12 (Sales Performance Intelligence). Starts blank -- NEVER

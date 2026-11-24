@@ -36,20 +36,23 @@ export const INTELLIGENCE_THRESHOLDS = {
   failedMessagesCritical: 10,
 } as const;
 
-export type IntelligenceThresholds = typeof INTELLIGENCE_THRESHOLDS;
+/** Widened to number so administrator-configured values (lib/admin/settings-registry.ts) can be passed to the rule builders. */
+export type IntelligenceThresholds = { -readonly [K in keyof typeof INTELLIGENCE_THRESHOLDS]: number };
 
 /** Rule parameters shown on the page so a manager can see what flagged a finding. */
-export const THRESHOLD_DESCRIPTIONS: { label: string; value: string }[] = [
-  { label: "Minimum records before a rate is acted on", value: String(INTELLIGENCE_THRESHOLDS.minSample) },
-  { label: "Picking availability flagged below", value: `${INTELLIGENCE_THRESHOLDS.pickingAvailabilityLowPercent}% (critical below ${INTELLIGENCE_THRESHOLDS.pickingAvailabilityCriticalPercent}%)` },
-  { label: "Delivery acceptance flagged below", value: `${INTELLIGENCE_THRESHOLDS.deliveryAcceptanceLowPercent}% (critical below ${INTELLIGENCE_THRESHOLDS.deliveryAcceptanceCriticalPercent}%)` },
-  { label: "Outstanding order flagged after", value: `${INTELLIGENCE_THRESHOLDS.outstandingOrderAgeDays} days (critical after ${INTELLIGENCE_THRESHOLDS.outstandingOrderCriticalAgeDays})` },
-  { label: "Awaiting fulfilment flagged after", value: `${INTELLIGENCE_THRESHOLDS.awaitingFulfilmentAgeDays} days (critical after ${INTELLIGENCE_THRESHOLDS.awaitingFulfilmentCriticalAgeDays})` },
-  { label: "Repeated product shortage", value: `${INTELLIGENCE_THRESHOLDS.repeatShortageLines}+ lines (critical at ${INTELLIGENCE_THRESHOLDS.repeatShortageCriticalLines}+)` },
-  { label: "Repeated customer rejections", value: `${INTELLIGENCE_THRESHOLDS.repeatCustomerRejections}+ in the period` },
-  { label: "Repeat claims from one customer", value: `${INTELLIGENCE_THRESHOLDS.repeatCustomerClaims}+ claims` },
-  { label: "Quotation acceptance flagged below", value: `${INTELLIGENCE_THRESHOLDS.quotationAcceptanceLowPercent}%` },
-  { label: "Quotation to order conversion flagged below", value: `${INTELLIGENCE_THRESHOLDS.quotationConversionLowPercent}%` },
-  { label: "One claim reason flagged above", value: `${INTELLIGENCE_THRESHOLDS.reasonConcentrationPercent}% of claims` },
-  { label: "Average claim resolution flagged above", value: `${INTELLIGENCE_THRESHOLDS.slowClaimResolutionDays} days` },
-];
+export function describeThresholds(t: IntelligenceThresholds = INTELLIGENCE_THRESHOLDS): { label: string; value: string }[] {
+  return [
+    { label: "Minimum records before a rate is acted on", value: String(t.minSample) },
+    { label: "Picking availability flagged below", value: `${t.pickingAvailabilityLowPercent}% (critical below ${t.pickingAvailabilityCriticalPercent}%)` },
+    { label: "Delivery acceptance flagged below", value: `${t.deliveryAcceptanceLowPercent}% (critical below ${t.deliveryAcceptanceCriticalPercent}%)` },
+    { label: "Outstanding order flagged after", value: `${t.outstandingOrderAgeDays} days (critical after ${t.outstandingOrderCriticalAgeDays})` },
+    { label: "Awaiting fulfilment flagged after", value: `${t.awaitingFulfilmentAgeDays} days (critical after ${t.awaitingFulfilmentCriticalAgeDays})` },
+    { label: "Repeated product shortage", value: `${t.repeatShortageLines}+ lines (critical at ${t.repeatShortageCriticalLines}+)` },
+    { label: "Repeated customer rejections", value: `${t.repeatCustomerRejections}+ in the period` },
+    { label: "Repeat claims from one customer", value: `${t.repeatCustomerClaims}+ claims` },
+    { label: "Quotation acceptance flagged below", value: `${t.quotationAcceptanceLowPercent}%` },
+    { label: "Quotation to order conversion flagged below", value: `${t.quotationConversionLowPercent}%` },
+    { label: "One claim reason flagged above", value: `${t.reasonConcentrationPercent}% of claims` },
+    { label: "Average claim resolution flagged above", value: `${t.slowClaimResolutionDays} days` },
+  ];
+}

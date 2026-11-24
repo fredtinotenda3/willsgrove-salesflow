@@ -86,7 +86,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       );
     }
 
-    const updated = await updateCustomer(id, validated.value);
+    const updated = await updateCustomer(id, validated.value, auth.user.id);
 
     if (!updated.ok) {
       return Response.json(

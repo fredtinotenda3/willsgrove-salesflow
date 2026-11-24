@@ -1,5 +1,5 @@
 import { formatMoney } from "@/lib/format/analytics";
-import { INTELLIGENCE_THRESHOLDS as T } from "./thresholds";
+import { INTELLIGENCE_THRESHOLDS as DEFAULT_THRESHOLDS, type IntelligenceThresholds } from "./thresholds";
 import {
   finishIntelligence,
   makeFinding,
@@ -39,7 +39,7 @@ export type OperationalFacts = {
   deliveryExceptionsWithNoSuccessfulNotification: number;
 };
 
-export function buildOperationalSummaryIntelligence(f: OperationalFacts): ManagementIntelligence {
+export function buildOperationalSummaryIntelligence(f: OperationalFacts, T: IntelligenceThresholds = DEFAULT_THRESHOLDS): ManagementIntelligence {
   const id = "operational-summary";
   const out: ManagementFinding[] = [];
   const gaps: string[] = [];
@@ -121,13 +121,13 @@ export function buildOperationalSummaryIntelligence(f: OperationalFacts): Manage
   }
 
   if (f.failedOutbound > 0) {
-    out.push(failedMessagesFinding(id, f.failedOutbound, f.ordersWithFailedOutbound, f.deliveryExceptionsWithNoSuccessfulNotification));
+    out.push(failedMessagesFinding(id, f.failedOutbound, f.ordersWithFailedOutbound, f.deliveryExceptionsWithNoSuccessfulNotification, T));
   }
 
   return finishIntelligence(id, out, gaps, checked && gaps.length === 0);
 }
 
-function failedMessagesFinding(reportId: string, failed: number, orders: number, exceptionsNotNotified: number): ManagementFinding {
+function failedMessagesFinding(reportId: string, failed: number, orders: number, exceptionsNotNotified: number, T: IntelligenceThresholds): ManagementFinding {
   return makeFinding(reportId, {
     key: "failed-messages",
     topic: "failed-messages",
@@ -161,7 +161,7 @@ export type OrderAgeFacts = {
   agedCountIsMinimum: boolean;
 };
 
-function orderAgeIntelligence(id: "outstanding-orders" | "awaiting-fulfilment", f: OrderAgeFacts, cfg: { thresholdDays: number; criticalDays: number; noun: string; owner: ResponsibleFunction; action: string; impact: string }): ManagementIntelligence {
+function orderAgeIntelligence(id: "outstanding-orders" | "awaiting-fulfilment", f: OrderAgeFacts, cfg: { thresholdDays: number; criticalDays: number; noun: string; owner: ResponsibleFunction; action: string; impact: string }, T: IntelligenceThresholds): ManagementIntelligence {
   const out: ManagementFinding[] = [];
   const gaps: string[] = [];
   if (f.totalOrders === 0) return finishIntelligence(id, [], [], true);
@@ -211,7 +211,7 @@ function orderAgeIntelligence(id: "outstanding-orders" | "awaiting-fulfilment", 
   return finishIntelligence(id, out, gaps, true);
 }
 
-export function buildOutstandingOrdersIntelligence(f: OrderAgeFacts): ManagementIntelligence {
+export function buildOutstandingOrdersIntelligence(f: OrderAgeFacts, T: IntelligenceThresholds = DEFAULT_THRESHOLDS): ManagementIntelligence {
   return orderAgeIntelligence("outstanding-orders", f, {
     thresholdDays: T.outstandingOrderAgeDays,
     criticalDays: T.outstandingOrderCriticalAgeDays,
@@ -219,10 +219,10 @@ export function buildOutstandingOrdersIntelligence(f: OrderAgeFacts): Management
     owner: "OPERATIONS",
     action: "Go through the oldest orders one by one. Confirm with the customer whether each is still wanted, then fulfil, amend or cancel it and record why.",
     impact: "Orders that sit for weeks tie up stock and attention, and the customer may already have bought elsewhere.",
-  });
+  }, T);
 }
 
-export function buildAwaitingFulfilmentIntelligence(f: OrderAgeFacts): ManagementIntelligence {
+export function buildAwaitingFulfilmentIntelligence(f: OrderAgeFacts, T: IntelligenceThresholds = DEFAULT_THRESHOLDS): ManagementIntelligence {
   return orderAgeIntelligence("awaiting-fulfilment", f, {
     thresholdDays: T.awaitingFulfilmentAgeDays,
     criticalDays: T.awaitingFulfilmentCriticalAgeDays,
@@ -230,7 +230,7 @@ export function buildAwaitingFulfilmentIntelligence(f: OrderAgeFacts): Managemen
     owner: "WAREHOUSE",
     action: "Start picking the oldest approved orders first, and where stock is short decide today whether to part-ship or contact the customer.",
     impact: "Approved orders that are not picked miss their delivery promise and raise the chance of cancellation.",
-  });
+  }, T);
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ export type ShortageFacts = {
   topProducts: { productDescription: string; lineCount: number; totalUnavailableQuantity: string; totalUnavailableValue: string; linesWithoutPrice: number }[];
 };
 
-export function buildPickingShortagesIntelligence(f: ShortageFacts): ManagementIntelligence {
+export function buildPickingShortagesIntelligence(f: ShortageFacts, T: IntelligenceThresholds = DEFAULT_THRESHOLDS): ManagementIntelligence {
   const id = "picking-shortages";
   if (f.totalLines === 0) return finishIntelligence(id, [], [], true);
   const out: ManagementFinding[] = [];
@@ -290,7 +290,7 @@ export type DeliveryExceptionFacts = {
   customers: { customerName: string; count: number }[];
 };
 
-export function buildDeliveryExceptionsIntelligence(f: DeliveryExceptionFacts): ManagementIntelligence {
+export function buildDeliveryExceptionsIntelligence(f: DeliveryExceptionFacts, T: IntelligenceThresholds = DEFAULT_THRESHOLDS): ManagementIntelligence {
   const id = "delivery-exceptions";
   if (f.totalExceptions === 0) return finishIntelligence(id, [], [], true);
   const out: ManagementFinding[] = [];
@@ -354,7 +354,7 @@ export type QuotationFacts = {
   awaitingResponseNow: number;
 };
 
-export function buildQuotationsIntelligence(f: QuotationFacts): ManagementIntelligence {
+export function buildQuotationsIntelligence(f: QuotationFacts, T: IntelligenceThresholds = DEFAULT_THRESHOLDS): ManagementIntelligence {
   const id = "quotations-performance";
   const out: ManagementFinding[] = [];
   const gaps: string[] = [];
@@ -480,7 +480,7 @@ const REASON_ACTION: Record<string, string> = {
   DUPLICATE_ENTRY: "Find where the duplicate invoice lines are created and add a duplicate check before posting.",
 };
 
-export function reasonFindings(reportId: string, reasons: ReasonFact[], totalClaims: number): { findings: ManagementFinding[]; gap: string | null } {
+export function reasonFindings(reportId: string, reasons: ReasonFact[], totalClaims: number, T: IntelligenceThresholds = DEFAULT_THRESHOLDS): { findings: ManagementFinding[]; gap: string | null } {
   if (totalClaims < T.minSample) {
     return { findings: [], gap: totalClaims === 0 ? null : `Claim reasons: only ${plural(totalClaims, "claim")} in the period; at least ${T.minSample} are needed before one reason is called a pattern.` };
   }
@@ -523,7 +523,7 @@ export type LostSalesFacts = {
   reasons: ReasonFact[];
 };
 
-export function buildLostSalesIntelligence(f: LostSalesFacts): ManagementIntelligence {
+export function buildLostSalesIntelligence(f: LostSalesFacts, T: IntelligenceThresholds = DEFAULT_THRESHOLDS): ManagementIntelligence {
   const id = "lost-sales";
   const out: ManagementFinding[] = [];
   const gaps: string[] = [];
@@ -592,7 +592,7 @@ export function buildLostSalesIntelligence(f: LostSalesFacts): ManagementIntelli
     );
   }
 
-  const r = reasonFindings(id, f.reasons, f.claimCount);
+  const r = reasonFindings(id, f.reasons, f.claimCount, T);
   out.push(...r.findings);
   if (r.gap) gaps.push(r.gap);
 
@@ -637,7 +637,7 @@ export type ClaimsExposureFacts = {
 
 const money = (m: { currency: string; value: string }[]): EvidenceItem[] => m.map((x) => ev(x.currency, formatMoney(x.value, x.currency)));
 
-export function buildInvoiceClaimsIntelligence(f: ClaimsExposureFacts): ManagementIntelligence {
+export function buildInvoiceClaimsIntelligence(f: ClaimsExposureFacts, T: IntelligenceThresholds = DEFAULT_THRESHOLDS): ManagementIntelligence {
   const id = "invoice-claims-exposure";
   const out: ManagementFinding[] = [];
   const gaps: string[] = [];
@@ -764,7 +764,7 @@ export function buildInvoiceClaimsIntelligence(f: ClaimsExposureFacts): Manageme
     );
   }
 
-  const r = reasonFindings(id, f.reasons, f.claimCount);
+  const r = reasonFindings(id, f.reasons, f.claimCount, T);
   out.push(...r.findings);
   if (r.gap) gaps.push(r.gap);
   return finishIntelligence(id, out, gaps, out.length === 0 && gaps.length === 0);
@@ -782,12 +782,12 @@ export type CommunicationFacts = {
   repeatedlyRetried: number;
 };
 
-export function buildCommunicationFailuresIntelligence(f: CommunicationFacts): ManagementIntelligence {
+export function buildCommunicationFailuresIntelligence(f: CommunicationFacts, T: IntelligenceThresholds = DEFAULT_THRESHOLDS): ManagementIntelligence {
   const id = "communication-failures";
   if (f.failedCount === 0 && f.deliveryExceptionsWithNoSuccessfulNotification === 0) return finishIntelligence(id, [], [], true);
   const out: ManagementFinding[] = [];
   if (f.failedCount > 0) {
-    const finding = failedMessagesFinding(id, f.failedCount, f.ordersWithFailedOutbound, f.deliveryExceptionsWithNoSuccessfulNotification);
+    const finding = failedMessagesFinding(id, f.failedCount, f.ordersWithFailedOutbound, f.deliveryExceptionsWithNoSuccessfulNotification, T);
     if (f.topChannel && f.failedCount >= T.minSample && (f.topChannel.count / f.failedCount) * 100 >= T.statusConcentrationPercent) {
       finding.evidence.push(ev("Most failures on", `${f.topChannel.key} (${f.topChannel.count} of ${f.failedCount})`));
       finding.recommendedAction = `${finding.recommendedAction} Most failures are on ${f.topChannel.key}, so check that channel's connection first.`;

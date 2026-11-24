@@ -355,6 +355,14 @@ const navigation = [
         icon: Plug,
         roles: ["SALES_MANAGER", "ADMINISTRATOR"],
       },
+      // Administration Centre. ADMINISTRATOR only; every /admin page and
+      // /api/admin route re-checks the role on the server.
+      {
+        name: "Administration",
+        href: "/admin",
+        icon: ShieldCheck,
+        roles: ["ADMINISTRATOR"],
+      },
     ],
   },
 ];

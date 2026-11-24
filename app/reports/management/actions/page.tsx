@@ -2,10 +2,11 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { MANAGEMENT_REPORT_CATALOGUE } from "@/lib/reporting/management-reports";
+import { getManagementThresholds } from "@/lib/admin/settings-store";
 import { getAllIntelligence, type AggregatedFinding } from "@/lib/management-intelligence/queries";
 import { listAssignableUsers, listTrackedActions, type TrackedAction } from "@/lib/management-intelligence/actions";
 import { actionKey, ACTION_STATUS_LABELS } from "@/lib/management-intelligence/action-state";
-import { THRESHOLD_DESCRIPTIONS } from "@/lib/management-intelligence/thresholds";
+import { describeThresholds } from "@/lib/management-intelligence/thresholds";
 import { PRIORITY_LABELS, RESPONSIBLE_FUNCTION_LABELS } from "@/lib/management-intelligence/types";
 import Sidebar from "../../../components/sidebar";
 import { EmptyState, PageHeader, SectionCard } from "../../_components/ui";
@@ -47,7 +48,8 @@ export default async function ManagementActionCentrePage() {
   if (!user) redirect("/login");
   if (user.role !== "SALES_MANAGER" && user.role !== "ADMINISTRATOR") redirect("/reports");
 
-  const [all, trackedList, assignees] = await Promise.all([getAllIntelligence(), listTrackedActions(), listAssignableUsers()]);
+  const thresholds = await getManagementThresholds();
+  const [all, trackedList, assignees] = await Promise.all([getAllIntelligence(undefined, thresholds), listTrackedActions(), listAssignableUsers()]);
   const tracked = new Map(trackedList.map((t) => [t.findingKey, t]));
   const statusOf = (f: AggregatedFinding) => tracked.get(actionKey(f.reportId, f.key))?.status ?? "OPEN";
 
@@ -186,7 +188,7 @@ export default async function ManagementActionCentrePage() {
           <details className="rounded-2xl border border-[#E7ECE7] bg-white p-4 text-xs text-[#52605A]">
             <summary className="cursor-pointer font-semibold">Rule parameters used (flags for review, not targets)</summary>
             <ul className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1 md:grid-cols-2">
-              {THRESHOLD_DESCRIPTIONS.map((t) => (
+              {describeThresholds(thresholds).map((t) => (
                 <li key={t.label}>
                   {t.label}: <span className="font-semibold">{t.value}</span>
                 </li>
