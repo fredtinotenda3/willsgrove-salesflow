@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { describeResetBlockers } from "@/lib/invoice-recording/validation";
 
 /**
  * Real-world fix (native invoice recording) -- see validation.ts's own
@@ -126,4 +127,71 @@ export function isNativelyRecordedInvoice(rawSourceData: unknown): boolean {
     rawSourceData !== null &&
     (rawSourceData as { source?: unknown }).source === "NATIVE_RECORDING"
   );
+}
+
+export type RecordedInvoiceSummary = {
+  id: string;
+  sapDocNum: string;
+  invoiceDate: string | null;
+  total: string | null;
+  currencyCode: string | null;
+  lineCount: number;
+  /** "RECORDED" while active; "RESET" once voided (kept visible for the audit trail, never silently removed). */
+  state: "RECORDED" | "RESET";
+  reset: { at: string | null; reason: string | null } | null;
+  /** Human-readable reasons a reset is currently refused (empty = can be reset, subject to role). */
+  resetBlockers: string[];
+};
+
+/**
+ * Every invoice SalesFlow itself recorded against this order, newest first,
+ * including reset ones. Drives the "recorded / completed" state on the
+ * order detail page. SAP-imported invoices are intentionally excluded --
+ * they are SAP's record and have no reset.
+ */
+export async function listRecordedInvoicesForOrder(orderId: string): Promise<RecordedInvoiceSummary[]> {
+  const invoices = await prisma.sapInvoice.findMany({
+    where: { matchedOrderId: orderId, rawSourceData: { path: ["source"], equals: "NATIVE_RECORDING" } },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      sapDocNum: true,
+      invoiceDate: true,
+      total: true,
+      currencyCode: true,
+      isCancelledOrReversed: true,
+      rawSourceData: true,
+      _count: { select: { lines: true, claims: true, creditNotes: true } },
+      deliveryRecord: { select: { id: true } },
+    },
+  });
+
+  return invoices.map((invoice) => {
+    const raw = (invoice.rawSourceData ?? {}) as { reset?: { at?: unknown; reason?: unknown } };
+    const state = invoice.isCancelledOrReversed ? "RESET" : "RECORDED";
+    return {
+      id: invoice.id,
+      sapDocNum: invoice.sapDocNum,
+      invoiceDate: invoice.invoiceDate ? invoice.invoiceDate.toISOString().slice(0, 10) : null,
+      total: invoice.total?.toString() ?? null,
+      currencyCode: invoice.currencyCode,
+      lineCount: invoice._count.lines,
+      state,
+      reset:
+        state === "RESET"
+          ? {
+              at: typeof raw.reset?.at === "string" ? raw.reset.at : null,
+              reason: typeof raw.reset?.reason === "string" ? raw.reset.reason : null,
+            }
+          : null,
+      resetBlockers:
+        state === "RECORDED"
+          ? describeResetBlockers({
+              claims: invoice._count.claims,
+              creditNotes: invoice._count.creditNotes,
+              hasDeliveryRecord: invoice.deliveryRecord !== null,
+            })
+          : [],
+    };
+  });
 }

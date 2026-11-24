@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { isValidId, readJsonObject } from "@/lib/http";
 import { verifyCsrfOrigin } from "@/lib/auth/csrf";
 import { requireUserOrResponse } from "@/lib/auth/current-user";
-import { getInvoiceRecordingEligibility } from "@/lib/invoice-recording/queries";
-import { recordNativeInvoiceSchema } from "@/lib/invoice-recording/validation";
+import { getInvoiceRecordingEligibility, listRecordedInvoicesForOrder } from "@/lib/invoice-recording/queries";
+import { INVOICE_RESET_ROLES, recordNativeInvoiceSchema } from "@/lib/invoice-recording/validation";
 import { recordNativeInvoice } from "@/lib/invoice-recording/record-native-invoice";
 
 /**
@@ -28,11 +28,17 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   }
 
   try {
-    const eligibility = await getInvoiceRecordingEligibility(id);
+    const [eligibility, recordedInvoices] = await Promise.all([
+      getInvoiceRecordingEligibility(id),
+      listRecordedInvoicesForOrder(id),
+    ]);
     if (!eligibility) {
       return NextResponse.json({ success: false, message: "Order not found." }, { status: 404 });
     }
-    return NextResponse.json({ success: true, eligibility }, { headers: { "Cache-Control": "no-store" } });
+    // canReset is a UI hint only; POST .../reset enforces the same role
+    // list server-side.
+    const canReset = (INVOICE_RESET_ROLES as readonly string[]).includes(auth.user.role);
+    return NextResponse.json({ success: true, eligibility, recordedInvoices, canReset }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Invoice-recording eligibility lookup failed:", error);
     return NextResponse.json({ success: false, message: "Unable to load invoicing status for this order." }, { status: 500 });

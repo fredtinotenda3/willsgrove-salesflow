@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -36,10 +36,31 @@ import {
   PackageCheck,
   Menu,
   X,
+  PanelLeftClose,
+  PanelLeftOpen,
   DollarSign,
   BadgeDollarSign,
 } from "lucide-react";
 import NotificationBell from "./notification-bell";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { SIDEBAR_PREFERENCE_EVENT, readSidebarCollapsed, writeSidebarCollapsed } from "@/lib/ui/sidebar-preference";
+
+// Collapse preference lives in localStorage (per browser) and is read through
+// useSyncExternalStore, so server render and first client render agree
+// (expanded) and the stored value applies right after hydration without a
+// setState-in-effect. The layout itself is driven by an attribute on <html>
+// (see the sidebar block in app/globals.css) so the ~50 pages that hard-code
+// their own `md:pl-[260px]` content offset follow the sidebar without edits.
+function subscribeSidebarPreference(onChange: () => void) {
+  window.addEventListener("storage", onChange);
+  window.addEventListener(SIDEBAR_PREFERENCE_EVENT, onChange);
+  return () => {
+    window.removeEventListener("storage", onChange);
+    window.removeEventListener(SIDEBAR_PREFERENCE_EVENT, onChange);
+  };
+}
+const getSidebarCollapsedSnapshot = () => readSidebarCollapsed(window.localStorage);
+const getSidebarCollapsedServerSnapshot = () => false;
 
 /**
  * Workflow/Navigation/Performance round, Part 4: professional sidebar
@@ -435,6 +456,25 @@ export default function Sidebar() {
 
   const drawerVisible = isDesktop || mobileNavOpen;
 
+  const collapsed = useSyncExternalStore(subscribeSidebarPreference, getSidebarCollapsedSnapshot, getSidebarCollapsedServerSnapshot);
+  // Collapsed only ever applies at md and above (the mobile drawer always shows labels).
+  const showCollapsed = collapsed && isDesktop;
+
+  useEffect(() => {
+    document.documentElement.dataset.sidebar = collapsed ? "collapsed" : "expanded";
+  }, [collapsed]);
+
+  function toggleCollapsed() {
+    let storage: Storage | null = null;
+    try {
+      storage = window.localStorage;
+    } catch {
+      storage = null;
+    }
+    writeSidebarCollapsed(storage, !collapsed);
+    window.dispatchEvent(new Event(SIDEBAR_PREFERENCE_EVENT));
+  }
+
   async function handleLogout() {
     setLoggingOut(true);
     try {
@@ -484,13 +524,13 @@ export default function Sidebar() {
       >
 
       {/* Brand */}
-      <div className="flex h-19 items-center gap-3 border-b border-white/10 px-6">
+      <div className="sf-collapse-center flex h-19 items-center gap-3 border-b border-white/10 px-6">
 
         <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#D7F36B] text-[#10271F]">
           <Leaf size={23} strokeWidth={2.5} />
         </div>
 
-        <div>
+        <div className="sf-label">
           <h1 className="text-[16px] font-bold tracking-tight">
             Willsgrove
           </h1>
@@ -503,7 +543,7 @@ export default function Sidebar() {
       </div>
 
       {/* Workspace selector */}
-      <div className="px-4 pt-5">
+      <div className="sf-label px-4 pt-5">
 
         <button className="flex w-full items-center justify-between rounded-xl border border-white/10 bg-white/6 px-3 py-3 text-left transition hover:bg-white/10">
 
@@ -549,7 +589,7 @@ export default function Sidebar() {
           return (
           <div key={section.title}>
 
-            <p className="mb-3 px-3 text-[10px] font-bold tracking-[0.14em] text-white/35">
+            <p className="sf-label mb-3 px-3 text-[10px] font-bold tracking-[0.14em] text-white/35">
               {section.title}
             </p>
 
@@ -558,17 +598,29 @@ export default function Sidebar() {
               {visibleItems.map((item) => {
                 const Icon = item.icon;
                 const active = isActivePath(pathname, item.href);
-                const linkClassName = `group flex items-center justify-between rounded-lg px-3 py-2.5 text-[13px] font-medium transition-all ${
+                const linkClassName = `sf-collapse-center group flex items-center justify-between rounded-lg px-3 py-2.5 text-[13px] font-medium transition-all ${
                   active
                     ? "bg-[#D7F36B] text-[#10271F] shadow-sm"
                     : "text-white/65 hover:bg-white/[0.07] hover:text-white"
                 }`;
                 const linkContent = (
                   <span className="flex items-center gap-3">
-                    <Icon size={17} strokeWidth={1.9} />
-                    {item.name}
+                    <Icon size={17} strokeWidth={1.9} className="shrink-0" />
+                    <span className="sf-label">{item.name}</span>
                   </span>
                 );
+                // A collapsed link has no visible text, so it keeps its
+                // accessible name via aria-label and gets a tooltip on
+                // hover AND keyboard focus (Radix tooltips open on focus).
+                const withTooltip = (node: React.ReactElement) =>
+                  showCollapsed ? (
+                    <Tooltip key={item.name}>
+                      <TooltipTrigger asChild>{node}</TooltipTrigger>
+                      <TooltipContent side="right">{item.name}</TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    node
+                  );
 
                 // Real-world bug fix: "New Order and Repeat Order are
                 // navigating to created order id instead" of opening a
@@ -589,17 +641,17 @@ export default function Sidebar() {
                 // fix had to be applied to: app/orders/new/page.tsx's own
                 // comment above its `createdOrder` state.
                 if (item.href === "/orders/new") {
-                  return (
-                    <a key={item.name} href={item.href} className={linkClassName}>
+                  return withTooltip(
+                    <a key={item.name} href={item.href} className={linkClassName} aria-label={item.name} aria-current={active ? "page" : undefined}>
                       {linkContent}
-                    </a>
+                    </a>,
                   );
                 }
 
-                return (
-                  <Link key={item.name} href={item.href} className={linkClassName}>
+                return withTooltip(
+                  <Link key={item.name} href={item.href} className={linkClassName} aria-label={item.name} aria-current={active ? "page" : undefined}>
                     {linkContent}
-                  </Link>
+                  </Link>,
                 );
               })}
 
@@ -614,13 +666,25 @@ export default function Sidebar() {
       {/* Bottom settings */}
       <div className="relative border-t border-white/10 p-4">
 
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          aria-pressed={collapsed}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          className="sf-collapse-center mb-2 hidden w-full items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] font-medium text-white/60 transition hover:bg-white/[0.07] hover:text-white md:flex"
+        >
+          {collapsed ? <PanelLeftOpen size={17} className="shrink-0" /> : <PanelLeftClose size={17} className="shrink-0" />}
+          <span className="sf-label">Collapse</span>
+        </button>
+
         <div className="flex items-center gap-1">
           <Link
             href="/settings"
-            className="flex flex-1 items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] font-medium text-white/60 transition hover:bg-white/[0.07] hover:text-white"
+            aria-label="Settings"
+            className="sf-collapse-center flex flex-1 items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] font-medium text-white/60 transition hover:bg-white/[0.07] hover:text-white"
           >
-            <Settings size={17} />
-            Settings
+            <Settings size={17} className="shrink-0" />
+            <span className="sf-label">Settings</span>
           </Link>
           <NotificationBell />
         </div>
@@ -648,14 +712,15 @@ export default function Sidebar() {
 
         <button
           onClick={() => setMenuOpen((open) => !open)}
-          className="mt-4 flex w-full items-center gap-3 rounded-xl bg-white/6 p-3 text-left transition hover:bg-white/10"
+          aria-label={user ? `Account menu for ${user.name}` : "Account menu"}
+          className="sf-collapse-center mt-4 flex w-full items-center gap-3 rounded-xl bg-white/6 p-3 text-left transition hover:bg-white/10"
         >
 
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#D7F36B] text-xs font-bold text-[#10271F]">
             {user ? initialsFor(user.name) : "…"}
           </div>
 
-          <div className="min-w-0 flex-1">
+          <div className="sf-label min-w-0 flex-1">
 
             <p className="truncate text-xs font-semibold">
               {user ? user.name : "Loading…"}
@@ -667,7 +732,7 @@ export default function Sidebar() {
 
           </div>
 
-          <ChevronDown size={15} className={`shrink-0 text-white/40 transition-transform ${menuOpen ? "rotate-180" : ""}`} />
+          <ChevronDown size={15} className={`sf-label shrink-0 text-white/40 transition-transform ${menuOpen ? "rotate-180" : ""}`} />
 
         </button>
 

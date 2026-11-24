@@ -3,7 +3,9 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { getLostSalesAnalytics } from "@/lib/lost-sales/analytics-queries";
 import { getConsolidatedLostSalesAnalytics } from "@/lib/lost-sales/consolidated-analytics";
-import { getClaimReasonAnalytics } from "@/lib/invoice-claims/reason-analytics";
+import { getUnifiedLostSalesReport } from "@/lib/lost-sales/unified-queries";
+import { ReasonAnalyticsSection } from "../../reports/_components/reason-analytics-section";
+import { UnifiedLostSalesSummary } from "../../reports/_components/unified-lost-sales-summary";
 import { parseLostSalesAnalyticsPeriod, lostSalesAnalyticsPeriodValues, type LostSalesAnalyticsPeriod } from "@/lib/lost-sales/analytics-validation";
 import { LOST_SALES_MAX_PAGE_SIZE } from "@/lib/lost-sales/queries";
 import { unfulfilledDemandStatusValues } from "@/lib/lost-sales/validation";
@@ -15,7 +17,7 @@ import {
   LOST_SALE_SOURCE_STYLES,
 } from "@/lib/lost-sales/display";
 import { getReportFilterOptions } from "@/lib/reporting/filter-options";
-import { parseReportFilters, parsePagination, REPORT_DEFAULT_PAGE_SIZE } from "@/lib/reporting/filters";
+import { parseReportFilters, parsePagination, REPORT_DEFAULT_PAGE_SIZE, resolveEffectiveDateRange } from "@/lib/reporting/filters";
 import { toFlatSearchParams, toURLSearchParams, filtersOnly, type ReportSearchParams } from "../../reports/_components/search-params";
 import Sidebar from "../../components/sidebar";
 import { PageHeader, SectionCard, MetricCard, RateStat, BarRow, Pagination, EmptyState } from "../../reports/_components/ui";
@@ -26,6 +28,8 @@ import {
   TopUnavailableBarChart,
   RequestedFoundUnavailableChart,
   RequestedFoundUnavailableValueChart,
+  RequestedFoundVsAmountByProductChart,
+  QuantityVsLostValueTrendChart,
   ShortageRateBarChart,
   CompositionStackedBar,
   UnavailableQuantityDistribution,
@@ -133,10 +137,13 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
   const consolidatedPageRaw = Number.parseInt(urlSearchParams.get("consolidatedPage") ?? "1", 10);
   const consolidatedPage = { page: Number.isFinite(consolidatedPageRaw) && consolidatedPageRaw >= 1 ? consolidatedPageRaw : 1, pageSize: pagination.pageSize };
 
-  const [analytics, consolidated, claimReasonAnalytics, filterOptions] = await Promise.all([
+  // The claims/unified figures use the SAME effective date window as the
+  // rest of this page (the page's own 30-day default when none is set).
+  const { effectiveFrom, effectiveTo } = resolveEffectiveDateRange(filters);
+  const [analytics, consolidated, unifiedReport, filterOptions] = await Promise.all([
     getLostSalesAnalytics(filters, period, pagination),
     getConsolidatedLostSalesAnalytics(filters, consolidatedPage),
-    getClaimReasonAnalytics(filters),
+    getUnifiedLostSalesReport({ includeDemo: filters.includeDemo, customerId: filters.customerId, dateFrom: effectiveFrom, dateTo: effectiveTo }),
     getReportFilterOptions(),
   ]);
 
@@ -528,6 +535,14 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
             />
           </SectionCard>
 
+          <SectionCard title="Quantity vs. lost value over time" description="Requested and unavailable quantity (left axis) against requested amount and lost value in USD (right axis) -- separate axes because quantity and money are different units">
+            <QuantityVsLostValueTrendChart data={analytics.trend} />
+          </SectionCard>
+
+          <SectionCard title="Requested and found quantity vs. sales amount, by product" description="Same top products as below: how much was requested and found (left axis) against the amount that represents in USD (right axis)">
+            <RequestedFoundVsAmountByProductChart data={analytics.requestedFoundUnavailableByProduct} />
+          </SectionCard>
+
           <SectionCard title="Requested vs. unavailable quantity over time" description="Same unit (quantity), one shared axis -- hover a point for the full product/customer breakdown behind it">
             <RequestedVsUnavailableTrendChart data={analytics.trend} basePath={basePath} baseQuery={baseQuery} />
           </SectionCard>
@@ -610,73 +625,9 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
             )}
           </SectionCard>
 
-          <SectionCard
-            title="Claims by standardised reason"
-            description="InvoiceClaimLine.reasonCategory, the 8 standardised claim reasons -- a claim is a customer-reported dispute, never an automatic confirmed loss (see note below)"
-          >
-            <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900">
-              <Info size={16} className="mt-0.5 shrink-0" />
-              <p>
-                These figures describe what customers disputed, not confirmed loss -- a Price Claim may resolve via a price correction, a Poor
-                Quality Product claim via replacement, a Short Delivered claim via a later fulfilment, and so on. &ldquo;Exposure&rdquo; below is
-                the customer&rsquo;s own claimed value (informational only, per invoice line), never summed into the confirmed-lost figures
-                above. &ldquo;Resolved&rdquo; means the claim investigation concluded (approved, rejected, or closed) -- not that a financial
-                loss was confirmed.
-              </p>
-            </div>
-            {claimReasonAnalytics.byReason.length === 0 ? (
-              <EmptyState message="No standardised-reason claim lines match these filters." />
-            ) : (
-              <div className="space-y-5">
-                {claimReasonAnalytics.byReason.map((row) => {
-                  const maxCount = Math.max(...claimReasonAnalytics.byReason.map((r) => r.claimLineCount));
-                  return (
-                    <div key={row.reasonCategory} className="rounded-lg border border-[#EEF1ED] p-4">
-                      <BarRow label={row.label} count={row.claimLineCount} maxCount={maxCount} color="bg-[#b8562f]" />
-                      <div className="mt-2 grid grid-cols-2 gap-3 text-[11px] text-[#718078] sm:grid-cols-4">
-                        <p>{row.distinctClaimCount} claim(s)</p>
-                        <p>{formatQuantity(row.claimedQuantity)} unit(s) disputed</p>
-                        <p>{row.resolvedCount} resolved / {row.outstandingCount} outstanding</p>
-                        <p>
-                          {row.informationalExposureByCurrency.length === 0
-                            ? "No priced exposure"
-                            : row.informationalExposureByCurrency.map((e) => `${e.currency} ${formatQuantity(e.amount)}`).join(" · ")}
-                        </p>
-                      </div>
-                      {(row.topProducts.length > 0 || row.topCustomers.length > 0) && (
-                        <div className="mt-3 grid grid-cols-1 gap-4 border-t border-[#F2F4F1] pt-3 sm:grid-cols-2">
-                          {row.topProducts.length > 0 && (
-                            <div>
-                              <p className="text-[10px] font-semibold uppercase tracking-wide text-[#9AA59E]">Most affected products</p>
-                              <ul className="mt-1 space-y-0.5 text-[11px] text-[#17251E]">
-                                {row.topProducts.map((p) => (
-                                  <li key={`${p.sapItemCode ?? "none"}-${p.description ?? ""}`}>
-                                    {p.description ?? p.sapItemCode ?? "Unknown product"} -- {p.claimLineCount} line(s), {formatQuantity(p.claimedQuantity)} unit(s)
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                          {row.topCustomers.length > 0 && (
-                            <div>
-                              <p className="text-[10px] font-semibold uppercase tracking-wide text-[#9AA59E]">Most affected customers</p>
-                              <ul className="mt-1 space-y-0.5 text-[11px] text-[#17251E]">
-                                {row.topCustomers.map((c) => (
-                                  <li key={c.customerId}>
-                                    {c.customerName} -- {c.claimLineCount} line(s), {formatQuantity(c.claimedQuantity)} unit(s)
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </SectionCard>
+          <UnifiedLostSalesSummary unified={unifiedReport.unified} periodLabel={`${effectiveFrom} to ${effectiveTo}`} />
+
+          <ReasonAnalyticsSection breakdown={unifiedReport.reasons} periodLabel={`${effectiveFrom} to ${effectiveTo}`} truncated={unifiedReport.truncated} />
 
           <SectionCard title="Order-level drilldown" description={`${analytics.drilldown.pagination.totalItems} unfulfilled-demand record(s) match the current filters`}>
             {analytics.drilldown.demands.length === 0 ? (

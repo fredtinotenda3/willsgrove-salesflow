@@ -39,7 +39,7 @@ export async function GET(request: NextRequest) {
       [{ metric: "Estimated supply lost sales value", value: report.lostSalesBySource.sourceB.estimatedValue },
        { metric: "Lost-sale records priced", value: String(report.lostSalesBySource.sourceB.recordsWithEstimate) },
        { metric: "Lost-sale records without a price (excluded)", value: String(report.lostSalesBySource.sourceB.recordsWithoutEstimate) }],
-      [{ key: "metric", header: "Source B: Insufficient supply at fulfilment" }, { key: "value", header: "Value" }]
+      [{ key: "metric", header: "Unfulfilled demand (insufficient supply at fulfilment)" }, { key: "value", header: "Value" }]
     );
 
     // Real Business Data Onboarding round, Phase 7 (Claims analytics):
@@ -51,13 +51,13 @@ export async function GET(request: NextRequest) {
     // added to Source A even though they can share the same claim.
     const sourceCCsv = buildCsv(
       report.lostSalesBySource.sourceC.byCurrency,
-      [{ key: "currencyCode", header: "Source C: Confirmed loss from returned goods -- Currency" }, { key: "recordCount", header: "Record count" }, { key: "estimatedValue", header: "Confirmed loss value" }]
+      [{ key: "currencyCode", header: "Confirmed loss from returned goods -- Currency" }, { key: "recordCount", header: "Record count" }, { key: "estimatedValue", header: "Confirmed loss value" }]
     );
     const sourceCTotalsCsv = buildCsv(
       [{ metric: "Confirmed-loss returns, total", value: String(report.lostSalesBySource.sourceC.totalLossRecords) },
        { metric: "Confirmed-loss returns priced", value: String(report.lostSalesBySource.sourceC.recordsWithEstimate) },
        { metric: "Confirmed-loss returns without a price (excluded)", value: String(report.lostSalesBySource.sourceC.recordsWithoutEstimate) }],
-      [{ key: "metric", header: "Source C totals" }, { key: "value", header: "Value" }]
+      [{ key: "metric", header: "Confirmed loss from returned goods totals" }, { key: "value", header: "Value" }]
     );
 
     const otherRows = [

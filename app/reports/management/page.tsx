@@ -46,6 +46,17 @@ export default async function ManagementReportsCataloguePage() {
             description="Named, exportable reports for sales management -- each backed by the same real M0-M10 data as the operational dashboards, with its own filters and CSV export."
           />
 
+          <SectionCard title="Management Action Centre" description="Every finding from the nine reports below, ranked by urgency, with who should act and the status of each action.">
+            <Link href="/reports/management/actions" className="inline-block rounded-xl bg-[#17251E] px-4 py-2 text-sm font-semibold text-white hover:bg-[#223A2E]">Open Action Centre</Link>
+          </SectionCard>
+
+          <SectionCard title="Weekly and monthly management pack" description="Invoiced revenue, lost sales, unresolved claims exposure, fulfilment, exceptions and trends for a chosen week or month. Download Excel or print to PDF.">
+            <div className="flex flex-wrap gap-3">
+              <Link href="/reports/management/pack?kind=week" className="rounded-xl bg-[#17251E] px-4 py-2 text-sm font-semibold text-white hover:bg-[#223A2E]">Weekly pack</Link>
+              <Link href="/reports/management/pack?kind=month" className="rounded-xl border border-[#E7ECE7] bg-white px-4 py-2 text-sm font-semibold text-[#17251E] hover:bg-gray-50">Monthly pack</Link>
+            </div>
+          </SectionCard>
+
           <SectionCard title="All reports" description={`${MANAGEMENT_REPORT_CATALOGUE.length} named reports`}>
             <div className="divide-y divide-[#EEF1ED]">
               {MANAGEMENT_REPORT_CATALOGUE.map((report) => (

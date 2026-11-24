@@ -340,4 +340,68 @@ describe.skipIf(!RUN_DB_INTEGRATION_TESTS)("Real-world fix: native invoice recor
     if (result.ok) return;
     expect(result.status).toBe(404);
   });
+
+  it("two simultaneous recordings of the same full quantity produce exactly one invoice (row-lock protection)", async () => {
+    if (skipAll) return;
+    const { recordNativeInvoice } = await import("@/lib/invoice-recording/record-native-invoice");
+    const { prisma } = await import("@/lib/prisma");
+
+    const { orderId, orderLineId } = await createDispatchedOrderLine("12.0000", "5.0000");
+    const input = {
+      invoiceDate: "2026-11-23",
+      lines: [{ orderLineId, quantityInvoiced: "12.0000", unitPrice: "5.0000" }],
+    };
+
+    const results = await Promise.all([
+      recordNativeInvoice(orderId, adminId, input),
+      recordNativeInvoice(orderId, adminId, input),
+      recordNativeInvoice(orderId, adminId, input),
+    ]);
+    for (const r of results) if (r.ok) createdSapInvoiceIds.push(r.id);
+
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(await prisma.sapInvoice.count({ where: { matchedOrderId: orderId, isCancelledOrReversed: false } })).toBe(1);
+  });
+
+  it("resetNativeInvoice voids the invoice, frees the quantity, audits it, and refuses a second reset", async () => {
+    if (skipAll) return;
+    const { recordNativeInvoice } = await import("@/lib/invoice-recording/record-native-invoice");
+    const { resetNativeInvoice } = await import("@/lib/invoice-recording/reset-native-invoice");
+    const { getInvoiceRecordingEligibility, listRecordedInvoicesForOrder } = await import("@/lib/invoice-recording/queries");
+    const { prisma } = await import("@/lib/prisma");
+
+    const { orderId, orderLineId } = await createDispatchedOrderLine("8.0000", "3.0000");
+    const recorded = await recordNativeInvoice(orderId, adminId, {
+      invoiceDate: "2026-11-23",
+      lines: [{ orderLineId, quantityInvoiced: "8.0000", unitPrice: "3.0000" }],
+    });
+    expect(recorded.ok).toBe(true);
+    if (!recorded.ok) return;
+    createdSapInvoiceIds.push(recorded.id);
+    expect((await getInvoiceRecordingEligibility(orderId))!.lines).toHaveLength(0);
+
+    const reset = await resetNativeInvoice(orderId, recorded.id, adminId, { reason: "Entered wrong quantity" });
+    expect(reset.ok).toBe(true);
+
+    // Quantity is available to invoice again, and the invoice is kept visible as RESET.
+    expect((await getInvoiceRecordingEligibility(orderId))!.lines[0]!.remainingToInvoice).toBe("8");
+    const listed = await listRecordedInvoicesForOrder(orderId);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ state: "RESET", reset: { reason: "Entered wrong quantity" } });
+
+    const audit = await prisma.auditEvent.findFirst({ where: { entityId: recorded.id, action: "INVOICE_RESET_NATIVE" } });
+    expect(audit).not.toBeNull();
+    expect(audit!.actorId).toBe(adminId);
+
+    const again = await resetNativeInvoice(orderId, recorded.id, adminId, { reason: "Entered wrong quantity" });
+    expect(again).toMatchObject({ ok: false, status: 409 });
+
+    // A fresh invoice can now be recorded for the same quantity.
+    const rerecorded = await recordNativeInvoice(orderId, adminId, {
+      invoiceDate: "2026-11-23",
+      lines: [{ orderLineId, quantityInvoiced: "8.0000", unitPrice: "3.0000" }],
+    });
+    expect(rerecorded.ok).toBe(true);
+    if (rerecorded.ok) createdSapInvoiceIds.push(rerecorded.id);
+  });
 });

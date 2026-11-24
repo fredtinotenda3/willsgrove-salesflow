@@ -162,3 +162,38 @@ a {
   --sidebar-border: hsl(240 3.7% 15.9%);
   --sidebar-ring: hsl(217.2 91.2% 59.8%);
 }
+
+/*
+   Sidebar collapse (desktop only). The sidebar toggles data-sidebar on <html>
+   (app/components/sidebar.tsx); keying the layout off that attribute lets the
+   many pages that hard-code `md:pl-[260px]` follow the sidebar without
+   per-page edits. Below 768px the sidebar is the off-canvas drawer and is
+   never collapsed.
+*/
+#app-sidebar,
+main {
+  transition: width 150ms ease, padding-left 150ms ease;
+}
+@media (min-width: 48rem) {
+  html[data-sidebar="collapsed"] #app-sidebar {
+    width: 4.5rem;
+  }
+  html[data-sidebar="collapsed"] .md\:pl-\[260px\],
+  html[data-sidebar="collapsed"] .md\:pl-65 {
+    padding-left: 4.5rem;
+  }
+  html[data-sidebar="collapsed"] #app-sidebar .sf-label {
+    display: none;
+  }
+  html[data-sidebar="collapsed"] #app-sidebar .sf-collapse-center {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #app-sidebar,
+  main {
+    transition: none;
+  }
+}

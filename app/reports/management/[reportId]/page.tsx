@@ -31,6 +31,9 @@ import {
 import type { FinancialExposureReport } from "@/lib/reporting/financial-exposure";
 import type { OrderStatusBreakdownRow, ProductShortageBreakdownRow, DeliveryOutcomeBreakdownRow, CommunicationFailureBreakdownRow, LostSalesManagementReport } from "@/lib/reporting/management-reports";
 import { AlertCircle } from "lucide-react";
+import { getReportIntelligence } from "@/lib/management-intelligence/queries";
+import { listAssignableUsers, listTrackedActions } from "@/lib/management-intelligence/actions";
+import { IntelligenceSection } from "../_components/intelligence-section";
 
 export const instant = false;
 
@@ -194,6 +197,13 @@ export default async function ManagementReportDetailPage({ params, searchParams 
   const pagination = parsedPagination.ok ? parsedPagination.pagination : { page: 1, pageSize: REPORT_DEFAULT_PAGE_SIZE };
 
   const [result, filterOptions] = await Promise.all([runManagementReport(reportId, filters, pagination, period), getReportFilterOptions()]);
+  // Intelligence reuses this page's own summary data (no second query) and
+  // is computed live; only the human decisions on a finding are stored.
+  const [intelligence, trackedActions, assignees] = await Promise.all([
+    getReportIntelligence(reportId, filters, { period, summaryData: result.kind === "summary" ? result.data : undefined }),
+    listTrackedActions(),
+    listAssignableUsers(),
+  ]);
 
   const basePath = `/reports/management/${reportId}`;
 
@@ -258,6 +268,8 @@ export default async function ManagementReportDetailPage({ params, searchParams 
           {config.note && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900">{config.note}</div>
           )}
+
+          <IntelligenceSection intelligence={intelligence} tracked={trackedActions} assignees={assignees} />
 
           {result.kind === "summary" ? (
             <>

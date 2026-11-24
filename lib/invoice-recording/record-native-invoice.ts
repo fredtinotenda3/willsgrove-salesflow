@@ -132,6 +132,17 @@ export async function recordNativeInvoice(
 
   try {
     const result = await prisma.$transaction(async (tx) => {
+      // Serialise concurrent recordings against the SAME order. Under
+      // PostgreSQL's default READ COMMITTED isolation, two simultaneous
+      // requests could both read "remaining = N" below and both insert,
+      // over-invoicing the line (a double-click or a retried request is
+      // enough). Taking a row lock on the order first makes the second
+      // request wait until the first commits, after which its own
+      // remaining-quantity read sees the first invoice and is rejected by
+      // validateNativeInvoiceLineQuantity. Different orders never block
+      // each other.
+      await tx.$queryRaw`SELECT "id" FROM "CustomerOrder" WHERE "id" = ${orderId} FOR UPDATE`;
+
       const lineTotals: { lineTotal: string }[] = [];
 
       for (const [index, lineInput] of input.lines.entries()) {

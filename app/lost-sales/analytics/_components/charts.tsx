@@ -407,3 +407,96 @@ function PercentileTile({ label, value }: { label: string; value: number }) {
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Dual-axis (quantity vs. amount) charts
+//
+// Quantities and money are different units, so each gets its own axis
+// (quantity left, USD right) via components/charts/dual-axis-chart.tsx --
+// the two existing single-axis charts above/below stay as the exact-value
+// views. Rows are the already-aggregated server breakdowns; nothing here
+// computes a new figure.
+// ---------------------------------------------------------------------------
+
+import { DualAxisChart } from "@/components/charts/dual-axis-chart";
+import type { LostSalesTrendPoint } from "@/lib/lost-sales/analytics-queries";
+
+const SERIES_REQUESTED_QTY = { key: "requestedQuantity", label: "Requested qty", color: "var(--chart-1)" };
+const SERIES_FOUND_QTY = { key: "foundQuantity", label: "Found qty", color: "var(--chart-3)" };
+const SERIES_UNAVAILABLE_QTY = { key: "unavailableQuantity", label: "Unavailable qty", color: "var(--chart-2)" };
+const SERIES_REQUESTED_VALUE = { key: "requestedValue", label: "Requested amount", color: "var(--chart-1)" };
+const SERIES_FOUND_VALUE = { key: "foundValue", label: "Found amount (sales)", color: "var(--chart-3)" };
+const SERIES_LOST_VALUE = { key: "estimatedValue", label: "Lost value", color: "var(--chart-2)" };
+
+/**
+ * Requested and found quantity (bars, left axis) against the order-line
+ * amount they represent (diamonds, right axis), one category per product.
+ * Markers rather than a line: products are unrelated categories, so a
+ * connecting line would imply a trend that does not exist. Each product's
+ * quantity is in its own unit of measure (shown in the tooltip), which is
+ * why quantities are never summed across products here.
+ */
+export function RequestedFoundVsAmountByProductChart({ data }: { data: LostSalesProductBreakdown[] }) {
+  const rows = data.map((row) => ({
+    label: truncateLabel(row.productDescriptionSnapshot, 18),
+    unit: row.unitOfMeasure,
+    requestedQuantity: Number(row.requestedQuantity),
+    foundQuantity: Number(row.foundQuantity),
+    requestedValue: Number(row.requestedValue),
+    foundValue: Number(row.foundValue),
+  }));
+  return (
+    <DualAxisChart
+      ariaLabel="Requested and found quantity against requested and found amount, by product"
+      data={rows}
+      xKey="label"
+      unitKey="unit"
+      quantitySeries={[SERIES_REQUESTED_QTY, SERIES_FOUND_QTY]}
+      valueSeries={[SERIES_REQUESTED_VALUE, SERIES_FOUND_VALUE]}
+      valueMode="markers"
+      currency="USD"
+      quantityAxisTitle="Quantity (product's own unit)"
+      valueAxisTitle="Amount (USD)"
+      emptyMessage="No product shortages in the selected range."
+      footnote="Bars read against the left axis (quantity), diamonds against the right axis (USD). Click a legend chip to hide a series."
+    />
+  );
+}
+
+/**
+ * Unavailable quantity (bars) against the lost value it represents (line)
+ * over time, with requested quantity/amount for context. Quantity buckets
+ * that mix units of measure are flagged in the footnote rather than
+ * silently presented as one unit.
+ */
+export function QuantityVsLostValueTrendChart({ data }: { data: LostSalesTrendPoint[] }) {
+  const rows = data.map((point) => ({
+    label: point.label,
+    unit: point.quantityUnitCode,
+    requestedQuantity: Number(point.requestedQuantity),
+    unavailableQuantity: Number(point.unavailableQuantity),
+    requestedValue: Number(point.requestedValue),
+    estimatedValue: Number(point.estimatedLostValue),
+  }));
+  const anyMixed = data.some((point) => point.mixedUnitsOfMeasure);
+  return (
+    <DualAxisChart
+      ariaLabel="Requested and unavailable quantity against requested amount and lost value, over time"
+      data={rows}
+      xKey="label"
+      unitKey="unit"
+      quantitySeries={[SERIES_REQUESTED_QTY, SERIES_UNAVAILABLE_QTY]}
+      valueSeries={[SERIES_REQUESTED_VALUE, SERIES_LOST_VALUE]}
+      valueMode="line"
+      currency="USD"
+      quantityAxisTitle="Quantity"
+      valueAxisTitle="Amount (USD)"
+      emptyMessage="No shortages in the selected range."
+      footnote={
+        anyMixed
+          ? "Some periods combine products measured in different units, so their quantity bars are indicative only; amounts are exact. Use the per-product charts for unit-accurate quantities."
+          : "Bars read against the left axis (quantity), dashed lines against the right axis (USD)."
+      }
+    />
+  );
+}

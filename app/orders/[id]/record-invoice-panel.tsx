@@ -1,10 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
-import { ChevronDown, ChevronUp, FileText, Loader2, Check } from "lucide-react";
+import { ChevronDown, ChevronUp, FileText, Loader2, Check, RotateCcw, Lock } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 /**
  * Real-world fix (native invoice recording) -- see lib/invoice-recording/
@@ -39,6 +48,18 @@ type Eligibility = {
   lines: EligibilityLine[];
 };
 
+type RecordedInvoice = {
+  id: string;
+  sapDocNum: string;
+  invoiceDate: string | null;
+  total: string | null;
+  currencyCode: string | null;
+  lineCount: number;
+  state: "RECORDED" | "RESET";
+  reset: { at: string | null; reason: string | null } | null;
+  resetBlockers: string[];
+};
+
 type LineDraft = {
   include: boolean;
   quantityInvoiced: string;
@@ -59,52 +80,92 @@ export default function RecordInvoicePanel({ orderId }: { orderId: string }) {
 
   const [loading, setLoading] = useState(true);
   const [eligibility, setEligibility] = useState<Eligibility | null>(null);
+  const [recorded, setRecorded] = useState<RecordedInvoice[]>([]);
+  const [canReset, setCanReset] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [drafts, setDrafts] = useState<Record<string, LineDraft>>({});
   const [submitting, setSubmitting] = useState(false);
+  // A ref in addition to `submitting` state: two clicks in the same tick
+  // both see submitting === false, the ref closes that window. The server
+  // enforces the real guarantee (row lock + remaining-quantity check).
+  const submitLock = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [success, setSuccess] = useState<string | null>(null);
   const [recordedInvoiceId, setRecordedInvoiceId] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setLoading(true);
-      try {
-        const response = await fetch(`/api/orders/${orderId}/record-invoice`, { cache: "no-store" });
-        const data = await readJson(response);
-        if (cancelled) return;
-        if (response.ok && data.success === true) {
-          const loaded = data.eligibility as Eligibility;
-          setEligibility(loaded);
-          const initialDrafts: Record<string, LineDraft> = {};
-          for (const line of loaded.lines) {
-            initialDrafts[line.orderLineId] = {
-              include: true,
-              quantityInvoiced: line.remainingToInvoice,
-              unitPrice: line.suggestedUnitPrice ?? "",
-            };
-          }
-          setDrafts(initialDrafts);
+  const [resetTarget, setResetTarget] = useState<RecordedInvoice | null>(null);
+  const [resetReason, setResetReason] = useState("");
+  const [resetting, setResetting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/orders/${orderId}/record-invoice`, { cache: "no-store" });
+      const data = await readJson(response);
+      if (response.ok && data.success === true) {
+        const loaded = data.eligibility as Eligibility;
+        setEligibility(loaded);
+        setRecorded((data.recordedInvoices as RecordedInvoice[] | undefined) ?? []);
+        setCanReset(data.canReset === true);
+        const initialDrafts: Record<string, LineDraft> = {};
+        for (const line of loaded.lines) {
+          initialDrafts[line.orderLineId] = {
+            include: true,
+            quantityInvoiced: line.remainingToInvoice,
+            unitPrice: line.suggestedUnitPrice ?? "",
+          };
         }
-      } finally {
-        if (!cancelled) setLoading(false);
+        setDrafts(initialDrafts);
       }
+    } finally {
+      setLoading(false);
     }
-    load();
-    return () => {
-      cancelled = true;
-    };
   }, [orderId]);
+
+  useEffect(() => {
+    // Deferred so no setState runs synchronously in the effect body.
+    const handle = setTimeout(() => {
+      void load();
+    }, 0);
+    return () => clearTimeout(handle);
+  }, [load]);
+
+  async function confirmReset() {
+    if (!resetTarget || resetting) return;
+    setResetting(true);
+    setResetError(null);
+    try {
+      const response = await fetch(`/api/orders/${orderId}/record-invoice/${resetTarget.id}/reset`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: resetReason }),
+      });
+      const data = await readJson(response);
+      if (!response.ok || data.success !== true) {
+        setResetError(typeof data.message === "string" ? data.message : "Unable to reset this invoice.");
+        return;
+      }
+      toast.success("Invoice reset", { description: `${resetTarget.sapDocNum} has been voided and its quantity can be invoiced again.` });
+      setResetTarget(null);
+      setResetReason("");
+      setSuccess(null);
+      await load();
+      router.refresh();
+    } catch {
+      setResetError("A network error occurred.");
+    } finally {
+      setResetting(false);
+    }
+  }
 
   function updateDraft(lineId: string, patch: Partial<LineDraft>) {
     setDrafts((prev) => ({ ...prev, [lineId]: { ...prev[lineId], ...patch } }));
   }
 
   async function submit() {
-    if (!eligibility) return;
+    if (!eligibility || submitLock.current) return;
     setError(null);
     setFieldErrors({});
     setSuccess(null);
@@ -126,6 +187,7 @@ export default function RecordInvoicePanel({ orderId }: { orderId: string }) {
       return;
     }
 
+    submitLock.current = true;
     setSubmitting(true);
     try {
       const response = await fetch(`/api/orders/${orderId}/record-invoice`, {
@@ -144,16 +206,21 @@ export default function RecordInvoicePanel({ orderId }: { orderId: string }) {
       setSuccess(`Invoice ${data.sapDocNum as string} recorded.`);
       setRecordedInvoiceId(data.id as string);
       toast.success("Invoice recorded", { description: `${data.sapDocNum as string}` });
+      await load();
       router.refresh();
     } catch {
       setError("A network error occurred.");
       toast.error("Network error", { description: "Could not reach the server. Check your connection and try again." });
     } finally {
+      submitLock.current = false;
       setSubmitting(false);
     }
   }
 
-  if (loading || !eligibility || eligibility.lines.length === 0) return null;
+  const activeInvoices = recorded.filter((invoice) => invoice.state === "RECORDED");
+  const hasRemaining = (eligibility?.lines.length ?? 0) > 0;
+  // Nothing dispatched yet and nothing ever recorded: nothing to show.
+  if (loading || !eligibility || (!hasRemaining && recorded.length === 0)) return null;
 
   return (
     <section className="rounded-xl border border-[#E8EBE6] bg-white">
@@ -164,16 +231,78 @@ export default function RecordInvoicePanel({ orderId }: { orderId: string }) {
       >
         <span className="flex items-center gap-2 text-sm font-semibold text-[#17251E]">
           <FileText size={16} className="text-[#315C43]" />
-          Record Invoice
-          <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
-            {eligibility.lines.length} line(s) dispatched, not yet invoiced
-          </span>
+          {hasRemaining ? "Record Invoice" : "Invoice recorded"}
+          {hasRemaining ? (
+            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+              {eligibility.lines.length} line(s) dispatched, not yet invoiced
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+              <Check size={10} /> Completed
+            </span>
+          )}
         </span>
         {expanded ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
       </button>
 
       {expanded && (
         <div className="border-t border-[#E8EBE6] p-5">
+          {recorded.length > 0 && (
+            <ul className="mb-5 space-y-2" aria-label="Invoices recorded for this order">
+              {recorded.map((invoice) => (
+                <li key={invoice.id} className={`rounded-lg border p-3 text-xs ${invoice.state === "RESET" ? "border-gray-200 bg-gray-50 text-gray-500" : "border-emerald-200 bg-emerald-50/50"}`}>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`font-semibold tabular-nums ${invoice.state === "RESET" ? "line-through" : "text-[#17251E]"}`}>{invoice.sapDocNum}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${invoice.state === "RESET" ? "bg-gray-200 text-gray-600" : "bg-emerald-100 text-emerald-700"}`}>
+                      {invoice.state === "RESET" ? "Reset" : "Recorded"}
+                    </span>
+                    <span className="tabular-nums text-gray-500">
+                      {invoice.invoiceDate ?? "—"} · {invoice.lineCount} line(s)
+                      {invoice.total ? ` · ${invoice.currencyCode ?? ""} ${Number(invoice.total).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ""}
+                    </span>
+                    <span className="ml-auto flex items-center gap-3">
+                      {invoice.state === "RECORDED" && (
+                        <Link href={`/invoice-reconciliation/${invoice.id}`} className="font-semibold text-[#173D2E] hover:underline">
+                          Open invoice
+                        </Link>
+                      )}
+                      {invoice.state === "RECORDED" && canReset && invoice.resetBlockers.length === 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setResetTarget(invoice);
+                            setResetReason("");
+                            setResetError(null);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-md border border-red-200 px-2 py-1 font-semibold text-red-700 hover:bg-red-50"
+                        >
+                          <RotateCcw size={12} /> Reset
+                        </button>
+                      )}
+                    </span>
+                  </div>
+                  {invoice.state === "RECORDED" && canReset && invoice.resetBlockers.length > 0 && (
+                    <p className="mt-2 flex items-start gap-1.5 text-gray-500">
+                      <Lock size={12} className="mt-0.5 shrink-0" />
+                      Cannot be reset: {invoice.resetBlockers.join("; ")}.
+                    </p>
+                  )}
+                  {invoice.state === "RESET" && invoice.reset?.reason && (
+                    <p className="mt-1.5">Reset{invoice.reset.at ? ` on ${invoice.reset.at.slice(0, 10)}` : ""}: {invoice.reset.reason}</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {!hasRemaining && (
+            <p className="text-xs text-gray-500">
+              Everything dispatched so far has been invoiced, so recording is disabled for this order.
+              {activeInvoices.length > 0 && canReset ? " A Sales Manager or Administrator can reset an invoice to correct a mistake." : ""}
+            </p>
+          )}
+
+          {hasRemaining && (<>
           <p className="text-xs text-gray-500">
             Records this order as invoiced directly in SalesFlow -- for the normal case where no SAP invoice file has
             been (or will be) imported for it. Once recorded, this order appears on the Delivered Orders page and a
@@ -261,15 +390,53 @@ export default function RecordInvoicePanel({ orderId }: { orderId: string }) {
             <button
               type="button"
               onClick={submit}
-              disabled={submitting}
+              disabled={submitting || !hasRemaining}
               className="flex items-center gap-1.5 rounded-lg bg-[#173D2E] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
             >
               {submitting ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
               Record Invoice
             </button>
           </div>
+          </>)}
         </div>
       )}
+
+      <AlertDialog open={resetTarget !== null} onOpenChange={(open) => { if (!open && !resetting) setResetTarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset invoice {resetTarget?.sapDocNum}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This voids the invoice recorded in SalesFlow and makes its quantities available to invoice again. The
+              invoice stays visible here as &ldquo;Reset&rdquo; and the action is written to the audit history. It cannot be
+              undone, but a new invoice can be recorded afterwards.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <label className="block text-xs font-medium text-gray-700">
+            Reason (required)
+            <textarea
+              value={resetReason}
+              onChange={(event) => setResetReason(event.target.value)}
+              rows={3}
+              maxLength={500}
+              className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm"
+              placeholder="e.g. Wrong quantities entered"
+            />
+          </label>
+          {resetError && <p role="alert" className="text-xs text-red-600">{resetError}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={resetting}>Keep invoice</AlertDialogCancel>
+            <button
+              type="button"
+              onClick={confirmReset}
+              disabled={resetting || resetReason.trim().length < 5}
+              className="inline-flex items-center justify-center gap-1.5 rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {resetting ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+              Reset invoice
+            </button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }

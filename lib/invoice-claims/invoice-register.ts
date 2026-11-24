@@ -43,6 +43,9 @@ export type InvoiceRegisterRow = {
 export async function listInvoiceRegister(filter: InvoiceRegisterFilter, page: number, pageSize: number) {
   const where: Prisma.SapInvoiceWhereInput = {
     isDemo: false,
+    // A reset (voided) invoice is no longer an invoice for register
+    // purposes -- see lib/invoice-recording/reset-native-invoice.ts.
+    isCancelledOrReversed: false,
     rawSourceData: { path: ["source"], equals: "NATIVE_RECORDING" },
     ...(filter.customerId ? { matchedCustomerId: filter.customerId } : {}),
     ...(filter.claim === "none" ? { claims: { none: {} } } : {}),

@@ -366,6 +366,8 @@ model User {
   decisionRecommendationsAsSalesperson DecisionRecommendation[]      @relation("DecisionRecommendationSalesperson")
   decisionRecommendationStatusChanges  DecisionRecommendation[]      @relation("DecisionRecommendationStatusActor")
   decisionRecommendationEvents         DecisionRecommendationEvent[] @relation("DecisionRecommendationEventActor")
+  managementActionsAssigned            ManagementAction[]            @relation("ManagementActionAssignee")
+  managementActionEvents               ManagementActionEvent[]       @relation("ManagementActionEventActor")
 
   // Final Operational Enhancements. Personnel/Vehicle management (spec
   // Part 4) has no dedicated role of its own beyond the existing
@@ -4540,6 +4542,104 @@ model DecisionRecommendationEvent {
 
   @@index([decisionRecommendationId])
   @@index([eventType])
+}
+
+// ============================================================================
+// Management Action Centre. A management finding (see
+// lib/management-intelligence) is computed fresh from the real reports on
+// every view and is NOT stored. A row exists here only once a manager acts
+// on a finding (acknowledges it, assigns it, or moves it along), so this
+// table holds the human decisions, not a second copy of the analysis.
+// `evidence` is the snapshot of the finding at the moment of the first
+// action, kept so that "what was the position when we acted" survives the
+// data changing later. Nothing in this table is ever set to a completed
+// state by the system: COMPLETED requires a person and an outcome note.
+// ============================================================================
+enum ManagementFunction {
+  PURCHASING
+  WAREHOUSE
+  QUALITY_CONTROL
+  SALES
+  FINANCE
+  OPERATIONS
+  MANAGEMENT
+}
+
+enum ManagementActionStatus {
+  OPEN
+  ACKNOWLEDGED
+  IN_PROGRESS
+  COMPLETED
+  DISMISSED
+}
+
+enum ManagementActionEventType {
+  ACKNOWLEDGED
+  ASSIGNED
+  STARTED
+  COMPLETED
+  DISMISSED
+  REOPENED
+}
+
+model ManagementAction {
+  id String @id @default(cuid())
+
+  // "<reportId>:<finding key>" -- survives regeneration of the finding, one row per distinct finding.
+  findingKey String @unique
+  reportId   String
+  topic      String
+
+  title               String
+  finding             String
+  recommendedAction   String
+  businessImpact      String
+  expectedOutcome     String
+  measurement         String
+  priority            DecisionPriority
+  timeframe           String
+  responsibleFunction ManagementFunction
+  // Snapshot of the finding's evidence when first acted on, as { label, value }[].
+  evidence            Json
+
+  status ManagementActionStatus @default(OPEN)
+
+  assignedToId String?
+  assignedTo   User?     @relation("ManagementActionAssignee", fields: [assignedToId], references: [id], onDelete: Restrict)
+  assignedAt   DateTime? @db.Timestamptz(6)
+  assignedById String?
+
+  statusNote  String?
+  statusById  String?
+  statusAt    DateTime? @db.Timestamptz(6)
+  completedAt DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  events ManagementActionEvent[]
+
+  @@index([status])
+  @@index([assignedToId])
+  @@index([reportId])
+}
+
+model ManagementActionEvent {
+  id                 String                    @id @default(cuid())
+  managementActionId String
+  eventType          ManagementActionEventType
+  fromStatus         ManagementActionStatus?
+  toStatus           ManagementActionStatus
+  actorId            String?
+  assigneeId         String?
+  notes              String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  managementAction ManagementAction @relation(fields: [managementActionId], references: [id], onDelete: Restrict)
+  actor            User?            @relation("ManagementActionEventActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([managementActionId])
 }
 
 // ============================================================================

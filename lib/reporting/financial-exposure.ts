@@ -182,22 +182,22 @@ export async function getFinancialExposureReport(filters: ReportFilters): Promis
 
   const lostSalesBySource: LostSalesBySourceReport = {
     sourceA: {
-      label: "Source A: Invoice claims (after delivery)",
+      label: "Rejected after delivery (invoice claims)",
       description: "Affected value = affected quantity x applicable unit price, per claim line -- an estimate/exposure figure, not confirmed lost revenue (not every claim is accepted or credited).",
       exposureByCurrency: claims.exposureByCurrency,
     },
     sourceB: {
-      label: "Source B: Insufficient supply at fulfilment",
+      label: "Unfulfilled demand (insufficient supply at fulfilment)",
       description: "Estimated supply lost sales = unavailable quantity x applicable selling price, per lost-sale record -- only computed where a real price was available (never invented).",
       ...supplyShortage,
     },
     sourceC: {
-      label: "Source C: Confirmed loss from returned goods",
+      label: "Confirmed loss from returned goods",
       description: "Of goods physically received back against a claim, the value of whatever was found DAMAGED, EXPIRED or otherwise unsellable -- a confirmed outcome from the physical inspection, not a dispute estimate. Priced only where the returned line's real invoiced unit price was on record (never invented).",
       ...returnedGoodsLoss,
     },
     note:
-      "Source A and Source B never overlap: Source A requires an actual invoiced line to dispute, while Source B's quantity was by definition never dispatched or invoiced. They are kept separate rather than summed into one figure -- Source A is broken down by currency (claims can span multiple SAP invoice currencies); Source B has none recorded, so adding the two would wrongly assume a shared currency. Source C is a different matter: it is NOT a third independent pool to add to A and B -- it can describe the very same claims Source A already covers, just measured from the physical return's own confirmed condition rather than the dispute's claimed value. Never add Source C to Source A for the same claim lines; that would double-count one loss as both a dispute estimate and a confirmed outcome.",
+      "Rejected-after-delivery claims and unfulfilled demand never overlap: a claim needs an actual invoiced line to dispute, while unfulfilled quantity was by definition never dispatched or invoiced. They are kept separate rather than summed into one figure -- claims are broken down by currency (they can span several SAP invoice currencies), while unfulfilled demand has none recorded, so adding the two would wrongly assume a shared currency. Confirmed loss from returned goods is a different matter: it is NOT a third independent pool to add. It can describe the very same claims as the rejected-after-delivery figure, measured from the physical return's confirmed condition rather than the dispute's claimed value. Never add it to the rejected-after-delivery figure for the same claim lines; that would double-count one loss.",
   };
 
   return { dateFrom: effectiveFrom, dateTo: effectiveTo, claims, reconciliation, returnsAndCreditNotes, lostSalesBySource };

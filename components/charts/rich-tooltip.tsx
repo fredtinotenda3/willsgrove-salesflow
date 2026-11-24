@@ -3,6 +3,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import type { LostSalesCustomerBreakdown, LostSalesProductBreakdown, LostSalesTrendPoint } from "@/lib/lost-sales/analytics-queries";
+import { formatMoney } from "@/lib/format/analytics";
 
 /**
  * Chart intelligence enhancement ("SalesFlow Analytics: Deep Chart
@@ -54,10 +55,19 @@ function formatQty(value: string, unit: string | null): string {
   return unit ? `${formatted} ${unit}` : formatted;
 }
 
-/** No currency code is ever invented -- see this file's own module comment. */
+/**
+ * Lost-sales value fields (estimatedValue, requestedValue, ...) store no
+ * currency code (a pre-existing schema limitation, documented in
+ * lib/lost-sales/analytics-queries.ts). They are priced from the
+ * business's USD price lists, so they render with a "$" -- the one
+ * constant below is the single place to change if that ever stops being
+ * true. Never combined with any other currency.
+ */
+const LOST_SALES_VALUE_CURRENCY = "USD";
+/** Tooltips must never scroll: show the top few contributors only and point at the drilldown table for the rest. */
+const TOOLTIP_MAX_PRODUCTS = 3;
 function formatPlainAmount(value: string): string {
-  const n = Number.parseFloat(value);
-  return Number.isFinite(n) ? n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : value;
+  return formatMoney(value, LOST_SALES_VALUE_CURRENCY);
 }
 
 function formatPercent(value: number | null): string {
@@ -83,7 +93,7 @@ function buildHref(basePath: string, baseQuery: Record<string, string>, extra: R
 
 function TooltipShell({ children }: { children: ReactNode }) {
   return (
-    <div className="max-h-[360px] w-[320px] overflow-y-auto rounded-lg border border-border/50 bg-popover p-3 text-xs text-popover-foreground shadow-lg">
+    <div className="relative z-50 w-[280px] max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg">
       {children}
     </div>
   );
@@ -129,15 +139,11 @@ export function TrendTooltipContent({
           Mixed units of measure in this period -- quantities below are shown per product, not combined into one unit.
         </p>
       )}
-      <SummaryRow label="Requested" value={formatQty(point.requestedQuantity, point.quantityUnitCode)} />
-      <SummaryRow label="Requested value" value={formatPlainAmount(point.requestedValue)} />
-      <SummaryRow label="Found" value={formatQty(point.foundQuantity, point.quantityUnitCode)} />
-      <SummaryRow label="Found value" value={formatPlainAmount(point.foundValue)} />
+      <SummaryRow label="Requested" value={`${formatQty(point.requestedQuantity, point.quantityUnitCode)} · ${formatPlainAmount(point.requestedValue)}`} />
+      <SummaryRow label="Found" value={`${formatQty(point.foundQuantity, point.quantityUnitCode)} · ${formatPlainAmount(point.foundValue)}`} />
       <SummaryRow label="Unavailable" value={formatQty(point.unavailableQuantity, point.quantityUnitCode)} />
-      <SummaryRow label="Availability rate" value={formatPercent(point.availabilityRatePercent)} />
       <SummaryRow label="Shortage rate" value={formatPercent(point.shortageRatePercent)} />
       <SummaryRow label="Lost Value" value={formatPlainAmount(point.estimatedLostValue)} />
-      <SummaryRow label="Confirmed lost value" value={formatPlainAmount(point.confirmedLostValue)} />
       <SummaryRow
         label="Affected orders / customers"
         value={`${point.affectedOrderCount} / ${point.affectedCustomerCount}`}
@@ -145,9 +151,9 @@ export function TrendTooltipContent({
 
       {point.products.length > 0 && (
         <>
-          <p className="mt-2 mb-1 font-semibold text-foreground">Product breakdown</p>
+          <p className="mt-2 mb-1 font-semibold text-foreground">Top products</p>
           <div className="space-y-1.5">
-            {point.products.map((product) => (
+            {point.products.slice(0, TOOLTIP_MAX_PRODUCTS).map((product) => (
               <div key={`${product.productId ?? "x"}-${product.sapItemCodeSnapshot ?? product.productDescriptionSnapshot}`} className="border-t border-border/40 pt-1 first:border-t-0 first:pt-0">
                 <DrillDownLink
                   href={buildHref(basePath, baseQuery, {
@@ -168,10 +174,9 @@ export function TrendTooltipContent({
               </div>
             ))}
           </div>
-          {point.otherProductsCount > 0 && (
+          {point.otherProductsCount + Math.max(0, point.products.length - TOOLTIP_MAX_PRODUCTS) > 0 && (
             <p className="mt-1.5 text-[11px] text-muted-foreground">
-              +{point.otherProductsCount} more product{point.otherProductsCount === 1 ? "" : "s"} ({formatQty(point.otherProductsUnavailableQuantity, point.quantityUnitCode)} unavailable) --{" "}
-              <DrillDownLink href={buildHref(basePath, baseQuery, { dateFrom: point.dateFrom, dateTo: point.dateTo })}>view all</DrillDownLink>
+              +{point.otherProductsCount + Math.max(0, point.products.length - TOOLTIP_MAX_PRODUCTS)} more -- see the drilldown table below
             </p>
           )}
         </>
@@ -206,17 +211,12 @@ export function ProductBarTooltipContent({
       <p className="font-semibold text-foreground">{product.productDescriptionSnapshot}</p>
       {product.sapItemCodeSnapshot && <p className="text-[10px] text-muted-foreground">{product.sapItemCodeSnapshot}</p>}
       <div className="mt-1.5">
-        <SummaryRow label="Requested" value={formatQty(product.requestedQuantity, product.unitOfMeasure)} />
-        <SummaryRow label="Requested value" value={formatPlainAmount(product.requestedValue)} />
-        <SummaryRow label="Found" value={formatQty(product.foundQuantity, product.unitOfMeasure)} />
-        <SummaryRow label="Found value" value={formatPlainAmount(product.foundValue)} />
+        <SummaryRow label="Requested" value={`${formatQty(product.requestedQuantity, product.unitOfMeasure)} · ${formatPlainAmount(product.requestedValue)}`} />
+        <SummaryRow label="Found" value={`${formatQty(product.foundQuantity, product.unitOfMeasure)} · ${formatPlainAmount(product.foundValue)}`} />
         <SummaryRow label="Unavailable" value={formatQty(product.unavailableQuantity, product.unitOfMeasure)} />
         <SummaryRow label="Shortage rate" value={formatPercent(product.shortageRatePercent)} />
         <SummaryRow label="Lost Value" value={formatPlainAmount(product.estimatedValue)} />
-        <SummaryRow label="Confirmed lost value" value={formatPlainAmount(product.confirmedLostValue)} />
-        <SummaryRow label="Affected orders" value={product.affectedOrderCount} />
-        <SummaryRow label="Affected customers" value={product.affectedCustomerCount} />
-        <SummaryRow label="Demand records" value={product.demandCount} />
+        <SummaryRow label="Affected orders / customers" value={`${product.affectedOrderCount} / ${product.affectedCustomerCount}`} />
       </div>
       <p className="mt-2 border-t border-border/40 pt-1.5">
         <DrillDownLink
@@ -258,16 +258,12 @@ export function CustomerBarTooltipContent({
     <TooltipShell>
       <p className="font-semibold text-foreground">{customer.customerName}</p>
       <div className="mt-1.5">
-        <SummaryRow label="Requested" value={formatQty(customer.requestedQuantity, null)} />
-        <SummaryRow label="Requested value" value={formatPlainAmount(customer.requestedValue)} />
-        <SummaryRow label="Found" value={formatQty(customer.foundQuantity, null)} />
-        <SummaryRow label="Found value" value={formatPlainAmount(customer.foundValue)} />
+        <SummaryRow label="Requested" value={`${formatQty(customer.requestedQuantity, null)} · ${formatPlainAmount(customer.requestedValue)}`} />
+        <SummaryRow label="Found" value={`${formatQty(customer.foundQuantity, null)} · ${formatPlainAmount(customer.foundValue)}`} />
         <SummaryRow label="Unavailable" value={formatQty(customer.unavailableQuantity, null)} />
         <SummaryRow label="Shortage rate" value={formatPercent(customer.shortageRatePercent)} />
         <SummaryRow label="Lost Value" value={formatPlainAmount(customer.estimatedValue)} />
-        <SummaryRow label="Confirmed lost value" value={formatPlainAmount(customer.confirmedLostValue)} />
-        <SummaryRow label="Affected orders" value={customer.affectedOrderCount} />
-        <SummaryRow label="Demand records" value={customer.demandCount} />
+        <SummaryRow label="Affected orders" value={`${customer.affectedOrderCount} (${customer.demandCount} records)`} />
       </div>
       <p className="mt-2 border-t border-border/40 pt-1.5">
         <DrillDownLink href={buildHref(basePath, baseQuery, { customerId: customer.customerId })}>
@@ -308,9 +304,6 @@ export function ValueTrendTooltipContent({
   return (
     <TooltipShell>
       <p className="mb-1.5 font-semibold text-foreground">{point.label}</p>
-      <p className="mb-1.5 text-[10px] text-muted-foreground">
-        Amounts below carry no currency code -- this figure is never split by currency in this system (a known, pre-existing limitation; see the Implementation Report).
-      </p>
       <SummaryRow label="Lost Value" value={formatPlainAmount(point.estimatedLostValue)} />
       <SummaryRow label="Confirmed loss" value={formatPlainAmount(point.confirmedLostValue)} />
       <SummaryRow label="Affected products" value={point.products.length + point.otherProductsCount} />
@@ -330,7 +323,7 @@ export function ValueTrendTooltipContent({
               </tr>
             </thead>
             <tbody>
-              {productsByValue.map((product) => {
+              {productsByValue.slice(0, TOOLTIP_MAX_PRODUCTS).map((product) => {
                 const unavailable = Number(product.unavailableQuantity);
                 const value = Number(product.estimatedValue);
                 const avgPrice = unavailable > 0 ? value / unavailable : null;
@@ -349,17 +342,16 @@ export function ValueTrendTooltipContent({
                       </DrillDownLink>
                     </td>
                     <td className="py-1 text-right tabular-nums">{formatQty(product.unavailableQuantity, product.unitOfMeasure)}</td>
-                    <td className="py-1 text-right tabular-nums">{avgPrice === null ? "—" : avgPrice.toFixed(2)}</td>
+                    <td className="py-1 text-right tabular-nums">{avgPrice === null ? "—" : formatMoney(avgPrice, LOST_SALES_VALUE_CURRENCY)}</td>
                     <td className="py-1 text-right tabular-nums">{formatPlainAmount(product.estimatedValue)}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
-          {point.otherProductsCount > 0 && (
+          {point.otherProductsCount + Math.max(0, productsByValue.length - TOOLTIP_MAX_PRODUCTS) > 0 && (
             <p className="mt-1.5 text-[11px] text-muted-foreground">
-              +{point.otherProductsCount} more product{point.otherProductsCount === 1 ? "" : "s"} --{" "}
-              <DrillDownLink href={buildHref(basePath, baseQuery, { dateFrom: point.dateFrom, dateTo: point.dateTo })}>view all</DrillDownLink>
+              +{point.otherProductsCount + Math.max(0, productsByValue.length - TOOLTIP_MAX_PRODUCTS)} more -- see the drilldown table below
             </p>
           )}
         </>

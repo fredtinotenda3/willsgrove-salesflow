@@ -5,6 +5,7 @@ import { getFinancialExposureReport } from "@/lib/reporting/financial-exposure";
 import { getLostSalesAnalytics } from "@/lib/lost-sales/analytics-queries";
 import { getOperationalDashboard, type OperationalDashboard } from "@/lib/reporting/operational-dashboard";
 import { formatOrderAmount } from "@/lib/order-display";
+import { formatMoney } from "@/lib/format/analytics";
 import type { ReportFilters, DrillDownLink } from "@/lib/reporting/types";
 import { deltaPercent, resolveComparisonRanges } from "@/lib/reporting/decision-dashboard-period";
 
@@ -60,6 +61,9 @@ import { deltaPercent, resolveComparisonRanges } from "@/lib/reporting/decision-
  * for that data (which remains each report page/route's own check).
  */
 
+/** A product must have run short on this many separate demand records to count as a REPEATED shortage. */
+export const REPEAT_SHORTAGE_MIN_DEMANDS = 3;
+
 export type DashboardArea = "sales_orders" | "picking_fulfilment" | "dispatch_delivery" | "financial_exposure" | "claims" | "lost_sales";
 
 export type DashboardKpiComparison =
@@ -89,6 +93,13 @@ export type DecisionDashboard = {
   /** Same shape consumed by both components/charts/lost-sales-trend.tsx charts -- each reads only the fields it needs from the same points, same as app/lost-sales/analytics/page.tsx's own usage. */
   trend: Awaited<ReturnType<typeof getLostSalesAnalytics>>["trend"];
   exceptions: OperationalDashboard["actionQueues"];
+  /**
+   * Products that have run short on at least REPEAT_SHORTAGE_MIN_DEMANDS
+   * separate demand records in the dashboard's trend window -- a repeated
+   * shortage, as opposed to a one-off. Derived from the lost-sales
+   * analytics this function already fetches (no extra query).
+   */
+  repeatedProductShortages: { productId: string | null; sapItemCode: string | null; name: string; demandCount: number; unavailableQuantity: string; unitOfMeasure: string | null; href: string }[];
   /** Exposed so the page's own pipeline-stage visualization can reuse the exact same already-fetched snapshot rather than this module's caller re-fetching getOperationalDashboard a second time. */
   snapshot: OperationalDashboard["snapshot"];
 };
@@ -101,9 +112,10 @@ export type DecisionDashboard = {
  * currency prefix.
  */
 function formatPlainAmount(decimalString: string): string {
-  const value = Number(decimalString);
-  if (!Number.isFinite(value)) return "—";
-  return value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  // Source B stores no currency code (see above); it is priced from the
+  // business's USD price lists, so it renders with a "$" (shared formatter,
+  // same as every chart/tooltip) instead of a bare number.
+  return formatMoney(decimalString, "USD");
 }
 
 // deltaPercent / resolveComparisonRanges now live in
@@ -265,7 +277,7 @@ export async function getDecisionDashboard(viewerId: string, viewerRole: string,
       comparison: { kind: "pointInTime", asOfLabel: "current position" },
       visibility: "management",
       drillDown: { label: "View financial exposure", href: "/reports/financial-exposure" },
-      definition: "Source A lost-sales exposure: sum of potential credit exposure across open/unresolved invoice claims, by currency (never summed across currencies).",
+      definition: "Rejected-after-delivery exposure: sum of potential credit exposure across open/unresolved invoice claims, by currency (never summed across currencies).",
     },
     {
       id: "estimatedLostSalesValue",
@@ -276,7 +288,7 @@ export async function getDecisionDashboard(viewerId: string, viewerRole: string,
       comparison: { kind: "pointInTime", asOfLabel: "current position" },
       visibility: "management",
       drillDown: { label: "View lost-sales analytics", href: "/lost-sales/analytics" },
-      definition: "Source B: sum of estimated value (unavailable quantity x applicable selling price) across lost-sale records with a resolvable price.",
+      definition: "Unfulfilled demand: sum of estimated value (unavailable quantity x applicable selling price) across lost-sale records with a resolvable price.",
     },
     {
       id: "returnedGoodsLostSalesValue",
@@ -292,7 +304,7 @@ export async function getDecisionDashboard(viewerId: string, viewerRole: string,
       comparison: { kind: "pointInTime", asOfLabel: "current position" },
       visibility: "management",
       drillDown: { label: "View financial exposure", href: "/reports/financial-exposure" },
-      definition: "Source C: of goods physically returned against a claim, the confirmed value of whatever was found DAMAGED, EXPIRED or otherwise unsellable -- a confirmed outcome, not a dispute estimate. Never summed with Source A (Claims Financial Exposure) for the same claim; see the financial exposure report's own note.",
+      definition: "Confirmed loss from returns: of goods physically returned against a claim, the confirmed value of whatever was found DAMAGED, EXPIRED or otherwise unsellable -- a confirmed outcome, not a dispute estimate. Never summed with Source A (Claims Financial Exposure) for the same claim; see the financial exposure report's own note.",
     },
   ];
 
@@ -314,6 +326,19 @@ export async function getDecisionDashboard(viewerId: string, viewerRole: string,
     },
   ];
 
+  const repeatedProductShortages = lostSalesAnalytics.topUnavailableProducts
+    .filter((product) => product.demandCount >= REPEAT_SHORTAGE_MIN_DEMANDS)
+    .slice(0, 5)
+    .map((product) => ({
+      productId: product.productId,
+      sapItemCode: product.sapItemCodeSnapshot,
+      name: product.productDescriptionSnapshot,
+      demandCount: product.demandCount,
+      unavailableQuantity: product.unavailableQuantity,
+      unitOfMeasure: product.unitOfMeasure,
+      href: `/lost-sales/analytics?${new URLSearchParams({ ...(product.productId ? { productId: product.productId } : {}), ...(product.sapItemCodeSnapshot ? { sapItemCode: product.sapItemCodeSnapshot } : {}) }).toString()}`,
+    }));
+
   return {
     asOf: new Date().toISOString(),
     periodLabel,
@@ -321,6 +346,7 @@ export async function getDecisionDashboard(viewerId: string, viewerRole: string,
     dateTo: current.dateTo,
     kpis,
     trend: lostSalesAnalytics.trend,
+    repeatedProductShortages,
     exceptions,
     snapshot: operational.snapshot,
   };

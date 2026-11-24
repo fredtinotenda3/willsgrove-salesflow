@@ -70,3 +70,40 @@ export function validateNativeInvoiceLineQuantity(
   }
   return { ok: true };
 }
+
+/**
+ * Reset (void) of a natively-recorded invoice. The reason is mandatory:
+ * it lands in the audit history and on the invoice itself, so "who undid
+ * this and why" is always answerable.
+ */
+export const resetNativeInvoiceSchema = z.object({
+  reason: z
+    .string()
+    .trim()
+    .min(5, "Please give a reason (at least 5 characters).")
+    .max(500, "Reason must be 500 characters or fewer."),
+});
+export type ResetNativeInvoiceInput = z.infer<typeof resetNativeInvoiceSchema>;
+
+/** Roles allowed to reset a recorded invoice. Recording stays open to any authenticated user (existing precedent); undoing it is a manager-level correction. */
+export const INVOICE_RESET_ROLES = ["SALES_MANAGER", "ADMINISTRATOR"] as const;
+
+export type ResetBlockerCounts = {
+  claims: number;
+  creditNotes: number;
+  hasDeliveryRecord: boolean;
+};
+
+/**
+ * Downstream records that make a reset unsafe: a claim, a credit note or a
+ * delivery outcome all reference this invoice as their anchor, so voiding
+ * the invoice underneath them would orphan real business records. Pure so
+ * the rule is unit-testable without a database.
+ */
+export function describeResetBlockers(counts: ResetBlockerCounts): string[] {
+  const blockers: string[] = [];
+  if (counts.claims > 0) blockers.push(`${counts.claims} invoice claim(s) are raised against it`);
+  if (counts.creditNotes > 0) blockers.push(`${counts.creditNotes} credit note(s) are recorded against it`);
+  if (counts.hasDeliveryRecord) blockers.push("a delivery outcome (No Claim / With Claim) has been recorded for it");
+  return blockers;
+}
