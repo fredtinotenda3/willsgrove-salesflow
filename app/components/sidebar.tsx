@@ -12,7 +12,6 @@ import {
   ClipboardList,
   Truck,
   BarChart3,
-  Settings,
   ChevronDown,
   Leaf,
   Plus,
@@ -75,12 +74,11 @@ const getSidebarCollapsedServerSnapshot = () => false;
  *   (lib/order-queries.ts's `status` param), not a separate route, so it
  *   has no entry of its own -- it's reached via Orders' own tabs.
  * - "Users and Permissions," "Personnel," and "Vehicles" (the spec's
- *   suggested Administration items) are tabs inside the single /settings
- *   page (app/settings/page.tsx's `SettingsSection` union), not separate
- *   routes -- adding fake top-level links for them would point at
- *   nothing real, so the existing single "Settings" entry (kept in its
- *   own persistent bottom section below, unchanged) already covers this
- *   group; no duplicate link is added here.
+ *   suggested Administration items) live in the Administration Centre
+ *   (/admin/users, /admin/fleet), reached through the single
+ *   Administration entry below. The former /settings page was removed:
+ *   everything functional on it exists in /admin, and its remaining tabs
+ *   had no behaviour behind them.
  * - "Reports & Intelligence" is deliberately kept as ONE entry (Reports)
  *   rather than six (Management/Operational/Sales Performance/Customer
  *   Intelligence/Product Intelligence/Decision Intelligence): /reports
@@ -686,14 +684,6 @@ export default function Sidebar() {
         </button>
 
         <div className="flex items-center gap-1">
-          <Link
-            href="/settings"
-            aria-label="Settings"
-            className="sf-collapse-center flex flex-1 items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] font-medium text-white/60 transition hover:bg-white/[0.07] hover:text-white"
-          >
-            <Settings size={17} className="shrink-0" />
-            <span className="sf-label">Settings</span>
-          </Link>
           <NotificationBell />
         </div>
 

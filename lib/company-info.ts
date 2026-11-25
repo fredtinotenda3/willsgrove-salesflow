@@ -10,11 +10,10 @@
  * Server Component, a Client Component, or a future print/export path
  * alike, same reasoning as lib/order-display.ts's own module comment.
  *
- * Mirrors exactly what app/settings/page.tsx already shows as this
- * business's workspace identity (company/branch/address) -- not invented
- * fresh for this feature -- so the two can't drift apart. If Settings'
- * mocked values are ever wired up to a real, persisted setting, this is
- * the one place to update to read from it instead.
+ * This business's workspace identity (company/branch/address). It is the
+ * single source for printed documents. (It previously mirrored the now
+ * removed /settings page.) If it is ever made a persisted setting, this is
+ * the one place to change.
  */
 export const COMPANY_NAME = "Willsgrove Farm Enterprises";
 export const COMPANY_BRANCH = "Harare Branch";

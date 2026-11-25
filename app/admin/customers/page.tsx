@@ -1,61 +1,63 @@
 import Link from "next/link";
-import { prisma } from "@/lib/prisma";
-import { listActiveAssignees, listAssignableWork } from "@/lib/admin/assignment-queries";
-import { firstParam as one, readPaging } from "@/lib/admin/paging";
-import { EmptyState, PageHeader, Pagination, SectionCard } from "../../reports/_components/ui";
-import { AdminShell, requireAdminPage } from "../_components/admin-shell";
-import { DownloadButton } from "../_components/download-button";
-import { ReassignPanel } from "../_components/reassign-panel";
-import { ActionDialog, type DialogField } from "../_components/action-dialog";
+import { DataTable, type Column } from "../_components/data-table/data-table";
+import { TableToolbar } from "../_components/data-table/table-toolbar";
 import { StatusBadge } from "../_components/status-badge";
+import { PageHeader } from "../_components/ui";
+import { opts, parseListParams } from "../_components/list-helpers";
+import { requireAdminPage } from "../_components/admin-shell";
 
 export const instant = false;
+import { customerFilterOptions, CUSTOMER_SORTS, listAdminCustomers } from "@/lib/admin/customer-admin";
+import { listActiveAssignees } from "@/lib/admin/assignment-queries";
+import { userOptions } from "../_components/status-badge";
+import { ActionDialog, type DialogField } from "../_components/action-dialog";
 
-/** Account-manager ownership of customers. Editing a customer's own details stays on the existing customer page. */
-const customerFields = (c?: { name: string; sapCustomerCode: string | null; email: string | null; phone: string | null; category: string | null; notes: string | null }): DialogField[] => [
-  { name: "name", label: "Customer name", type: "text", required: true, defaultValue: c?.name },
-  { name: "sapCustomerCode", label: "SAP customer code", type: "text", defaultValue: c?.sapCustomerCode ?? "" },
-  { name: "email", label: "Email", type: "text", defaultValue: c?.email ?? "" },
-  { name: "phone", label: "Phone", type: "text", defaultValue: c?.phone ?? "" },
-  { name: "category", label: "Category", type: "text", defaultValue: c?.category ?? "" },
-  { name: "notes", label: "Notes", type: "textarea", defaultValue: c?.notes ?? "" },
+type Row = Awaited<ReturnType<typeof listAdminCustomers>>["rows"][number];
+
+const customerFields: DialogField[] = [
+  { name: "name", label: "Customer name", type: "text", required: true },
+  { name: "sapCustomerCode", label: "SAP customer code", type: "text" },
+  { name: "email", label: "Email", type: "text" },
+  { name: "phone", label: "Phone", type: "text" },
+  { name: "category", label: "Category", type: "text" },
+  { name: "notes", label: "Notes", type: "textarea" },
 ];
 
 export default async function AdminCustomersPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   await requireAdminPage();
-  const raw = await searchParams;
-  const scope = one(raw.scope) === "unassigned" ? "unassigned" : "all-open";
-  const ownerId = one(raw.owner);
-  const q = one(raw.q);
-  const { page, pageSize } = readPaging({ page: one(raw.page), pageSize: one(raw.pageSize) });
-  const [work, assignees, inactive] = await Promise.all([listAssignableWork({ type: "CUSTOMER", scope, ownerId, q, stuckDays: 0, page, pageSize }), listActiveAssignees(), prisma.customer.count({ where: { status: "INACTIVE" } })]);
-  const rows = work.rows.map((r) => ({ id: r.id, label: r.label, detail: r.detail, ownerName: r.owner?.name ?? null, status: r.status, ageDays: r.ageDays, href: r.href }));
-  const details = await prisma.customer.findMany({ where: { id: { in: rows.map((r) => r.id) } }, select: { id: true, name: true, sapCustomerCode: true, email: true, phone: true, category: true, notes: true, status: true } });
-  const actions = Object.fromEntries(details.map((c) => [c.id, (
-    <>
-      <ActionDialog label="Edit" title={`Edit ${c.name}`} endpoint={`/api/customers/${c.id}`} method="PATCH" askReason={false} confirmLabel="Save" fields={customerFields(c)} />
-      <ActionDialog label="Deactivate" variant="danger" destructive title={`Deactivate ${c.name}?`} description="Hidden from new orders and quotations. Orders, quotations, invoices and claims are kept. Customers are never deleted." endpoint={`/api/customers/${c.id}`} method="PATCH" payload={{ status: "INACTIVE" }} askReason={false} confirmLabel="Deactivate" />
-    </>
-  )]));
-  const inactiveRows = await prisma.customer.findMany({ where: { status: "INACTIVE", ...(q ? { name: { contains: q, mode: "insensitive" } } : {}) }, orderBy: { name: "asc" }, take: 25, select: { id: true, name: true, sapCustomerCode: true } });
+  const list = parseListParams(await searchParams, { filterKeys: ["q", "status", "manager", "scope", "category", "priceList"], sortKeys: Object.keys(CUSTOMER_SORTS), fallbackSort: { key: "name", dir: "asc" } });
+  const scope = list.get("scope");
+  const [{ total, rows }, assignees, options] = await Promise.all([
+    listAdminCustomers({ q: list.q, status: scope === "unassigned" || scope === "no-price-list" ? "ACTIVE" : list.get("status"), managerId: list.get("manager"), unassigned: scope === "unassigned", noPriceList: scope === "no-price-list", priceListId: list.get("priceList"), category: list.get("category"), creditHold: scope === "credit-hold" }, list.page, list.pageSize, list.sort),
+    listActiveAssignees(), customerFilterOptions(),
+  ]);
+  const columns: Column<Row>[] = [
+    { key: "name", header: "Customer", sortKey: "name", render: (c) => <div><Link href={`/admin/customers/${c.id}`} className="font-semibold text-[#1F7A4D] hover:underline">{c.name}</Link><div className="text-xs text-[#849087]">{c.sapCustomerCode ?? "No SAP code"}</div></div> },
+    { key: "status", header: "Status", sortKey: "status", render: (c) => <StatusBadge status={c.status} /> },
+    { key: "manager", header: "Account manager", sortKey: "manager", hideBelow: "md", render: (c) => c.accountManager?.name ?? <span className="rounded bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">Unassigned</span> },
+    { key: "priceList", header: "Price list", hideBelow: "lg", render: (c) => (c.priceList ? <Link href={`/admin/price-lists/${c.priceList.id}`} className="hover:underline">{c.priceList.code}</Link> : <span className="text-[#849087]">None</span>) },
+    { key: "category", header: "Category", hideBelow: "lg", defaultHidden: true, render: (c) => c.category ?? "—" },
+    { key: "contact", header: "Contact", hideBelow: "xl", defaultHidden: true, render: (c) => c.email ?? c.phone ?? "—" },
+    { key: "orders", header: "Orders", align: "right", hideBelow: "md", render: (c) => c._count.orders },
+    { key: "quotations", header: "Quotes", align: "right", hideBelow: "xl", render: (c) => c._count.quotations },
+    { key: "invoices", header: "Invoices", align: "right", hideBelow: "xl", render: (c) => c._count.sapInvoices },
+    { key: "claims", header: "Claims", align: "right", hideBelow: "xl", render: (c) => c._count.invoiceClaims },
+  ];
   return (
-    <AdminShell active="/admin/customers">
-      <PageHeader breadcrumb="Workspace / Administration / Customers" title="Customers & account managers" description={`Assign the salesperson responsible for each active customer. ${inactive} inactive customer(s) are excluded. Customer details, contacts, locations, orders and claims are on each customer's page.`} actions={<div className="flex gap-2"><ActionDialog label="Add customer" variant="primary" title="Add customer" description="Locations and contacts are added on the customer page afterwards." endpoint="/api/customers" askReason={false} blank="omit" confirmLabel="Create customer" successHref="/customers/{id}" fields={customerFields()} /><DownloadButton href="/api/admin/customers/export">Export CSV</DownloadButton><Link href="/customers/master-import" className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm font-semibold">Import customers</Link><Link href="/customers" className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm font-semibold">Customer register</Link></div>} />
-      <form action="/admin/customers" className="flex flex-wrap items-end gap-3 rounded-xl border border-[#E8EBE6] bg-white p-4">
-        <input name="q" defaultValue={q ?? ""} placeholder="Name or SAP code" className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm" />
-        <select name="scope" defaultValue={scope} className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm"><option value="all-open">All active</option><option value="unassigned">No account manager</option></select>
-        <select name="owner" defaultValue={ownerId ?? ""} className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm"><option value="">Any manager</option>{assignees.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
-        <button className="rounded-lg bg-[#17251E] px-4 py-2 text-sm font-semibold text-white">Filter</button>
-      </form>
-      <SectionCard title={`Active customers (${work.total})`}>
-        {rows.length === 0 ? <EmptyState message="No customers match." /> : <ReassignPanel entityType="CUSTOMER" rows={rows} rowActions={actions} assignees={assignees.map((a) => ({ id: a.id, name: a.name, role: a.role }))} />}
-        <Pagination basePath="/admin/customers" searchParams={{ q, scope, owner: ownerId }} page={page} totalPages={Math.max(1, Math.ceil(work.total / pageSize))} totalItems={work.total} pageSize={pageSize} />
-      </SectionCard>
-      {inactiveRows.length > 0 ? (
-        <SectionCard title="Inactive customers" description="Reactivate to use them on new orders and quotations again.">
-          <ul className="divide-y divide-[#EEF1ED] text-sm">{inactiveRows.map((c) => <li key={c.id} className="flex items-center justify-between px-4 py-2"><span><StatusBadge status="INACTIVE" /> <Link href={`/customers/${c.id}`} className="ml-2 text-[#1F7A4D]">{c.name}</Link> <span className="text-xs text-[#849087]">{c.sapCustomerCode ?? ""}</span></span><ActionDialog label="Reactivate" variant="primary" title={`Reactivate ${c.name}?`} endpoint={`/api/customers/${c.id}`} method="PATCH" payload={{ status: "ACTIVE" }} askReason={false} confirmLabel="Reactivate" /></li>)}</ul>
-        </SectionCard>
-      ) : null}
-    </AdminShell>
+    <div className="space-y-4">
+      <PageHeader title="Customers" description="Customer master, account ownership and price-list assignment. Customers with history are deactivated, never deleted; a customer that has never been used can be deleted from its page." actions={<><ActionDialog label="Add customer" variant="primary" title="Add customer" description="Contacts, locations and the price list are added on the customer page afterwards." endpoint="/api/customers" askReason={false} blank="omit" confirmLabel="Create customer" successHref="/admin/customers/{id}" fields={customerFields} /><Link href="/customers/master-import" className="rounded-lg border border-[#DDE3DC] bg-white px-3 py-2 text-sm font-semibold hover:bg-[#F7F8F6]">Import customers</Link></>} />
+      <TableToolbar tableId="admin-customers" searchPlaceholder="Name, SAP code, email or TIN" exportHref="/api/admin/customers/export"
+        filters={[
+          { name: "status", label: "Status", options: opts(["ACTIVE", "INACTIVE"]) },
+          { name: "manager", label: "Account manager", options: assignees.map((a) => ({ value: a.id, label: a.name })) },
+          { name: "priceList", label: "Price list", options: options.priceLists.map((p) => ({ value: p.id, label: `${p.code} — ${p.name}` })) },
+          ...(options.categories.length ? [{ name: "category", label: "Category", options: options.categories.map((c) => ({ value: c, label: c })) }] : []),
+        ]}
+        columns={columns.map((c) => ({ key: c.key, label: c.header, defaultHidden: c.defaultHidden }))} />
+      {scope ? <p className="text-xs text-[#5E6B63]">Showing: <strong>{scope === "unassigned" ? "active customers without an account manager" : scope === "no-price-list" ? "active customers without a price list" : "customers on credit hold"}</strong> · <Link href="/admin/customers" className="font-semibold text-[#1F7A4D]">clear</Link></p> : null}
+      <DataTable id="admin-customers" columns={columns} rows={rows} rowId={(c) => c.id} rowLabel={(c) => c.name} total={total} page={list.page} pageSize={list.pageSize} basePath="/admin/customers" params={list.params} sort={list.sort}
+        rowActions={(c) => <Link href={`/admin/customers/${c.id}`} className="rounded-lg border border-[#DDE3DC] px-2.5 py-1 text-xs font-semibold hover:bg-[#F7F8F6]">Manage</Link>}
+        bulkActions={[{ label: "Assign account manager", endpoint: "/api/admin/assignments/reassign", payload: { entityType: "CUSTOMER" }, choice: { name: "toUserId", label: "Account manager", options: userOptions(assignees) }, preview: true }]} />
+    </div>
   );
 }

@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { listAdminPriceLists } from "@/lib/admin/catalogue-admin";
-import { EmptyState, PageHeader, SectionCard } from "../../reports/_components/ui";
-import { AdminShell, requireAdminPage } from "../_components/admin-shell";
+import { PageHeader, Panel as SectionCard } from "../_components/ui";
+import { EmptyState } from "../../reports/_components/ui";
+import { requireAdminPage } from "../_components/admin-shell";
 import { ActionDialog } from "../_components/action-dialog";
 
 export const instant = false;
@@ -10,8 +11,8 @@ export default async function AdminPriceListsPage() {
   await requireAdminPage();
   const lists = await listAdminPriceLists();
   return (
-    <AdminShell active="/admin/price-lists">
-      <PageHeader breadcrumb="Workspace / Administration / Pricing" title="Price lists" description="Each list has one currency (USD or ZWG); currencies are never mixed. Price entries, effective dates and history are managed on each list and through the SAP price-list import. Deactivating a list never alters historical order or quotation prices." actions={<div className="flex gap-2"><ActionDialog label="New price list" variant="primary" title="New price list" description="The code and currency are permanent. Add prices on the list afterwards or import them." endpoint="/api/admin/price-lists" askReason={false} confirmLabel="Create" successHref="/admin/price-lists/{id}" fields={[{ name: "code", label: "Code", type: "text", required: true }, { name: "name", label: "Name", type: "text", required: true }, { name: "currencyCode", label: "Currency", type: "select", defaultValue: "USD", options: [{ value: "USD", label: "USD" }, { value: "ZWG", label: "ZWG" }] }]} /><Link href="/price-lists/import" className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm font-semibold">Import prices</Link><Link href="/price-lists/customers" className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm font-semibold">Customer pricing</Link></div>} />
+    <div className="space-y-4">
+      <PageHeader title="Price lists" description="Each list has one currency (USD or ZWG); currencies are never mixed. Price entries, effective dates and history are managed on each list and through the SAP price-list import. Deactivating a list never alters historical order or quotation prices." actions={<div className="flex gap-2"><ActionDialog label="New price list" variant="primary" title="New price list" description="The code and currency are permanent. Add prices on the list afterwards or import them." endpoint="/api/admin/price-lists" askReason={false} confirmLabel="Create" successHref="/admin/price-lists/{id}" fields={[{ name: "code", label: "Code", type: "text", required: true }, { name: "name", label: "Name", type: "text", required: true }, { name: "currencyCode", label: "Currency", type: "select", defaultValue: "USD", options: [{ value: "USD", label: "USD" }, { value: "ZWG", label: "ZWG" }] }]} /><Link href="/price-lists/import" className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm font-semibold">Import prices</Link><Link href="/price-lists/customers" className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm font-semibold">Customer pricing</Link></div>} />
       <SectionCard title={`Price lists (${lists.length})`}>
         {lists.length === 0 ? <EmptyState message="No price lists yet. Import one from SAP." /> : (
           <div className="overflow-x-auto"><table className="w-full text-left text-sm">
@@ -30,6 +31,6 @@ export default async function AdminPriceListsPage() {
           </table></div>
         )}
       </SectionCard>
-    </AdminShell>
+    </div>
   );
 }

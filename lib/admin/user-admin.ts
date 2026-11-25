@@ -5,23 +5,29 @@ import { generateTemporaryPassword, hashPassword } from "@/lib/auth/password";
 import { revokeAllSessionsForUser } from "@/lib/auth/session";
 import { checkAdministratorContinuity, type RoleName, type RecordStatusName } from "./policy";
 import { fail, type AdminFailure } from "./types";
+import { orderByFor, type SortDir, type SortState } from "./list-query";
 
 const TX = { maxWait: 15000, timeout: 15000 };
 
-export type UserRowFilters = { q?: string; role?: string; status?: string; department?: string };
+export type UserRowFilters = { q?: string; role?: string; status?: string; department?: string; mustChange?: boolean };
 
-export async function listAdminUsers(filters: UserRowFilters, page: number, pageSize: number) {
+export const USER_SORTS: Record<string, (d: SortDir) => Record<string, unknown>> = {
+  name: (d) => ({ name: d }), role: (d) => ({ role: d }), department: (d) => ({ department: d }), status: (d) => ({ status: d }), created: (d) => ({ createdAt: d }),
+};
+
+export async function listAdminUsers(filters: UserRowFilters, page: number, pageSize: number, sort: SortState = { key: "name", dir: "asc" }) {
   const where: Prisma.UserWhereInput = {
     ...(filters.q ? { OR: [{ name: { contains: filters.q, mode: "insensitive" } }, { email: { contains: filters.q, mode: "insensitive" } }] } : {}),
     ...(filters.role ? { role: filters.role as RoleName } : {}),
     ...(filters.status ? { status: filters.status as RecordStatusName } : {}),
     ...(filters.department ? { department: filters.department as never } : {}),
+    ...(filters.mustChange ? { mustChangePassword: true, status: "ACTIVE" as const } : {}),
   };
   const [total, users] = await Promise.all([
     prisma.user.count({ where }),
     prisma.user.findMany({
       where,
-      orderBy: [{ name: "asc" }, { id: "asc" }],
+      orderBy: orderByFor(sort, USER_SORTS, "name") as Prisma.UserOrderByWithRelationInput[],
       skip: (page - 1) * pageSize,
       take: pageSize,
       select: { id: true, name: true, email: true, role: true, status: true, department: true, mustChangePassword: true, createdAt: true },

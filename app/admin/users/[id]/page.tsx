@@ -3,8 +3,9 @@ import { notFound } from "next/navigation";
 import { isValidId } from "@/lib/http";
 import { getUserDetail } from "@/lib/admin/user-admin";
 import { listActiveAssignees } from "@/lib/admin/assignment-queries";
-import { EmptyState, PageHeader, SectionCard } from "../../../reports/_components/ui";
-import { AdminShell, requireAdminPage } from "../../_components/admin-shell";
+import { PageHeader, Panel as SectionCard } from "../../_components/ui";
+import { EmptyState } from "../../../reports/_components/ui";
+import { requireAdminPage } from "../../_components/admin-shell";
 import { ActionDialog } from "../../_components/action-dialog";
 import { ReassignUserDialog } from "../../_components/reassign-user-dialog";
 import { PasswordResetDialog } from "../../_components/password-reset-dialog";
@@ -24,8 +25,8 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
   const fmt = (d: Date | null) => (d ? d.toISOString().slice(0, 16).replace("T", " ") + " UTC" : "Never");
 
   return (
-    <AdminShell active="/admin/users">
-      <PageHeader breadcrumb="Workspace / Administration / Users" title={user.name} description={`${user.email} · ${user.role.replace("_", " ")}${user.department ? ` · ${user.department.replace("_", " ")}` : ""} · ${user.status}`} actions={<Link href="/admin/users" className="text-sm font-semibold text-[#1F7A4D]">← All users</Link>} />
+    <div className="space-y-4">
+      <PageHeader title={user.name} description={`${user.email} · ${user.role.replace("_", " ")}${user.department ? ` · ${user.department.replace("_", " ")}` : ""} · ${user.status}`} actions={<Link href="/admin/users" className="text-sm font-semibold text-[#1F7A4D]">← All users</Link>} />
       <div className="grid gap-4 lg:grid-cols-2">
         <SectionCard title="Access">
           <dl className="grid grid-cols-2 gap-3 p-4 text-sm">
@@ -64,6 +65,6 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
           <ul className="divide-y divide-[#EEF1ED] text-sm">{audit.map((e) => <li key={e.id} className="flex justify-between gap-3 px-4 py-2"><span>{e.action.replace(/_/g, " ").toLowerCase()} <span className="text-[#849087]">· {e.entityType}</span></span><span className="shrink-0 text-xs text-[#849087]">{e.actor?.name ?? "System"} · {e.createdAt.toISOString().slice(0, 16).replace("T", " ")}</span></li>)}</ul>
         )}
       </SectionCard>
-    </AdminShell>
+    </div>
   );
 }

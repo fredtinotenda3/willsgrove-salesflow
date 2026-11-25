@@ -2,8 +2,9 @@ import Link from "next/link";
 import { listActiveAssignees, listAssignableWork, type AssignmentScope } from "@/lib/admin/assignment-queries";
 import { getSettingValues } from "@/lib/admin/settings-store";
 import { firstParam as one, readPaging } from "@/lib/admin/paging";
-import { EmptyState, PageHeader, Pagination, SectionCard } from "../../reports/_components/ui";
-import { AdminShell, requireAdminPage } from "../_components/admin-shell";
+import { PageHeader, Panel as SectionCard } from "../_components/ui";
+import { EmptyState, Pagination } from "../../reports/_components/ui";
+import { requireAdminPage } from "../_components/admin-shell";
 import { ReassignPanel } from "../_components/reassign-panel";
 import type { ReassignEntityType } from "@/lib/admin/validation";
 
@@ -32,8 +33,8 @@ export default async function AdminAssignmentsPage({ searchParams }: { searchPar
   const base: Record<string, string | undefined> = { type, scope, owner: ownerId, q };
 
   return (
-    <AdminShell active="/admin/assignments">
-      <PageHeader breadcrumb="Workspace / Administration / Assignments" title="Assignment management" description="Find unassigned or idle work and move it to an active user. Every change is previewed first and recorded in the audit log with the reason." />
+    <div className="space-y-4">
+      <PageHeader title="Assignment management" description="Find unassigned or idle work and move it to an active user. Every change is previewed first and recorded in the audit log with the reason." />
       <div className="flex flex-wrap gap-2" role="tablist" aria-label="Work type">
         {TYPES.map((t) => <Link key={t.id} href={qs({ type: t.id, scope: t.id === "QUOTATION" && scope === "unassigned" ? "all-open" : scope })} className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${t.id === type ? "bg-[#1F7A4D] text-white" : "border border-[#DDE3DC] bg-white"}`}>{t.label}</Link>)}
       </div>
@@ -54,6 +55,6 @@ export default async function AdminAssignmentsPage({ searchParams }: { searchPar
         {rows.length === 0 ? <EmptyState message="Nothing matches. Unassigned work is clear for this selection." /> : <ReassignPanel entityType={type} rows={rows} assignees={assignees.map((a) => ({ id: a.id, name: a.name, role: a.role }))} />}
         {work.total > 0 ? <Pagination basePath="/admin/assignments" searchParams={base} page={page} totalPages={totalPages} totalItems={work.total} pageSize={pageSize} /> : null}
       </SectionCard>
-    </AdminShell>
+    </div>
   );
 }

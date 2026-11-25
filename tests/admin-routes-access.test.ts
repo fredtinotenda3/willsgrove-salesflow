@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
 
 /**
  * Every /api/admin endpoint must refuse unauthenticated users, SALESPERSON and
@@ -11,16 +12,21 @@ vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => (mockUser ? 
 vi.mock("@/lib/auth/session", () => ({ SESSION_COOKIE_NAME: "sf_session", resolveSession: async (v: string | undefined) => (!v || !mockUser ? null : { user: mockUser }), revokeAllSessionsForUser: vi.fn() }));
 
 const svc = vi.hoisted(() => ({ fn: vi.fn() }));
-vi.mock("@/lib/prisma", () => ({ prisma: new Proxy({}, { get: () => svc.fn }) }));
+vi.mock("@/lib/prisma", () => ({ prisma: new Proxy({}, { get: () => Object.assign(svc.fn, { create: svc.fn }) }) }));
 vi.mock("@/lib/admin/user-admin", () => ({ updateUserProfile: svc.fn, setUserStatus: svc.fn, adminPasswordAction: svc.fn }));
 vi.mock("@/lib/admin/assignment-admin", () => ({ executeReassignment: svc.fn, planReassignment: svc.fn, collectUserOwnedIds: svc.fn }));
 vi.mock("@/lib/admin/catalogue-admin", () => ({ createPriceList: svc.fn, createPriceEntry: svc.fn, deletePriceEntry: svc.fn, createProduct: svc.fn, updateProduct: svc.fn, setProductStatus: svc.fn, updatePriceList: svc.fn, setPriceListStatus: svc.fn }));
-vi.mock("@/lib/admin/order-admin", () => ({ updateOrderDetails: svc.fn, cancelOrder: svc.fn, reopenOrder: svc.fn }));
+vi.mock("@/lib/admin/order-admin", () => ({ updateOrderDetails: svc.fn, cancelOrder: svc.fn, reopenOrder: svc.fn, listAdminOrders: svc.fn }));
+vi.mock("@/lib/admin/record-deletion", () => ({ deleteDraftOrder: svc.fn, deleteCustomer: svc.fn, deleteProduct: svc.fn, deletePriceList: svc.fn, removeProductAlias: svc.fn }));
+vi.mock("@/lib/admin/customer-admin", () => ({ createContact: svc.fn, updateContact: svc.fn, deleteContact: svc.fn, removeCustomerAlias: svc.fn }));
+vi.mock("@/lib/admin/quotation-admin", () => ({ listAdminQuotations: svc.fn }));
+vi.mock("@/lib/admin/finance-admin", () => ({ listAdminInvoices: svc.fn, listAdminClaims: svc.fn, listAdminCreditNotes: svc.fn, listAdminReturns: svc.fn }));
+vi.mock("@/lib/admin/ops-admin", () => ({ listAdminApprovals: svc.fn, listAdminDispatches: svc.fn }));
 vi.mock("@/lib/admin/settings-store", () => ({ changeSetting: svc.fn }));
 vi.mock("@/lib/admin/audit-queries", () => ({ listAuditEvents: svc.fn, auditRowsToCsv: svc.fn }));
 
 const ORIGIN = "https://app.willsgrove.test";
-const ctx = { params: Promise.resolve({ id: "abc123" }) };
+const ctx = { params: Promise.resolve({ id: "abc123", contactId: "abc123" }) };
 const reason = "needed for testing";
 
 type Case = { name: string; load: () => Promise<Record<string, (...a: never[]) => Promise<Response>>>; method: string; body?: unknown; withCtx: boolean };
@@ -41,6 +47,15 @@ const cases: Case[] = [
   { name: "price-lists POST", load: () => import("@/app/api/admin/price-lists/route") as never, method: "POST", body: { code: "RETAIL", name: "Retail", currencyCode: "USD" }, withCtx: false },
   { name: "price-lists/[id]/entries POST", load: () => import("@/app/api/admin/price-lists/[id]/entries/route") as never, method: "POST", body: { sapItemCode: "FV-1", unitPrice: "0.45", validFrom: "2026-01-01", reason }, withCtx: true },
   { name: "price-lists/entries/[id] DELETE", load: () => import("@/app/api/admin/price-lists/entries/[id]/route") as never, method: "DELETE", body: { reason }, withCtx: true },
+  { name: "orders/[id] DELETE", load: () => import("@/app/api/admin/orders/[id]/route") as never, method: "DELETE", body: { reason }, withCtx: true },
+  { name: "customers/[id] DELETE", load: () => import("@/app/api/admin/customers/[id]/route") as never, method: "DELETE", body: { reason }, withCtx: true },
+  { name: "products/[id]/delete DELETE", load: () => import("@/app/api/admin/products/[id]/delete/route") as never, method: "DELETE", body: { reason }, withCtx: true },
+  { name: "price-lists/[id]/delete DELETE", load: () => import("@/app/api/admin/price-lists/[id]/delete/route") as never, method: "DELETE", body: { reason }, withCtx: true },
+  { name: "products/aliases/[id] DELETE", load: () => import("@/app/api/admin/products/aliases/[id]/route") as never, method: "DELETE", body: { reason }, withCtx: true },
+  { name: "customers/aliases/[id] DELETE", load: () => import("@/app/api/admin/customers/aliases/[id]/route") as never, method: "DELETE", body: { reason }, withCtx: true },
+  { name: "customers/[id]/contacts POST", load: () => import("@/app/api/admin/customers/[id]/contacts/route") as never, method: "POST", body: { name: "Jane Moyo", reason }, withCtx: true },
+  { name: "customers/[id]/contacts/[contactId] PATCH", load: () => import("@/app/api/admin/customers/[id]/contacts/[contactId]/route") as never, method: "PATCH", body: { name: "Jane M", reason }, withCtx: true },
+  { name: "customers/[id]/contacts/[contactId] DELETE", load: () => import("@/app/api/admin/customers/[id]/contacts/[contactId]/route") as never, method: "DELETE", body: { reason }, withCtx: true },
   { name: "settings POST", load: () => import("@/app/api/admin/settings/route") as never, method: "POST", body: { key: "admin.stuckOrderDays", value: 9, reason }, withCtx: false },
 ];
 
@@ -90,6 +105,27 @@ describe("/api/admin mutations are administrator-only on the server", () => {
     expect((await customers.GET()).status).toBe(403);
     expect((await users.GET()).status).toBe(403);
     expect(svc.fn).not.toHaveBeenCalled();
+  });
+
+  it("the generic export refuses non-administrators, rejects unknown entities and audits an allowed export", async () => {
+    const { GET } = await import("@/app/api/admin/export/[entity]/route");
+    const get = (entity: string) => GET(new NextRequest(`https://app.willsgrove.test/api/admin/export/${encodeURIComponent(entity)}`), { params: Promise.resolve({ entity }) });
+    expect((await get("orders")).status).toBe(401);
+    mockUser = { id: "m1", role: "SALES_MANAGER" };
+    expect((await get("orders")).status).toBe(403);
+    expect(svc.fn).not.toHaveBeenCalled();
+    mockUser = { id: "a1", role: "ADMINISTRATOR" };
+    expect((await get("users; drop table")).status).toBe(404);
+    expect((await get("__proto__")).status).toBe(404);
+    expect((await get("constructor")).status).toBe(404);
+    expect(svc.fn).not.toHaveBeenCalled();
+    svc.fn.mockResolvedValue({ total: 1, rows: [{ reference: "ORD-1", customer: { name: "Acme" }, status: "DRAFT", source: "MANUAL", salesperson: null, currency: "USD", total: "10.00", lineCount: 1, createdAt: new Date("2026-01-01T00:00:00Z") }] });
+    const ok = await get("orders");
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("content-type")).toContain("text/csv");
+    expect(await ok.text()).toContain("ORD-1");
+    // the export is itself audited
+    expect(svc.fn).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: "DATA_EXPORT", actorId: "a1", entityType: "orders" }) }));
   });
 
   it("passes the acting administrator and validated input to the service", async () => {

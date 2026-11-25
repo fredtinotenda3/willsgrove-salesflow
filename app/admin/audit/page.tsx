@@ -1,9 +1,10 @@
 import { auditFilterOptions, listAuditEvents } from "@/lib/admin/audit-queries";
 import { parseAuditFilters } from "@/lib/admin/audit-filters";
 import { firstParam as one, readPaging } from "@/lib/admin/paging";
-import { EmptyState, PageHeader, Pagination, SectionCard } from "../../reports/_components/ui";
+import { PageHeader, Panel as SectionCard } from "../_components/ui";
+import { EmptyState, Pagination } from "../../reports/_components/ui";
 import { DownloadButton } from "../_components/download-button";
-import { AdminShell, requireAdminPage } from "../_components/admin-shell";
+import { requireAdminPage } from "../_components/admin-shell";
 
 export const instant = false;
 
@@ -18,8 +19,8 @@ export default async function AdminAuditPage({ searchParams }: { searchParams: P
   const sp = { q: flat.q, actor: flat.actor, entity: flat.entity, action: flat.action, from: flat.from, to: flat.to };
   const exportHref = `/api/admin/audit/export?${new URLSearchParams(Object.entries(sp).filter(([, v]) => v) as [string, string][]).toString()}`;
   return (
-    <AdminShell active="/admin/audit">
-      <PageHeader breadcrumb="Workspace / Administration / Audit log" title="Audit log" description="Who changed what, when, with before and after values and the stated reason. Read-only." actions={<DownloadButton href={exportHref}>Export CSV (max 5,000)</DownloadButton>} />
+    <div className="space-y-4">
+      <PageHeader title="Audit log" description="Who changed what, when, with before and after values and the stated reason. Read-only." actions={<DownloadButton href={exportHref}>Export CSV (max 5,000)</DownloadButton>} />
       <form action="/admin/audit" className="flex flex-wrap items-end gap-3 rounded-xl border border-[#E8EBE6] bg-white p-4">
         <input name="q" defaultValue={flat.q ?? ""} placeholder="Record id, action or person" className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm" />
         <select name="actor" defaultValue={flat.actor ?? ""} className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm"><option value="">Anyone</option>{options.actors.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
@@ -45,6 +46,6 @@ export default async function AdminAuditPage({ searchParams }: { searchParams: P
         )}
         <Pagination basePath="/admin/audit" searchParams={sp} page={page} totalPages={Math.max(1, Math.ceil(total / pageSize))} totalItems={total} pageSize={pageSize} />
       </SectionCard>
-    </AdminShell>
+    </div>
   );
 }

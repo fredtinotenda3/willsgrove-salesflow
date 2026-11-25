@@ -1,7 +1,8 @@
 import { listPersonnel } from "@/lib/personnel";
 import { listVehicles } from "@/lib/vehicles";
-import { EmptyState, PageHeader, SectionCard } from "../../reports/_components/ui";
-import { AdminShell, requireAdminPage } from "../_components/admin-shell";
+import { PageHeader, Panel as SectionCard } from "../_components/ui";
+import { EmptyState } from "../../reports/_components/ui";
+import { requireAdminPage } from "../_components/admin-shell";
 import { ActionDialog, type DialogField } from "../_components/action-dialog";
 import { StatusBadge } from "../_components/status-badge";
 
@@ -26,8 +27,8 @@ export default async function AdminFleetPage() {
   await requireAdminPage();
   const [people, vehicles] = await Promise.all([listPersonnel(), listVehicles()]);
   return (
-    <AdminShell active="/admin/fleet">
-      <PageHeader breadcrumb="Workspace / Administration / Drivers & vehicles" title="Drivers, assistants & vehicles" description="Only people and vehicles recorded here can be assigned to a dispatch. A record used on a dispatch is deactivated rather than deleted so delivery history stays complete." />
+    <div className="space-y-4">
+      <PageHeader title="Drivers, assistants & vehicles" description="Only people and vehicles recorded here can be assigned to a dispatch. A record used on a dispatch is deactivated rather than deleted so delivery history stays complete." />
       <SectionCard title={`Drivers & assistants (${people.length})`} description="People without a SalesFlow login.">
         <div className="flex justify-end px-4 pt-3"><ActionDialog label="Add person" variant="primary" title="Add driver / assistant" endpoint="/api/personnel" askReason={false} blank="omit" confirmLabel="Add" fields={personFields()} /></div>
         {people.length === 0 ? <EmptyState message="No drivers or assistants recorded yet." /> : (
@@ -64,6 +65,6 @@ export default async function AdminFleetPage() {
           </table></div>
         )}
       </SectionCard>
-    </AdminShell>
+    </div>
   );
 }

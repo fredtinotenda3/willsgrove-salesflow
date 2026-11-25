@@ -3,66 +3,120 @@ import { notFound } from "next/navigation";
 import { isValidId } from "@/lib/http";
 import { getAdminOrderDetail } from "@/lib/admin/order-admin";
 import { listActiveAssignees } from "@/lib/admin/assignment-queries";
-import { EmptyState, PageHeader, SectionCard } from "../../../reports/_components/ui";
-import { AdminShell, requireAdminPage } from "../../_components/admin-shell";
+import { firstParam as one } from "@/lib/admin/paging";
+import { fmtDate, fmtDateTime, fmtMoney, humanize } from "@/lib/admin/format";
+import { KeyValueGrid, Notice, PageHeader, Panel, Tabs } from "../../_components/ui";
+import { AuditTrail, DeleteSection, MiniTable } from "../../_components/detail-parts";
+import { requireAdminPage } from "../../_components/admin-shell";
 import { ActionDialog } from "../../_components/action-dialog";
 import { StatusBadge, userOptions } from "../../_components/status-badge";
 
 export const instant = false;
-const fmt = (d: Date | null) => (d ? d.toISOString().slice(0, 16).replace("T", " ") : "—");
+const TABS = ["overview", "lines", "pricing", "documents", "approvals", "picking", "invoicing", "delivery", "activity", "actions"] as const;
+const REASSIGNABLE = ["DRAFT", "RECEIVED", "PENDING_VERIFICATION", "READY_FOR_APPROVAL", "APPROVED", "PICKING"];
 
-export default async function AdminOrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function AdminOrderDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   await requireAdminPage();
   const { id } = await params;
   if (!isValidId(id)) notFound();
   const detail = await getAdminOrderDetail(id);
   if (!detail) notFound();
-  const { order: o, history, canEdit, canCancel, canReopen } = detail;
-  const assignees = await listActiveAssignees();
-  const reassignable = ["DRAFT", "RECEIVED", "PENDING_VERIFICATION", "READY_FOR_APPROVAL", "APPROVED", "PICKING"].includes(o.status);
+  const { order: o, history, canEdit, canCancel, canReopen, canDelete } = detail;
+  const requested = one((await searchParams).tab);
+  const tab = (TABS as readonly string[]).includes(requested ?? "") ? (requested as (typeof TABS)[number]) : "overview";
+  const assignees = tab === "actions" ? await listActiveAssignees() : [];
+  const link = (href: string, text: string) => <Link href={href} className="text-[#1F7A4D] hover:underline">{text}</Link>;
+
   return (
-    <AdminShell active="/admin/orders">
-      <PageHeader breadcrumb="Workspace / Administration / Orders" title={o.reference} description={`${o.customer.name} · ${o.salesperson ? `Salesperson ${o.salesperson.name}` : "No salesperson assigned"}`} actions={<div className="flex gap-2"><Link href={`/orders/${o.id}`} className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm font-semibold">Open operational view</Link><Link href="/admin/orders" className="px-3 py-2 text-sm font-semibold text-[#1F7A4D]">← All orders</Link></div>} />
-      <div className="grid gap-4 lg:grid-cols-2">
-        <SectionCard title="Order">
-          <dl className="grid grid-cols-2 gap-3 p-4 text-sm">
-            <dt className="text-[#849087]">Status</dt><dd><StatusBadge status={o.status} /></dd>
-            <dt className="text-[#849087]">Source</dt><dd>{o.source.replace(/_/g, " ")}</dd>
-            <dt className="text-[#849087]">Customer PO</dt><dd>{o.customerPoReference ?? "—"}</dd>
-            <dt className="text-[#849087]">Requested delivery</dt><dd>{o.requestedDeliveryDate?.toISOString().slice(0, 10) ?? "—"}</dd>
-            <dt className="text-[#849087]">Delivery address</dt><dd>{o.deliveryAddress ?? "—"}</dd>
-            <dt className="text-[#849087]">Internal notes</dt><dd className="whitespace-pre-wrap">{o.internalNotes ?? "—"}</dd>
-            <dt className="text-[#849087]">Total</dt><dd>{o.total === null ? "—" : `${o.currency} ${o.total.toString()}`} ({o._count.lines} lines)</dd>
-            <dt className="text-[#849087]">Created</dt><dd>{fmt(o.createdAt)} by {o.createdBy.name}</dd>
-            <dt className="text-[#849087]">Source quotation</dt><dd>{o.sourceQuotation ? <Link className="text-[#1F7A4D]" href={`/quotations/${o.sourceQuotation.id}`}>{o.sourceQuotation.quotationNumber}</Link> : "—"}</dd>
-            <dt className="text-[#849087]">SAP / invoice</dt><dd>{o.handedToSapAt ? `Handed to SAP ${fmt(o.handedToSapAt)}` : "Not handed to SAP"}{o.invoicedAt ? ` · invoiced ${fmt(o.invoicedAt)}` : ""}</dd>
-          </dl>
-          <div className="flex flex-wrap gap-2 border-t border-[#EEF1ED] p-4">
-            {canEdit.ok ? (
-              <ActionDialog label="Edit details" title="Edit order details" description="Lines, prices, customer and totals are not changed here." endpoint={`/api/admin/orders/${o.id}`} method="PATCH" confirmLabel="Save" fields={[
+    <div className="space-y-4">
+      <PageHeader back={{ href: "/admin/orders", label: "All orders" }} title={o.reference} description={`${o.customer.name} · ${o.salesperson ? `Salesperson ${o.salesperson.name}` : "No salesperson assigned"}`}
+        actions={<><StatusBadge status={o.status} /><Link href={`/orders/${o.id}`} className="rounded-lg border border-[#DDE3DC] bg-white px-3 py-2 text-sm font-semibold hover:bg-[#F7F8F6]">Open operational view</Link></>} />
+      <Tabs basePath={`/admin/orders/${o.id}`} active={tab} tabs={[
+        { key: "overview", label: "Overview" }, { key: "lines", label: "Lines", count: o._count.lines }, { key: "pricing", label: "Pricing & verification" }, { key: "documents", label: "Documents", count: o._count.documents },
+        { key: "approvals", label: "Approvals", count: o.approvalRequests.length + o.approvals.length }, { key: "picking", label: "Picking", count: o.pickingSessions.length }, { key: "invoicing", label: "SAP & invoicing" },
+        { key: "delivery", label: "Delivery", count: o.dispatchRecords.length }, { key: "activity", label: "Activity" }, { key: "actions", label: "Actions" },
+      ]} />
+
+      {tab === "overview" ? (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Panel title="Order"><KeyValueGrid items={[
+            { label: "Customer", value: link(`/admin/customers/${o.customer.id}`, o.customer.name) }, { label: "Source", value: humanize(o.source) }, { label: "Customer PO", value: o.customerPoReference ?? "—" },
+            { label: "Requested delivery", value: fmtDate(o.requestedDeliveryDate) }, { label: "Delivery address", value: o.deliveryAddress ?? "—" }, { label: "Internal notes", value: <span className="whitespace-pre-wrap">{o.internalNotes ?? "—"}</span> },
+            { label: "Subtotal", value: o.subtotal === null ? "—" : fmtMoney(o.currency, o.subtotal) }, { label: "Tax", value: o.taxTotal === null ? "—" : fmtMoney(o.currency, o.taxTotal) }, { label: "Total", value: o.total === null ? "—" : fmtMoney(o.currency, o.total) },
+            { label: "Created", value: `${fmtDateTime(o.createdAt)} by ${o.createdBy.name}` }, { label: "Source quotation", value: o.sourceQuotation ? link(`/admin/quotations/${o.sourceQuotation.id}`, o.sourceQuotation.quotationNumber) : "—" }, { label: "Demo data", value: o.isDemo ? "Yes" : "No" },
+          ]} /></Panel>
+          <Panel title="Status history"><div className="divide-y divide-[#EEF1ED] text-sm">{o.statusHistory.length === 0 ? <p className="p-4 text-[#849087]">No status changes recorded.</p> : o.statusHistory.map((h) => <div key={h.id} className="px-4 py-2"><div className="flex justify-between gap-3"><span>{h.fromStatus ? `${humanize(h.fromStatus)} → ` : ""}<strong>{humanize(h.toStatus)}</strong></span><span className="shrink-0 text-xs text-[#849087]">{h.changedBy?.name ?? "System"} · {fmtDateTime(h.createdAt)}</span></div>{h.notes ? <p className="text-xs text-[#5F6F66]">{h.notes}</p> : null}</div>)}</div></Panel>
+        </div>
+      ) : null}
+
+      {tab === "lines" ? (
+        <Panel title="Order lines" description="Read-only here. Lines carry the verified product, quantity and price used for invoicing, so they are changed in the operational view where verification and approval run." flush>
+          <MiniTable empty="This order has no lines." head={["#", "Product", "SAP item", "Quantity", "Customer price", "Approved price", "Line total", "Verification"]} rows={o.lines.map((l) => [l.lineNumber, <div key="d">{l.product ? link(`/admin/products/${l.product.id}`, l.product.itemName) : l.originalProductDescription}{l.product ? <div className="text-xs text-[#849087]">As ordered: {l.originalProductDescription}</div> : null}</div>, l.sapItemCodeSnapshot ?? "—", `${l.requestedQuantity.toString()} ${l.requestedUnitCode ?? ""}`, l.customerUnitPrice?.toString() ?? "—", l.approvedUnitPrice?.toString() ?? "—", l.lineTotal?.toString() ?? "—", <StatusBadge key="s" status={l.verificationStatus} />])} />
+        </Panel>
+      ) : null}
+
+      {tab === "pricing" ? (
+        <Panel title="Verification & price decisions" description="The latest verification and price decision recorded for each line." flush>
+          <MiniTable empty="No lines." head={["#", "Product", "Verification", "Checked by", "Price decision", "Decided by", "Notes"]} rows={o.lines.map((l) => { const v = l.verifications[0]; const p = l.priceDecisions[0]; return [l.lineNumber, l.product?.itemName ?? l.originalProductDescription, v ? <div key="v"><StatusBadge status={v.status} /><div className="text-xs text-[#849087]">{[v.productMatched && "product", v.quantityChecked && "quantity", v.unitMatched && "unit"].filter(Boolean).join(", ") || "nothing confirmed"}</div></div> : "—", v ? `${v.verifiedBy?.name ?? "—"} · ${fmtDate(v.createdAt)}` : "—", p ? <div key="p"><StatusBadge status={p.status} /><div className="text-xs text-[#849087]">{p.customerUnitPrice?.toString() ?? "—"} → {p.approvedUnitPrice?.toString() ?? "—"}</div></div> : "—", p ? `${p.decidedBy?.name ?? "—"} · ${fmtDate(p.createdAt)}` : "—", p?.notes ?? l.salesNotes ?? "—"]; })} />
+        </Panel>
+      ) : null}
+
+      {tab === "documents" ? (
+        <Panel title="Documents" flush>
+          <MiniTable empty="No documents are attached to this order." head={["File", "Type", "Classification", "Status", "Size", "Uploaded"]} rows={o.documents.map((d) => [d.originalFileName, humanize(d.documentType), humanize(d.classification), <StatusBadge key="s" status={d.status} />, `${Math.max(1, Math.round(d.fileSize / 1024))} KB`, `${d.uploadedBy?.name ?? "—"} · ${fmtDate(d.createdAt)}`])} />
+        </Panel>
+      ) : null}
+
+      {tab === "approvals" ? (
+        <div className="space-y-4">
+          <Panel title="Approval requests" flush><MiniTable empty="No approval requests." head={["Rule", "Status", "Required approver", "Requested by", "Submitted", "Decision"]} rows={o.approvalRequests.map((a) => [humanize(a.actionType), <StatusBadge key="s" status={a.status} />, humanize(a.requiredApproverRole), a.requestedBy?.name ?? "—", fmtDateTime(a.submittedAt), a.decidedAt ? `${a.decidedBy?.name ?? ""} · ${fmtDateTime(a.decidedAt)}${a.decisionReason ? ` — ${a.decisionReason}` : ""}` : "Pending"])} /></Panel>
+          <Panel title="Order approvals" flush><MiniTable empty="No order-level approvals." head={["Status", "Notes", "Decided by", "Decided"]} rows={o.approvals.map((a) => [<StatusBadge key="s" status={a.status} />, a.notes ?? "—", a.decidedBy?.name ?? "—", a.decidedAt ? fmtDateTime(a.decidedAt) : "—"])} /></Panel>
+        </div>
+      ) : null}
+
+      {tab === "picking" ? (
+        <Panel title="Picking sessions" flush><MiniTable empty="Picking has not started." head={["Status", "Started", "Started by", "Lines", "Authorised", "Notes"]} rows={o.pickingSessions.map((s) => [<StatusBadge key="s" status={s.status} />, fmtDateTime(s.startedAt), s.startedBy?.name ?? "—", s._count.lines, s.authorizedAt ? `${s.authorizedBy?.name ?? ""} · ${fmtDateTime(s.authorizedAt)}` : "—", s.notes ?? "—"])} /></Panel>
+      ) : null}
+
+      {tab === "invoicing" ? (
+        <div className="space-y-4">
+          <Panel title="SAP hand-over"><KeyValueGrid items={[{ label: "Handed to SAP", value: o.handedToSapAt ? fmtDateTime(o.handedToSapAt) : "Not yet" }, { label: "Invoiced", value: o.invoicedAt ? fmtDateTime(o.invoicedAt) : "Not yet" }, { label: "SAP submission", value: o.integrationOperation ? <span className="inline-flex items-center gap-2"><StatusBadge status={o.integrationOperation.status} />{o.integrationOperation.externalDocNum ? `Doc ${o.integrationOperation.externalDocNum}` : null}</span> : "None" }, { label: "Attempts", value: o.integrationOperation ? `${o.integrationOperation.attemptCount}${o.integrationOperation.lastErrorMessage ? ` — ${o.integrationOperation.lastErrorMessage}` : ""}` : "—" }]} /></Panel>
+          <Panel title="Invoice hand-over files" flush><MiniTable empty="No hand-over file has been generated." head={["Reference", "Format", "Lines", "Matched", "Unmatched", "Generated"]} rows={o.handovers.map((h) => [h.reference, h.format, h.lineCount, h.matchedLineCount, h.unmatchedLineCount, `${h.generatedBy?.name ?? "—"} · ${fmtDate(h.createdAt)}`])} /></Panel>
+          <Panel title="Matched SAP invoices" flush><MiniTable empty="No SAP invoice has been matched to this order." head={["Invoice", "Date", "Total", "Reconciliation"]} rows={o.matchedSapInvoices.map((i) => [link(`/admin/invoices/${i.id}`, i.sapDocNum), fmtDate(i.invoiceDate), i.total ? fmtMoney(i.currencyCode, i.total) : "—", <StatusBadge key="s" status={i.reconciliationStatus} />])} /></Panel>
+          <Panel title="Claims" flush><MiniTable empty="No claims against this order." head={["Claim", "Category", "Status"]} rows={o.invoiceClaims.map((c) => [link(`/admin/claims/${c.id}`, c.claimReference), humanize(c.category), <StatusBadge key="s" status={c.status} />])} /></Panel>
+        </div>
+      ) : null}
+
+      {tab === "delivery" ? (
+        <Panel title="Dispatch & delivery" flush><MiniTable empty="This order has not been dispatched." head={["Dispatch", "Driver", "Vehicle", "Departed", "Outcome", "Received by"]} rows={o.dispatchRecords.map((d) => [<StatusBadge key="s" status={d.status} />, `${d.driver?.name ?? "—"}${d.assistant ? ` + ${d.assistant.name}` : ""}`, d.vehicle?.registrationNumber ?? "—", d.departedAt ? fmtDateTime(d.departedAt) : d.plannedDepartureAt ? `Planned ${fmtDateTime(d.plannedDepartureAt)}` : "—", d.deliveryRecord ? <StatusBadge key="o" status={d.deliveryRecord.outcome} /> : d.cancellationReason ? `Cancelled: ${d.cancellationReason}` : "—", d.deliveryRecord?.recipientName ?? "—"])} /></Panel>
+      ) : null}
+
+      {tab === "activity" ? <AuditTrail events={history} /> : null}
+
+      {tab === "actions" ? (
+        <div className="space-y-4">
+          <Panel title="Manage this order">
+            <div className="flex flex-wrap gap-2 p-4">
+              {canEdit.ok ? <ActionDialog label="Edit details" title="Edit order details" description="Lines, prices, customer and totals are not changed here." endpoint={`/api/admin/orders/${o.id}`} method="PATCH" confirmLabel="Save" fields={[
                 { name: "customerPoReference", label: "Customer PO reference", type: "text", defaultValue: o.customerPoReference ?? "" },
                 { name: "requestedDeliveryDate", label: "Requested delivery date", type: "date", defaultValue: o.requestedDeliveryDate?.toISOString().slice(0, 10) ?? "" },
                 { name: "deliveryAddress", label: "Delivery address", type: "textarea", defaultValue: o.deliveryAddress ?? "" },
                 { name: "internalNotes", label: "Internal notes", type: "textarea", defaultValue: o.internalNotes ?? "" },
-              ]} />
-            ) : <span className="text-xs text-[#849087]">Editing: {canEdit.ok ? "" : canEdit.message}</span>}
-            {reassignable ? <ActionDialog label="Reassign salesperson" title={`Reassign ${o.reference}`} endpoint="/api/admin/assignments/reassign" payload={{ entityType: "ORDER", ids: [o.id], confirm: true }} confirmLabel="Reassign" fields={[{ name: "toUserId", label: "New salesperson", type: "select", options: userOptions(assignees), required: true }]} /> : null}
-            {canCancel.ok ? <ActionDialog label="Cancel order" variant="danger" destructive title={`Cancel ${o.reference}?`} description="The order stays on record as cancelled and can be reopened later if it never reached SAP or invoicing." endpoint={`/api/admin/orders/${o.id}/cancel`} confirmLabel="Cancel order" /> : null}
-            {canReopen.ok ? <ActionDialog label="Reopen order" variant="primary" title={`Reopen ${o.reference}?`} description="The order returns to RECEIVED and re-enters the normal review and approval flow." endpoint={`/api/admin/orders/${o.id}/reopen`} confirmLabel="Reopen" /> : null}
-          </div>
-          {!canCancel.ok && o.status !== "CANCELLED" && o.status !== "REJECTED" ? <p className="border-t border-[#EEF1ED] px-4 py-3 text-xs text-[#849087]">Cancel unavailable: {canCancel.message}</p> : null}
-        </SectionCard>
-        <SectionCard title="Status history">
-          {o.statusHistory.length === 0 ? <EmptyState message="No status changes recorded." /> : (
-            <ul className="divide-y divide-[#EEF1ED] text-sm">{o.statusHistory.map((h) => <li key={h.id} className="px-4 py-2"><div className="flex justify-between gap-3"><span>{h.fromStatus ? `${h.fromStatus.replace(/_/g, " ")} → ` : ""}<strong>{h.toStatus.replace(/_/g, " ")}</strong></span><span className="shrink-0 text-xs text-[#849087]">{h.changedBy?.name ?? "System"} · {fmt(h.createdAt)}</span></div>{h.notes ? <p className="text-xs text-[#5F6F66]">{h.notes}</p> : null}</li>)}</ul>
-          )}
-        </SectionCard>
-      </div>
-      <SectionCard title="Administrative changes" description="Edits, reassignments, cancellations and reopenings recorded in the audit log.">
-        {history.length === 0 ? <EmptyState message="No administrative changes to this order." /> : (
-          <ul className="divide-y divide-[#EEF1ED] text-sm">{history.map((h) => <li key={h.id} className="px-4 py-2"><div className="flex justify-between"><span className="font-medium">{h.action.replace(/_/g, " ").toLowerCase()}</span><span className="text-xs text-[#849087]">{h.actor?.name ?? "System"} · {fmt(h.createdAt)}</span></div><pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-xs text-[#5F6F66]">{JSON.stringify({ before: h.beforeData, after: h.afterData })}</pre></li>)}</ul>
-        )}
-      </SectionCard>
-    </AdminShell>
+              ]} /> : null}
+              {REASSIGNABLE.includes(o.status) ? <ActionDialog label="Reassign salesperson" title={`Reassign ${o.reference}`} endpoint="/api/admin/assignments/reassign" payload={{ entityType: "ORDER", ids: [o.id], confirm: true }} confirmLabel="Reassign" fields={[{ name: "toUserId", label: "New salesperson", type: "select", options: userOptions(assignees), required: true }]} /> : null}
+              {canCancel.ok ? <ActionDialog label="Cancel order" variant="danger" destructive title={`Cancel ${o.reference}?`} description="The order stays on record as cancelled and can be reopened if it never reached SAP or invoicing." endpoint={`/api/admin/orders/${o.id}/cancel`} confirmLabel="Cancel order" confirmText={o.reference} /> : null}
+              {canReopen.ok ? <ActionDialog label="Reopen order" variant="primary" title={`Reopen ${o.reference}?`} description="The order returns to RECEIVED and re-enters the normal review and approval flow." endpoint={`/api/admin/orders/${o.id}/reopen`} confirmLabel="Reopen" /> : null}
+            </div>
+            <div className="space-y-1 border-t border-[#EEF1ED] px-4 py-3 text-xs text-[#6B7B72]">
+              {!canEdit.ok ? <p>Editing unavailable: {canEdit.message}</p> : null}
+              {!canCancel.ok && o.status !== "CANCELLED" && o.status !== "REJECTED" ? <p>Cancel unavailable: {canCancel.message}</p> : null}
+              {!canReopen.ok && (o.status === "CANCELLED" || o.status === "REJECTED") ? <p>Reopen unavailable: {canReopen.message}</p> : null}
+            </div>
+          </Panel>
+          <Notice tone="info">Line-level changes (adding, removing or correcting lines and prices) are intentionally not offered here: they must pass verification and price approval, which only the operational view enforces.</Notice>
+          <DeleteSection verdict={canDelete} noun="draft order" endpoint={`/api/admin/orders/${o.id}`} confirmText={o.reference} redirect="/admin/orders" alternative="Orders that have progressed are cancelled instead of deleted, so numbering, approvals and history stay intact." lines={o._count.lines ? [`${o._count.lines} line(s) belonging only to this draft are removed with it.`] : []} />
+        </div>
+      ) : null}
+    </div>
   );
 }

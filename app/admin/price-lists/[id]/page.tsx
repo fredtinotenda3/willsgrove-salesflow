@@ -4,8 +4,12 @@ import { isValidId } from "@/lib/http";
 import { getAdminPriceList, listEntriesForClassification } from "@/lib/admin/catalogue-admin";
 import { classifyPriceEntries } from "@/lib/admin/order-policy";
 import { firstParam as one, readPaging } from "@/lib/admin/paging";
-import { EmptyState, MetricCard, PageHeader, Pagination, SectionCard } from "../../../reports/_components/ui";
-import { AdminShell, requireAdminPage } from "../../_components/admin-shell";
+import { PageHeader, Panel as SectionCard } from "../../_components/ui";
+import { EmptyState, MetricCard, Pagination } from "../../../reports/_components/ui";
+import { prisma } from "@/lib/prisma";
+import { getPriceListDeletionImpact } from "@/lib/admin/record-deletion";
+import { AuditTrail, DeleteSection } from "../../_components/detail-parts";
+import { requireAdminPage } from "../../_components/admin-shell";
 import { ActionDialog } from "../../_components/action-dialog";
 import { StatusBadge } from "../../_components/status-badge";
 
@@ -23,12 +27,16 @@ export default async function AdminPriceListDetailPage({ params, searchParams }:
   if (!found) notFound();
   const { list, customers } = found;
   const { total, rows, all } = await listEntriesForClassification(id, q, page, pageSize);
+  const [deletion, history] = await Promise.all([
+    getPriceListDeletionImpact(id),
+    prisma.auditEvent.findMany({ where: { entityType: "PriceList", entityId: id }, orderBy: { createdAt: "desc" }, take: 30, select: { id: true, action: true, beforeData: true, afterData: true, createdAt: true, actor: { select: { name: true } } } }),
+  ]);
   const states = classifyPriceEntries(all, new Date());
   const counts = { current: 0, expired: 0, future: 0, conflict: 0 };
   for (const s of states.values()) counts[s] += 1;
   return (
-    <AdminShell active="/admin/price-lists">
-      <PageHeader breadcrumb="Workspace / Administration / Pricing" title={`${list.code} — ${list.name}`} description={`${list.currencyCode} prices only. Orders and quotations keep the price they were created with; changes here affect new documents only.`} actions={<div className="flex gap-2"><Link href="/price-lists/import" className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm font-semibold">Import prices</Link><Link href="/admin/price-lists" className="px-3 py-2 text-sm font-semibold text-[#1F7A4D]">← All lists</Link></div>} />
+    <div className="space-y-4">
+      <PageHeader back={{ href: "/admin/price-lists", label: "All price lists" }} title={`${list.code} — ${list.name}`} description={`${list.currencyCode} prices only. Orders and quotations keep the price they were created with; changes here affect new documents only.`} actions={<div className="flex gap-2"><Link href="/price-lists/import" className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm font-semibold">Import prices</Link><Link href="/admin/price-lists" className="px-3 py-2 text-sm font-semibold text-[#1F7A4D]">← All lists</Link></div>} />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard title="Current prices" value={String(counts.current)} />
         <MetricCard title="Expired" value={String(counts.expired)} description="End date has passed" />
@@ -61,6 +69,8 @@ export default async function AdminPriceListDetailPage({ params, searchParams }:
         )}
         <Pagination basePath={`/admin/price-lists/${id}`} searchParams={{ q }} page={page} totalPages={Math.max(1, Math.ceil(total / pageSize))} totalItems={total} pageSize={pageSize} />
       </SectionCard>
-    </AdminShell>
+      <AuditTrail events={history} />
+      {deletion ? <DeleteSection verdict={deletion.verdict} noun="price list" endpoint={`/api/admin/price-lists/${id}/delete`} confirmText={list.code} redirect="/admin/price-lists" alternative="Deactivate the list instead: it can no longer be assigned, and all prices and history are kept." /> : null}
+    </div>
   );
 }

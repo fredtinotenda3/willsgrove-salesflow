@@ -4,22 +4,29 @@ import { prisma, type PrismaTransactionClient } from "@/lib/prisma";
 import { duplicateKey } from "./policy";
 import { windowsOverlap } from "./order-policy";
 import { fail, type AdminFailure } from "./types";
+import { orderByFor, type SortDir, type SortState } from "./list-query";
+import { getProductDeletionImpact } from "./record-deletion";
 
 const TX = { maxWait: 15000, timeout: 15000 };
 const isUnique = (e: unknown) => e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002";
 
-export type ProductFilters = { q?: string; status?: string; category?: string; missingBarcode?: boolean };
+export type ProductFilters = { q?: string; status?: string; category?: string; missingBarcode?: boolean; unpriced?: boolean };
 
-export async function listAdminProducts(filters: ProductFilters, page: number, pageSize: number) {
+export const PRODUCT_SORTS: Record<string, (d: SortDir) => Record<string, unknown>> = {
+  code: (d) => ({ sapItemCode: d }), name: (d) => ({ itemName: d }), category: (d) => ({ category: d }), status: (d) => ({ status: d }), updated: (d) => ({ updatedAt: d }),
+};
+
+export async function listAdminProducts(filters: ProductFilters, page: number, pageSize: number, sort: SortState = { key: "code", dir: "asc" }) {
   const where: Prisma.ProductWhereInput = {
     ...(filters.q ? { OR: [{ sapItemCode: { contains: filters.q, mode: "insensitive" } }, { itemName: { contains: filters.q, mode: "insensitive" } }, { barcode: { contains: filters.q } }] } : {}),
     ...(filters.status === "ACTIVE" || filters.status === "INACTIVE" ? { status: filters.status } : {}),
     ...(filters.category ? { category: filters.category } : {}),
-    ...(filters.missingBarcode ? { OR: [{ barcode: null }, { barcode: "" }] } : {}),
+    ...(filters.missingBarcode ? { AND: [{ OR: [{ barcode: null }, { barcode: "" }] }] } : {}),
+    ...(filters.unpriced ? { status: "ACTIVE" as const, priceListEntries: { none: {} } } : {}),
   };
   const [total, rows, categories] = await Promise.all([
     prisma.product.count({ where }),
-    prisma.product.findMany({ where, orderBy: [{ sapItemCode: "asc" }], skip: (page - 1) * pageSize, take: pageSize, select: { id: true, sapItemCode: true, itemName: true, barcode: true, category: true, unitOfMeasure: true, status: true } }),
+    prisma.product.findMany({ where, orderBy: orderByFor(sort, PRODUCT_SORTS, "code") as Prisma.ProductOrderByWithRelationInput[], skip: (page - 1) * pageSize, take: pageSize, select: { id: true, sapItemCode: true, itemName: true, barcode: true, category: true, unitOfMeasure: true, status: true, updatedAt: true, _count: { select: { priceListEntries: true, aliases: true } } } }),
     prisma.product.findMany({ where: { category: { not: null } }, distinct: ["category"], select: { category: true }, orderBy: { category: "asc" } }),
   ]);
   return { total, rows, categories: categories.map((c) => c.category as string) };
@@ -93,13 +100,15 @@ export async function setProductStatus(id: string, status: "ACTIVE" | "INACTIVE"
 export async function getProductDetail(id: string) {
   const product = await prisma.product.findUnique({ where: { id } });
   if (!product) return null;
-  const [orderLines, quotationLines, priceEntries, history] = await Promise.all([
+  const [orderLines, quotationLines, priceEntries, aliases, deletion, history] = await Promise.all([
     prisma.orderLine.count({ where: { productId: id } }),
     prisma.quotationLine.count({ where: { productId: id } }),
     prisma.priceListEntry.count({ where: { productId: id } }),
+    prisma.productAlias.findMany({ where: { productId: id }, orderBy: { lastConfirmedAt: "desc" }, take: 100, select: { id: true, rawText: true, timesConfirmed: true, lastConfirmedAt: true, customerId: true } }),
+    getProductDeletionImpact(id),
     prisma.auditEvent.findMany({ where: { entityType: "Product", entityId: id }, orderBy: { createdAt: "desc" }, take: 30, select: { id: true, action: true, beforeData: true, afterData: true, createdAt: true, actor: { select: { name: true } } } }),
   ]);
-  return { product, references: { orderLines, quotationLines, priceEntries }, history };
+  return { product, references: { orderLines, quotationLines, priceEntries }, aliases, history, canDelete: deletion?.verdict ?? ({ deletable: false, reason: "", blockers: [] } as const) };
 }
 
 /* ----------------------------- price lists ----------------------------- */

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 
 export type DialogField = {
   name: string;
@@ -33,6 +34,12 @@ type Props = {
   successHref?: string;
   onDone?: (data: Record<string, unknown>) => void;
   variant?: "primary" | "secondary" | "danger";
+  /** What this will change, shown as a warning list before the administrator confirms. */
+  consequences?: string[];
+  /** Destructive operations only: the administrator must type this exact text (e.g. the record's reference) to enable the button. */
+  confirmText?: string;
+  /** Toast shown on success (default "Saved."). */
+  successMessage?: string;
 };
 
 /**
@@ -41,7 +48,7 @@ type Props = {
  * validation message on failure, refreshes the page on success. The server is
  * the authority; nothing here is trusted.
  */
-export function ActionDialog({ label, title, description, endpoint, method = "POST", payload = {}, confirmLabel = "Confirm", destructive, fields = [], askReason = true, blank = "null", successHref, onDone, variant = "secondary" }: Props) {
+export function ActionDialog({ label, title, description, endpoint, method = "POST", payload = {}, confirmLabel = "Confirm", destructive, fields = [], askReason = true, blank = "null", successHref, onDone, variant = "secondary", consequences, confirmText, successMessage = "Saved." }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -49,11 +56,12 @@ export function ActionDialog({ label, title, description, endpoint, method = "PO
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [typed, setTyped] = useState("");
 
   const valueOf = (f: DialogField) => extra[f.name] ?? f.defaultValue ?? "";
   const btn = variant === "primary" ? "bg-[#1F7A4D] text-white hover:bg-[#186540]" : variant === "danger" ? "border border-red-200 text-red-700 hover:bg-red-50" : "border border-[#DDE3DC] text-[#17251E] hover:bg-[#F1F4F0]";
   const missingRequired = fields.some((f) => f.required && valueOf(f).trim() === "");
-  const disabled = busy || missingRequired || (askReason && reason.trim().length < 3);
+  const disabled = busy || missingRequired || (askReason && reason.trim().length < 3) || (!!confirmText && typed.trim() !== confirmText);
 
   async function submit() {
     setBusy(true);
@@ -75,10 +83,12 @@ export function ActionDialog({ label, title, description, endpoint, method = "PO
         if (data.fieldErrors && typeof data.fieldErrors === "object") setFieldErrors(data.fieldErrors as Record<string, string>);
         return;
       }
+      toast.success(successMessage);
       if (onDone) { onDone(data); return; }
       setOpen(false);
       setReason("");
       setExtra({});
+      setTyped("");
       const createdId = typeof data.id === "string" ? data.id : typeof (data.customer as { id?: unknown } | undefined)?.id === "string" ? ((data.customer as { id: string }).id) : null;
       if (successHref && createdId) router.push(successHref.replace("{id}", createdId));
       else router.refresh();
@@ -94,10 +104,13 @@ export function ActionDialog({ label, title, description, endpoint, method = "PO
     <>
       <button type="button" onClick={() => setOpen(true)} className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${btn}`}>{label}</button>
       {open ? (
-        <div role="dialog" aria-modal="true" aria-label={title} className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/40 p-4">
+        <div role="dialog" aria-modal="true" aria-label={title} className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/40 p-4" onKeyDown={(e) => { if (e.key === "Escape" && !busy) setOpen(false); }}>
           <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
             <h3 className="text-base font-bold text-[#17251E]">{title}</h3>
             {description ? <p className="mt-1 text-sm text-[#5F6F66]">{description}</p> : null}
+            {consequences?.length ? (
+              <ul className={`mt-3 list-disc space-y-1 rounded-lg px-8 py-2.5 text-xs ${destructive ? "bg-red-50 text-red-800" : "bg-amber-50 text-amber-900"}`}>{consequences.map((c) => <li key={c}>{c}</li>)}</ul>
+            ) : null}
             <div className="mt-4 space-y-3">
               {fields.map((f) => (
                 <label key={f.name} className="block text-xs font-semibold text-[#4B5B52]">
@@ -120,10 +133,16 @@ export function ActionDialog({ label, title, description, endpoint, method = "PO
                   <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2} maxLength={500} className={control} />
                 </label>
               ) : null}
+              {confirmText ? (
+                <label className="block text-xs font-semibold text-[#4B5B52]">
+                  Type <span className="font-mono text-red-700">{confirmText}</span> to confirm
+                  <input value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" className={control} />
+                </label>
+              ) : null}
               {error ? <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
             </div>
             <div className="mt-5 flex justify-end gap-2">
-              <button type="button" onClick={() => { setOpen(false); setError(null); setFieldErrors({}); }} className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm">Cancel</button>
+              <button type="button" onClick={() => { setOpen(false); setError(null); setFieldErrors({}); setTyped(""); }} className="rounded-lg border border-[#DDE3DC] px-3 py-2 text-sm">Cancel</button>
               <button type="button" disabled={disabled} onClick={submit} className={`rounded-lg px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 ${destructive ? "bg-red-600 hover:bg-red-700" : "bg-[#1F7A4D] hover:bg-[#186540]"}`}>
                 {busy ? "Saving…" : confirmLabel}
               </button>
