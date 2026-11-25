@@ -140,6 +140,11 @@ export async function deleteOperationalData(tx: PrismaTransactionClient): Promis
   // InvoiceDeliveryRecord references SapInvoice (Restrict, unique);
   // InvoiceClaim.invoiceDeliveryRecordId -> InvoiceDeliveryRecord is
   // SetNull, so no ordering constraint runs the other way.
+  // ClaimReturnLostSale holds Restrict FKs onto ClaimReturn, InvoiceClaim,
+  // InvoiceClaimLine and Customer, so it must go before all three claim
+  // tables below (it was missing from this function until now, which made
+  // the whole reset roll back whenever a return had recorded a lost sale).
+  const claimReturnLostSales = await tx.claimReturnLostSale.deleteMany({});
   const claimReturns = await tx.claimReturn.deleteMany({});
   const invoiceClaimAttachments = await tx.invoiceClaimAttachment.deleteMany({});
   const claimResolutions = await tx.claimResolution.deleteMany({});
@@ -191,6 +196,12 @@ export async function deleteOperationalData(tx: PrismaTransactionClient): Promis
   const stockSnapshotLines = await tx.stockSnapshotLine.deleteMany({});
   const stockSnapshots = await tx.stockSnapshot.deleteMany({});
 
+  // Management actions. Findings/evidence snapshots derived from the data
+  // being wiped; they only reference User (preserved). Event rows hold a
+  // Restrict FK back to the action, so events first.
+  const managementActionEvents = await tx.managementActionEvent.deleteMany({});
+  const managementActions = await tx.managementAction.deleteMany({});
+
   return {
     decisionRecommendationEvents: decisionRecommendationEvents.count,
     decisionRecommendations: decisionRecommendations.count,
@@ -220,6 +231,7 @@ export async function deleteOperationalData(tx: PrismaTransactionClient): Promis
     unfulfilledDemands: unfulfilledDemands.count,
     pickingLines: pickingLines.count,
     pickingSessions: pickingSessions.count,
+    claimReturnLostSales: claimReturnLostSales.count,
     claimReturns: claimReturns.count,
     invoiceClaimAttachments: invoiceClaimAttachments.count,
     claimResolutions: claimResolutions.count,
@@ -239,6 +251,8 @@ export async function deleteOperationalData(tx: PrismaTransactionClient): Promis
     customerOrders: customerOrders.count,
     stockSnapshotLines: stockSnapshotLines.count,
     stockSnapshots: stockSnapshots.count,
+    managementActionEvents: managementActionEvents.count,
+    managementActions: managementActions.count,
   };
 }
 

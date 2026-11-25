@@ -162,6 +162,7 @@ async function countOperationalRows(): Promise<Record<string, number>> {
     unfulfilledDemands,
     pickingLines,
     pickingSessions,
+    claimReturnLostSales,
     claimReturns,
     invoiceClaimAttachments,
     claimResolutions,
@@ -181,6 +182,8 @@ async function countOperationalRows(): Promise<Record<string, number>> {
     customerOrders,
     stockSnapshotLines,
     stockSnapshots,
+    managementActionEvents,
+    managementActions,
   ] = await Promise.all([
     prisma.decisionRecommendationEvent.count(),
     prisma.decisionRecommendation.count(),
@@ -210,6 +213,7 @@ async function countOperationalRows(): Promise<Record<string, number>> {
     prisma.unfulfilledDemand.count(),
     prisma.pickingLine.count(),
     prisma.pickingSession.count(),
+    prisma.claimReturnLostSale.count(),
     prisma.claimReturn.count(),
     prisma.invoiceClaimAttachment.count(),
     prisma.claimResolution.count(),
@@ -229,6 +233,8 @@ async function countOperationalRows(): Promise<Record<string, number>> {
     prisma.customerOrder.count(),
     prisma.stockSnapshotLine.count(),
     prisma.stockSnapshot.count(),
+    prisma.managementActionEvent.count(),
+    prisma.managementAction.count(),
   ]);
 
   return {
@@ -260,6 +266,7 @@ async function countOperationalRows(): Promise<Record<string, number>> {
     unfulfilledDemands,
     pickingLines,
     pickingSessions,
+    claimReturnLostSales,
     claimReturns,
     invoiceClaimAttachments,
     claimResolutions,
@@ -279,6 +286,8 @@ async function countOperationalRows(): Promise<Record<string, number>> {
     customerOrders,
     stockSnapshotLines,
     stockSnapshots,
+    managementActionEvents,
+    managementActions,
   };
 }
 
