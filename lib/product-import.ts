@@ -1,11 +1,9 @@
 import { randomUUID } from "crypto";
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { SapProductRow } from "@/lib/sap-product-csv";
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024;
 const LOOKUP_CHUNK_SIZE = 1000;
-const CREATE_CHUNK_SIZE = 1000;
 const AUDIT_CHANGE_LIMIT = 500;
 
 export type CsvUploadResult =
@@ -136,6 +134,45 @@ export interface ProductImportResult {
   updated: number;
   unchanged: number;
   auditEventId: string;
+  /** True when a chunk failed after earlier chunks had already committed. */
+  partial: boolean;
+  partialReason?: string;
+}
+
+// Real-world incident fix: the real items-import.csv has 7,540 rows.
+// executeProductImport USED TO queue every createMany chunk, every update
+// and the audit event into ONE array-form prisma.$transaction([...]) with
+// Prisma's default 5s timeout. Against a remote Postgres (Neon) that
+// batch outlived the timeout, the server closed the connection
+// ("Error in PostgreSQL connection: Closed") and the import never
+// completed, leaving the confirm button spinning. The customer and
+// price-list importers already fixed the same failure; this applies the
+// same pattern:
+//
+//  * New products go in with createMany in bounded chunks. Each chunk is
+//    one SQL statement and atomic on its own, so no database transaction
+//    is ever held open across the file.
+//  * Changed products are updated in small interactive transactions.
+//    (The array form is avoided on purpose: lib/prisma.ts exports an
+//    extended client, a documented source of batch-transaction
+//    incompatibility.)
+//  * The audit event is written after the fact so it records what was
+//    actually committed.
+//
+// Trade-off: the import is no longer all-or-nothing across the whole
+// file. It stays safe to retry: planProductImport detects products that
+// already exist, and `skipDuplicates` guards a concurrent run, so
+// re-uploading the same file finishes the remainder and never duplicates
+// or touches Product.status.
+const NEW_PRODUCT_CREATE_MANY_CHUNK_SIZE = 500;
+const CHANGED_PRODUCT_UPDATE_CHUNK_SIZE = 50;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
 }
 
 export async function executeProductImport(
@@ -145,14 +182,14 @@ export async function executeProductImport(
   const importedAt = new Date();
   const importId = randomUUID();
 
-  const operations: Prisma.PrismaPromise<unknown>[] = [];
+  let created = 0;
+  const appliedChanges: ChangedProduct[] = [];
+  let partialReason: string | undefined;
 
-  for (let i = 0; i < plan.newProducts.length; i += CREATE_CHUNK_SIZE) {
-    const chunk = plan.newProducts.slice(i, i + CREATE_CHUNK_SIZE);
-
-    operations.push(
-      prisma.product.createMany({
-        data: chunk.map((product) => ({
+  try {
+    for (const batch of chunk(plan.newProducts, NEW_PRODUCT_CREATE_MANY_CHUNK_SIZE)) {
+      const result = await prisma.product.createMany({
+        data: batch.map((product) => ({
           sapItemCode: product.sapItemCode,
           itemName: product.itemName,
           barcode: product.barcode,
@@ -161,28 +198,41 @@ export async function executeProductImport(
           importedAt,
         })),
         skipDuplicates: true,
-      })
-    );
-  }
+      });
+      created += result.count;
+    }
 
-  // Status is deliberately not touched: an import never activates or
-  // deactivates a product.
-  for (const change of plan.changedProducts) {
-    operations.push(
-      prisma.product.update({
-        where: { sapItemCode: change.sapItemCode },
-        data: {
-          itemName: change.incoming.itemName,
-          barcode: change.incoming.barcode,
-          category: change.incoming.category,
-          sourceData: change.incoming.sourceData,
-          importedAt,
+    // Status is deliberately not touched: an import never activates or
+    // deactivates a product.
+    for (const batch of chunk(plan.changedProducts, CHANGED_PRODUCT_UPDATE_CHUNK_SIZE)) {
+      await prisma.$transaction(
+        async (tx) => {
+          for (const change of batch) {
+            await tx.product.update({
+              where: { sapItemCode: change.sapItemCode },
+              data: {
+                itemName: change.incoming.itemName,
+                barcode: change.incoming.barcode,
+                category: change.incoming.category,
+                sourceData: change.incoming.sourceData,
+                importedAt,
+              },
+            });
+          }
         },
-      })
-    );
+        { maxWait: 10000, timeout: 20000 }
+      );
+      appliedChanges.push(...batch);
+    }
+  } catch (error) {
+    partialReason =
+      error instanceof Error
+        ? error.message
+        : "An unexpected error interrupted the import.";
+    console.error("SAP product import interrupted:", error);
   }
 
-  const recordedChanges = plan.changedProducts
+  const recordedChanges = appliedChanges
     .slice(0, AUDIT_CHANGE_LIMIT)
     .map((change) => ({
       sapItemCode: change.sapItemCode,
@@ -195,35 +245,36 @@ export async function executeProductImport(
       },
     }));
 
-  operations.push(
-    prisma.auditEvent.create({
-      data: {
-        actorId: null,
-        action: "PRODUCT_IMPORT",
-        entityType: "ProductImport",
-        entityId: importId,
-        afterData: {
-          fileName,
-          importedAt: importedAt.toISOString(),
-          created: plan.newProducts.length,
-          updated: plan.changedProducts.length,
-          unchanged: plan.unchangedProducts.length,
-          changesRecorded: recordedChanges.length,
-          changesTruncated:
-            plan.changedProducts.length > recordedChanges.length,
-          changes: recordedChanges,
-        },
+  const auditEvent = await prisma.auditEvent.create({
+    data: {
+      actorId: null,
+      action: "PRODUCT_IMPORT",
+      entityType: "ProductImport",
+      entityId: importId,
+      afterData: {
+        fileName,
+        importedAt: importedAt.toISOString(),
+        created,
+        updated: appliedChanges.length,
+        unchanged: plan.unchangedProducts.length,
+        plannedCreates: plan.newProducts.length,
+        plannedUpdates: plan.changedProducts.length,
+        changesRecorded: recordedChanges.length,
+        changesTruncated: appliedChanges.length > recordedChanges.length,
+        changes: recordedChanges,
+        partial: partialReason !== undefined,
+        partialReason: partialReason ?? null,
       },
-    })
-  );
-
-  const audit = await prisma.$transaction(operations);
-  const auditEvent = audit[audit.length - 1] as { id: string };
+    },
+    select: { id: true },
+  });
 
   return {
-    created: plan.newProducts.length,
-    updated: plan.changedProducts.length,
+    created,
+    updated: appliedChanges.length,
     unchanged: plan.unchangedProducts.length,
     auditEventId: auditEvent.id,
+    partial: partialReason !== undefined,
+    partialReason,
   };
 }

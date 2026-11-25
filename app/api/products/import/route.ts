@@ -109,6 +109,33 @@ export async function POST(request: NextRequest) {
 
     const result = await executeProductImport(plan, upload.fileName);
 
+    // A large file is imported in bounded chunks, so a failure partway
+    // through can leave earlier chunks committed. Report that honestly
+    // (never as "completed", never as "no changes were saved"). Re-running
+    // the same file is safe: existing products show as unchanged.
+    if (result.partial) {
+      return Response.json(
+        {
+          success: false,
+          partial: true,
+          message:
+            `The import was interrupted after saving ${result.created} new and ${result.updated} updated ` +
+            `product(s); some rows were not processed. It is safe to upload this exact file again: ` +
+            `products already imported are detected and not duplicated.`,
+          fileName: upload.fileName,
+          summary: {
+            created: result.created,
+            updated: result.updated,
+            unchanged: result.unchanged,
+          },
+          auditEventId: result.auditEventId,
+          importExecuted: true,
+          failureReason: result.partialReason,
+        },
+        { status: 207 }
+      );
+    }
+
     return Response.json({
       success: true,
       message: "SAP product import completed.",
@@ -127,7 +154,7 @@ export async function POST(request: NextRequest) {
     return Response.json(
       {
         success: false,
-        message: "The SAP product import failed. No changes were saved.",
+        message: "The SAP product import failed before any product was saved. Please try again.",
       },
       { status: 500 }
     );

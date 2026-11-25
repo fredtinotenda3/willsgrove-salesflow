@@ -224,6 +224,19 @@ export default function ProductImportPage() {
         return;
       }
 
+      if (response.status === 207 && body?.partial) {
+        // Some chunks committed; the held preview is now stale, so force a
+        // fresh check (already-imported rows will show as unchanged).
+        setPreview(null);
+        setConfirmed(false);
+        setNotice(
+          body?.message ??
+            "The import was interrupted partway through. Some products were already saved. Select the file again to re-check and finish the import."
+        );
+        setStage("idle");
+        return;
+      }
+
       if (response.status === 409) {
         setPreview(null);
         setConfirmed(false);
@@ -236,7 +249,7 @@ export default function ProductImportPage() {
       }
 
       setNotice(
-        body?.message ?? "The import failed. No changes were saved."
+        body?.message ?? "The import failed. Check the Products page, then upload the same file again to finish."
       );
       setStage("previewed");
     } catch {

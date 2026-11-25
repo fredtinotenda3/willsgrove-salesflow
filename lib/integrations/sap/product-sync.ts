@@ -28,15 +28,23 @@ export async function runProductSync(trigger: "MANUAL" | "SCHEDULED", triggeredB
     const plan = await planProductImport(products);
     const result = await executeProductImport(plan, `SAP sync (${trigger.toLowerCase()})`);
 
-    return {
-      status: "COMPLETED",
-      summary: {
-        fetchedCount: products.length,
-        createdCount: result.created,
-        updatedCount: result.updated,
-        unchangedCount: result.unchanged,
-        auditEventId: result.auditEventId,
-      },
+    const summary = {
+      fetchedCount: products.length,
+      createdCount: result.created,
+      updatedCount: result.updated,
+      unchangedCount: result.unchanged,
+      auditEventId: result.auditEventId,
     };
+
+    // A chunked import can stop partway; never report that as COMPLETED.
+    if (result.partial) {
+      return {
+        status: "PARTIAL",
+        summary,
+        errorMessage: result.partialReason ?? "The product import was interrupted before every row was processed.",
+      };
+    }
+
+    return { status: "COMPLETED", summary };
   });
 }
