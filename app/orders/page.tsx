@@ -92,10 +92,10 @@ export default function OrdersPage() {
 
   const [counts, setCounts] = useState<{
     total: number | null;
-    pendingVerification: number | null;
+    received: number | null;
     readyForApproval: number | null;
     approved: number | null;
-  }>({ total: null, pendingVerification: null, readyForApproval: null, approved: null });
+  }>({ total: null, received: null, readyForApproval: null, approved: null });
 
   // Debounce the search box so every keystroke doesn't fire a request.
   // Resetting to page 1 happens here (and in the status-tab click
@@ -159,12 +159,12 @@ export default function OrdersPage() {
     let ignore = false;
     Promise.all([
       fetchOrderCount(null),
-      fetchOrderCount("PENDING_VERIFICATION"),
+      fetchOrderCount("RECEIVED"),
       fetchOrderCount("READY_FOR_APPROVAL"),
       fetchOrderCount("APPROVED"),
-    ]).then(([total, pendingVerification, readyForApproval, approved]) => {
+    ]).then(([total, received, readyForApproval, approved]) => {
       if (ignore) return;
-      setCounts({ total, pendingVerification, readyForApproval, approved });
+      setCounts({ total, received, readyForApproval, approved });
     });
     return () => {
       ignore = true;
@@ -181,18 +181,18 @@ export default function OrdersPage() {
         note: "All recorded orders",
       },
       {
-        title: "Pending Verification",
-        value: counts.pendingVerification,
+        title: "Received",
+        value: counts.received,
         icon: Clock3,
         color: "bg-amber-50 text-amber-600",
-        note: "Requires sales review",
+        note: "New and awaiting action",
       },
       {
         title: "Ready for Approval",
         value: counts.readyForApproval,
         icon: CheckCircle2,
         color: "bg-purple-50 text-purple-600",
-        note: "Verification complete",
+        note: "Awaiting approval decision",
       },
       {
         title: "Approved Orders",

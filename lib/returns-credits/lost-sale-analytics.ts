@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { getDeliveryReturnSummary, legacyReturnLossNotCoveredByDelivery } from "@/lib/lost-sales/delivery-returns";
 
 /**
  * Real Business Data Onboarding round, Phase 7 (Claims analytics).
@@ -68,13 +69,24 @@ export type ReturnedGoodsLostSalesValue = {
   recordsWithoutEstimate: number;
   /** recordsWithEstimate + recordsWithoutEstimate -- every genuine-loss return recorded, priced or not. */
   totalLossRecords: number;
+  /**
+   * Where the figure above comes from. deliveryRejections is the primary,
+   * automatic source (Record Delivery -> DeliveryLine.rejectedQuantity);
+   * manualReturns are legacy ClaimReturn losses on claims that did NOT
+   * originate from a delivery. They are disjoint, so byCurrency is their sum.
+   */
+  sources: {
+    deliveryRejections: { recordCount: number; pricedRecordCount: number };
+    manualReturns: { recordCount: number; pricedRecordCount: number };
+  };
 };
 
 export async function getReturnedGoodsLostSalesValue(options?: { includeDemo?: boolean }): Promise<ReturnedGoodsLostSalesValue> {
   const includeDemo = options?.includeDemo ?? false;
-  const where: Prisma.ClaimReturnLostSaleWhereInput = includeDemo ? {} : { isDemo: false };
+  // Legacy manual returns, minus anything already counted from the delivery outcome (no double counting).
+  const where: Prisma.ClaimReturnLostSaleWhereInput = { ...(includeDemo ? {} : { isDemo: false }), ...legacyReturnLossNotCoveredByDelivery() };
 
-  const [totalCount, withEstimateCount, currencyGroups] = await Promise.all([
+  const [totalCount, withEstimateCount, currencyGroups, delivery] = await Promise.all([
     prisma.claimReturnLostSale.count({ where }),
     prisma.claimReturnLostSale.count({ where: { ...where, estimatedValue: { not: null } } }),
     prisma.claimReturnLostSale.groupBy({
@@ -83,20 +95,30 @@ export async function getReturnedGoodsLostSalesValue(options?: { includeDemo?: b
       _sum: { estimatedValue: true },
       _count: { _all: true },
     }),
+    getDeliveryReturnSummary({ includeDemo }),
   ]);
 
-  const byCurrency: ReturnedGoodsLostSalesBucket[] = currencyGroups
-    .map((row) => ({
-      currencyCode: row.currencyCode ?? "UNKNOWN",
-      recordCount: row._count._all,
-      estimatedValue: (row._sum.estimatedValue ?? new Prisma.Decimal(0)).toString(),
-    }))
+  const merged = new Map<string, { recordCount: number; value: Prisma.Decimal }>();
+  const add = (currencyCode: string, recordCount: number, value: Prisma.Decimal) => {
+    const current = merged.get(currencyCode) ?? { recordCount: 0, value: new Prisma.Decimal(0) };
+    merged.set(currencyCode, { recordCount: current.recordCount + recordCount, value: current.value.plus(value) });
+  };
+  for (const row of currencyGroups) add(row.currencyCode ?? "UNKNOWN", row._count._all, row._sum.estimatedValue ?? new Prisma.Decimal(0));
+  for (const bucket of delivery.byCurrency) add(bucket.currencyCode, bucket.pricedRecordCount, new Prisma.Decimal(bucket.value));
+
+  const byCurrency: ReturnedGoodsLostSalesBucket[] = [...merged.entries()]
+    .map(([currencyCode, entry]) => ({ currencyCode, recordCount: entry.recordCount, estimatedValue: entry.value.toString() }))
     .sort((a, b) => Number(b.estimatedValue) - Number(a.estimatedValue));
 
+  const recordsWithEstimate = withEstimateCount + delivery.pricedRecordCount;
   return {
     byCurrency,
-    recordsWithEstimate: withEstimateCount,
-    recordsWithoutEstimate: totalCount - withEstimateCount,
-    totalLossRecords: totalCount,
+    recordsWithEstimate,
+    recordsWithoutEstimate: totalCount - withEstimateCount + delivery.unpricedRecordCount,
+    totalLossRecords: totalCount + delivery.recordCount,
+    sources: {
+      deliveryRejections: { recordCount: delivery.recordCount, pricedRecordCount: delivery.pricedRecordCount },
+      manualReturns: { recordCount: totalCount, pricedRecordCount: withEstimateCount },
+    },
   };
 }

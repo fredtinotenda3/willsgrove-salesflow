@@ -396,7 +396,12 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
         toast.error("Delivery not recorded", { description: message });
         return;
       }
-      toast.success("Delivery recorded", { description: "The delivery outcome has been saved to the order's history." });
+      const createdClaim = body.claim as { claimReference: string; lineCount: number } | null | undefined;
+      toast.success("Delivery recorded", {
+        description: createdClaim
+          ? `Saved. Claim ${createdClaim.claimReference} was created for ${createdClaim.lineCount} rejected product${createdClaim.lineCount === 1 ? "" : "s"}.`
+          : "The delivery outcome has been saved to the order's history.",
+      });
       setDeliveryFormFor(null);
       setDeliveryDetail(null);
       await load();

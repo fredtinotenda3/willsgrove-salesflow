@@ -42,17 +42,17 @@ export function UnifiedLostSalesSummary({ unified, periodLabel }: { unified: Uni
       note: unified.rejectedAfterDelivery.linesWithoutPrice > 0 ? `${unified.rejectedAfterDelivery.linesWithoutPrice} line(s) cannot be priced and carry no value.` : undefined,
     },
     {
-      title: "3. Physically returned",
-      meaning: "Actually received back. Part of rejected, never added to it.",
+      title: "3. Returned goods",
+      meaning: "Goods rejected at delivery and returned to Willsgrove (from Record Delivery). Part of rejected, never added to it.",
       body: <p className="text-lg font-bold"><Qty rows={unified.returned.quantityByUnit} /></p>,
     },
     {
       title: "4. Confirmed lost",
-      meaning: "Shortage confirmed lost, plus returns judged non-resalable. A rejected quantity that was not returned is not confirmed lost.",
+      meaning: "Shortage confirmed lost, plus goods returned from delivery (and any legacy manual non-resalable returns). A rejected quantity that was not returned is not confirmed lost.",
       body: (
         <>
           <p className="text-xs"><span className="font-semibold">Shortage:</span> <Qty rows={unified.confirmedLost.shortage.quantityByUnit} /> · <Money rows={unified.confirmedLost.shortage.value} /></p>
-          <p className="text-xs"><span className="font-semibold">Non-resalable returns:</span> <Qty rows={unified.confirmedLost.nonResalableReturns.quantityByUnit} /> · <Money rows={unified.confirmedLost.nonResalableReturns.valueByCurrency} /></p>
+          <p className="text-xs"><span className="font-semibold">Returned goods:</span> <Qty rows={unified.confirmedLost.nonResalableReturns.quantityByUnit} /> · <Money rows={unified.confirmedLost.nonResalableReturns.valueByCurrency} /></p>
         </>
       ),
     },

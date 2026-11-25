@@ -73,7 +73,7 @@ describe("getEffectiveOrderStatus", () => {
  * stage forward past READY_TO_INVOICE on their own -- and never backward.
  */
 describe("getOrderLifecycleSteps", () => {
-  const LIFECYCLE_STAGE_LABELS = ["Received", "Verification", "Approval", "Picking", "Ready for Invoice", "Invoiced", "Dispatched", "Delivered"];
+  const LIFECYCLE_STAGE_LABELS = ["Received", "Approval", "Picking", "Ready for Invoice", "Invoiced", "Dispatched", "Delivered"];
 
   it("returns null for DRAFT, CANCELLED and REJECTED -- these never progress through a linear stepper", () => {
     for (const status of ["DRAFT", "CANCELLED", "REJECTED"]) {
@@ -81,20 +81,20 @@ describe("getOrderLifecycleSteps", () => {
     }
   });
 
-  it("always returns all 8 stages, in the spec's fixed order, for a progressing order", () => {
+  it("always returns all 7 stages, in the spec's fixed order, for a progressing order", () => {
     const steps = getOrderLifecycleSteps({ status: "RECEIVED", dispatchStatuses: [], hasMatchedInvoice: false, delivered: false });
     expect(steps).not.toBeNull();
     expect(steps!.map((s) => s.label)).toEqual(LIFECYCLE_STAGE_LABELS);
   });
 
-  it("marks every stage before the current one 'done' and every stage after it 'upcoming', for each of steps 0-4", () => {
+  it("marks every stage before the current one 'done' and every stage after it 'upcoming', for each of steps 0-3", () => {
     const statusToStageIndex: Record<string, number> = {
       RECEIVED: 0,
-      PENDING_VERIFICATION: 1,
-      READY_FOR_APPROVAL: 2,
-      APPROVED: 2,
-      PICKING: 3,
-      READY_TO_INVOICE: 4,
+      PENDING_VERIFICATION: 0, // deprecated status: shown as Received
+      READY_FOR_APPROVAL: 1,
+      APPROVED: 1,
+      PICKING: 2,
+      READY_TO_INVOICE: 3,
     };
     for (const [status, stageIndex] of Object.entries(statusToStageIndex)) {
       const steps = getOrderLifecycleSteps({ status, dispatchStatuses: [], hasMatchedInvoice: false, delivered: false })!;
@@ -109,8 +109,8 @@ describe("getOrderLifecycleSteps", () => {
   it("APPROVED and READY_FOR_APPROVAL both sit at the Approval stage -- APPROVED is not yet a step ahead", () => {
     const readyForApproval = getOrderLifecycleSteps({ status: "READY_FOR_APPROVAL", dispatchStatuses: [], hasMatchedInvoice: false, delivered: false })!;
     const approved = getOrderLifecycleSteps({ status: "APPROVED", dispatchStatuses: [], hasMatchedInvoice: false, delivered: false })!;
-    expect(readyForApproval[2]!.state).toBe("current");
-    expect(approved[2]!.state).toBe("current");
+    expect(readyForApproval[1]!.state).toBe("current");
+    expect(approved[1]!.state).toBe("current");
   });
 
   it("an unrecognised status string defaults to stage 0 (Received) rather than throwing", () => {
@@ -118,24 +118,24 @@ describe("getOrderLifecycleSteps", () => {
     expect(steps[0]!.state).toBe("current");
   });
 
-  it("hasMatchedInvoice alone pushes the stage to Invoiced (index 5), even while status is still READY_TO_INVOICE", () => {
+  it("hasMatchedInvoice alone pushes the stage to Invoiced (index 4), even while status is still READY_TO_INVOICE", () => {
     const steps = getOrderLifecycleSteps({ status: "READY_TO_INVOICE", dispatchStatuses: [], hasMatchedInvoice: true, delivered: false })!;
-    expect(steps[5]!.state).toBe("current");
-    expect(steps[4]!.state).toBe("done");
-    expect(steps[6]!.state).toBe("upcoming");
+    expect(steps[4]!.state).toBe("current");
+    expect(steps[3]!.state).toBe("done");
+    expect(steps[5]!.state).toBe("upcoming");
   });
 
-  it("a DEPARTED or DELIVERED dispatch status pushes the stage to Dispatched (index 6), independent of hasMatchedInvoice", () => {
+  it("a DEPARTED or DELIVERED dispatch status pushes the stage to Dispatched (index 5), independent of hasMatchedInvoice", () => {
     const departed = getOrderLifecycleSteps({ status: "READY_TO_INVOICE", dispatchStatuses: ["DEPARTED"], hasMatchedInvoice: false, delivered: false })!;
-    expect(departed[6]!.state).toBe("current");
+    expect(departed[5]!.state).toBe("current");
 
     // A mix of DEPARTED and DELIVERED dispatches is still in transit overall.
     const mixed = getOrderLifecycleSteps({ status: "READY_TO_INVOICE", dispatchStatuses: ["DEPARTED", "DELIVERED"], hasMatchedInvoice: false, delivered: false })!;
-    expect(mixed[6]!.state).toBe("current");
-    expect(mixed[7]!.state).toBe("upcoming");
+    expect(mixed[5]!.state).toBe("current");
+    expect(mixed[6]!.state).toBe("upcoming");
   });
 
-  it("every non-cancelled dispatch DELIVERED completes all 8 steps even with no recorded invoice outcome -- the stepper agrees with the 'Delivered' header badge", () => {
+  it("every non-cancelled dispatch DELIVERED completes all 7 steps even with no recorded invoice outcome -- the stepper agrees with the 'Delivered' header badge", () => {
     const steps = getOrderLifecycleSteps({ status: "READY_TO_INVOICE", dispatchStatuses: ["DELIVERED"], hasMatchedInvoice: false, delivered: false })!;
     expect(steps.every((s) => s.state === "done")).toBe(true);
     const twoBatches = getOrderLifecycleSteps({ status: "READY_TO_INVOICE", dispatchStatuses: ["DELIVERED", "DELIVERED"], hasMatchedInvoice: true, delivered: false })!;
@@ -144,12 +144,12 @@ describe("getOrderLifecycleSteps", () => {
 
   it("a PLANNED-only dispatch does NOT push the stage past Ready for Invoice -- nothing has actually left yet", () => {
     const steps = getOrderLifecycleSteps({ status: "READY_TO_INVOICE", dispatchStatuses: ["PLANNED"], hasMatchedInvoice: false, delivered: false })!;
-    expect(steps[4]!.state).toBe("current");
+    expect(steps[3]!.state).toBe("current");
   });
 
-  it("delivered=true pushes the stage all the way to Delivered (index 7), the final stage -- rendered 'done' (ticked), never 'current', since a delivered order has nothing left to progress to", () => {
+  it("delivered=true pushes the stage all the way to Delivered (index 6), the final stage -- rendered 'done' (ticked), never 'current', since a delivered order has nothing left to progress to", () => {
     const steps = getOrderLifecycleSteps({ status: "READY_TO_INVOICE", dispatchStatuses: ["DELIVERED"], hasMatchedInvoice: true, delivered: true })!;
-    expect(steps[7]!.state).toBe("done");
+    expect(steps[6]!.state).toBe("done");
     expect(steps.every((s) => s.state === "done")).toBe(true);
   });
 
@@ -159,12 +159,12 @@ describe("getOrderLifecycleSteps", () => {
     // invoice on a RECEIVED order), but the function's own contract is
     // Math.max at each step, not a reset -- so delivered=true still wins.
     const steps = getOrderLifecycleSteps({ status: "RECEIVED", dispatchStatuses: ["DELIVERED"], hasMatchedInvoice: true, delivered: true })!;
-    expect(steps[7]!.state).toBe("done");
+    expect(steps[6]!.state).toBe("done");
   });
 
-  it("the final stage is 'done' only when it is actually the one reached -- an order still mid-transit (Dispatched, not yet Delivered) keeps 'current' on its own last-reached stage, index 6", () => {
+  it("the final stage is 'done' only when it is actually the one reached -- an order still mid-transit (Dispatched, not yet Delivered) keeps 'current' on its own last-reached stage, index 5", () => {
     const steps = getOrderLifecycleSteps({ status: "READY_TO_INVOICE", dispatchStatuses: ["DEPARTED"], hasMatchedInvoice: true, delivered: false })!;
-    expect(steps[6]!.state).toBe("current");
-    expect(steps[7]!.state).toBe("upcoming");
+    expect(steps[5]!.state).toBe("current");
+    expect(steps[6]!.state).toBe("upcoming");
   });
 });

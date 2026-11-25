@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { resolveCustomerPriceListPrices } from "@/lib/order-price-resolution";
 
 /**
  * Real Business Data Onboarding round (spec PART A, Phase 4b). A plain,
@@ -184,6 +185,8 @@ export type CustomerPriceListPrice = {
   currencyCode: string;
   priceListCode: string;
   priceListName: string;
+  /** Where the price came from: the customer's own override, or their price list. */
+  source: "CUSTOMER_OVERRIDE" | "PRICE_LIST";
 };
 
 /**
@@ -211,35 +214,16 @@ export async function resolveCustomerPriceListUnitPrice(
   productId: string,
   asOf: Date = new Date()
 ): Promise<CustomerPriceListPrice | null> {
-  const customer = await prisma.customer.findUnique({ where: { id: customerId }, select: { priceListId: true } });
-  if (!customer?.priceListId) return null;
-
-  const product = await prisma.product.findUnique({ where: { id: productId }, select: { sapItemCode: true } });
-
-  const entry = await prisma.priceListEntry.findFirst({
-    where: {
-      priceListId: customer.priceListId,
-      AND: [
-        {
-          OR: [
-            { productId },
-            ...(product?.sapItemCode ? [{ sapItemCodeSnapshot: product.sapItemCode }] : []),
-          ],
-        },
-        { validFrom: { lte: asOf } },
-        { OR: [{ validTo: null }, { validTo: { gte: asOf } }] },
-      ],
-    },
-    orderBy: { validFrom: "desc" },
-    select: { unitPrice: true, priceList: { select: { code: true, name: true, currencyCode: true } } },
-  });
-  if (!entry) return null;
-
+  const resolved = await resolveCustomerPriceListPrices(prisma, customerId, [productId], asOf);
+  const unitPrice = resolved.priceByProductId.get(productId);
+  if (unitPrice === undefined || resolved.currencyCode === null) return null;
+  const source = resolved.sourceByProductId.get(productId) ?? "PRICE_LIST";
   return {
-    unitPrice: entry.unitPrice.toString(),
-    currencyCode: entry.priceList.currencyCode,
-    priceListCode: entry.priceList.code,
-    priceListName: entry.priceList.name,
+    unitPrice,
+    currencyCode: resolved.currencyCode,
+    priceListCode: resolved.priceListCode ?? "",
+    priceListName: resolved.priceListName ?? "",
+    source,
   };
 }
 

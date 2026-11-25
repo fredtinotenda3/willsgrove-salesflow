@@ -113,7 +113,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
       console.error(`Failed to queue delivery-outcome message for delivery ${result.deliveryRecordId}:`, notifyError);
     }
 
-    return NextResponse.json({ success: true, deliveryRecordId: result.deliveryRecordId, outcome: result.outcome }, { status: 201 });
+    return NextResponse.json({ success: true, deliveryRecordId: result.deliveryRecordId, outcome: result.outcome, claim: result.claim }, { status: 201 });
   } catch (error) {
     console.error("Recording a delivery outcome failed:", error);
     return NextResponse.json({ success: false, message: "Unable to record this delivery outcome." }, { status: 500 });

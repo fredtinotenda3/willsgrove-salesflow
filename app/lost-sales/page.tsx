@@ -81,13 +81,22 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
             <p className="text-xs text-gray-400">Workspace / Operations / Lost Sales</p>
             <h2 className="mt-1 text-lg font-bold text-[#17251E]">Lost-Sales Management</h2>
           </div>
-          <Link
-            href="/lost-sales/analytics"
-            className="flex items-center gap-2 rounded-xl border border-[#D7E0D5] px-4 py-2 text-xs font-semibold text-[#17251E] transition hover:bg-gray-50"
-          >
-            <TrendingDown size={14} />
-            View analytics
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/lost-sales/returned-goods"
+              className="flex items-center gap-2 rounded-xl border border-[#D7E0D5] px-4 py-2 text-xs font-semibold text-[#17251E] transition hover:bg-gray-50"
+            >
+              <Ban size={14} />
+              Confirmed Loss (Returned Goods)
+            </Link>
+            <Link
+              href="/lost-sales/analytics"
+              className="flex items-center gap-2 rounded-xl border border-[#D7E0D5] px-4 py-2 text-xs font-semibold text-[#17251E] transition hover:bg-gray-50"
+            >
+              <TrendingDown size={14} />
+              View analytics
+            </Link>
+          </div>
         </header>
 
         <div className="space-y-6 p-8">

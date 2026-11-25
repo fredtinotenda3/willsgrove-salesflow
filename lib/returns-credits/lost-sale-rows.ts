@@ -1,5 +1,7 @@
 import "server-only";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { legacyReturnLossNotCoveredByDelivery, listDeliveryReturnRows } from "@/lib/lost-sales/delivery-returns";
 
 /**
  * Follow-up fix ("Returned-claim lost sales must... Show returned-claim
@@ -46,10 +48,15 @@ import { prisma } from "@/lib/prisma";
 const MAX_RETURNED_LOST_SALE_ROWS = 10_000;
 
 export type ReturnedProductLostSaleRow = {
-  id: string; // ClaimReturnLostSale.id
-  claimReturnId: string;
-  claimId: string;
-  claimReference: string;
+  /** ClaimReturnLostSale.id for a manual return, or DeliveryLine.id for a delivery rejection (see `origin`). */
+  id: string;
+  /** DELIVERY_REJECTION: goods refused at delivery (automatic, primary). MANUAL_RETURN: legacy ClaimReturn on a non-delivery claim. */
+  origin: "DELIVERY_REJECTION" | "MANUAL_RETURN";
+  /** Null for a delivery rejection (no separate ClaimReturn is involved). */
+  claimReturnId: string | null;
+  /** Null only for a delivery recorded before delivery-originated claims existed and not yet back-filled. */
+  claimId: string | null;
+  claimReference: string | null;
   claimLineId: string | null;
   customerId: string;
   customerName: string;
@@ -95,8 +102,10 @@ export type ReturnedProductLostSaleFilters = {
 export async function listReturnedProductLostSaleRows(
   filters: ReturnedProductLostSaleFilters
 ): Promise<ListReturnedProductLostSalesResult> {
-  const where = {
+  const where: Prisma.ClaimReturnLostSaleWhereInput = {
     ...(filters.includeDemo ? {} : { isDemo: false }),
+    // Units already counted from the delivery outcome are never counted again.
+    ...legacyReturnLossNotCoveredByDelivery(),
     recordedAt: filters.dateRange,
     ...(filters.customerId ? { customerId: filters.customerId } : {}),
     // productId is not a column on this table -- filter via the
@@ -168,8 +177,9 @@ export async function listReturnedProductLostSaleRows(
     }),
   ]);
 
-  const rows: ReturnedProductLostSaleRow[] = rawRows.map((row) => ({
+  const manualRows: ReturnedProductLostSaleRow[] = rawRows.map((row) => ({
     id: row.id,
+    origin: "MANUAL_RETURN" as const,
     claimReturnId: row.claimReturnId,
     claimId: row.claimId,
     claimReference: row.claim.claimReference,
@@ -194,9 +204,45 @@ export async function listReturnedProductLostSaleRows(
     isDemo: row.isDemo,
   }));
 
+  const delivery = await listDeliveryReturnRows({
+    includeDemo: filters.includeDemo,
+    customerId: filters.customerId,
+    productId: filters.productId,
+    salespersonId: filters.salespersonId,
+    dateRange: filters.dateRange,
+  });
+  const deliveryRows: ReturnedProductLostSaleRow[] = delivery.rows.map((row) => ({
+    id: row.id,
+    origin: "DELIVERY_REJECTION" as const,
+    claimReturnId: null,
+    claimId: row.claimId,
+    claimReference: row.claimReference,
+    claimLineId: null,
+    customerId: row.customerId,
+    customerName: row.customerName,
+    productId: row.productId,
+    sapItemCodeSnapshot: row.sapItemCode,
+    productDescriptionSnapshot: row.description,
+    unitOfMeasure: row.unitOfMeasure,
+    quantity: row.returnedQuantity,
+    unitPrice: row.unitPrice,
+    totalValue: row.totalValue,
+    currencyCode: row.currencyCode,
+    condition: "REJECTED_AT_DELIVERY",
+    returnReference: `Delivery of ${row.orderReference}`,
+    orderId: row.orderId,
+    orderReference: row.orderReference,
+    sapInvoiceId: null,
+    salespersonId: row.salespersonId,
+    recordedAt: row.recordedAt,
+    isDemo: row.isDemo,
+  }));
+
+  const rows = [...manualRows, ...deliveryRows].sort((a, b) => a.recordedAt.getTime() - b.recordedAt.getTime());
+  const matching = totalMatching + delivery.totalMatching;
   return {
     rows,
-    totalMatching,
-    truncated: totalMatching > MAX_RETURNED_LOST_SALE_ROWS,
+    totalMatching: matching,
+    truncated: totalMatching > MAX_RETURNED_LOST_SALE_ROWS || delivery.truncated,
   };
 }

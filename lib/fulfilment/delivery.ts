@@ -1,8 +1,10 @@
 import "server-only";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { TRANSACTION_OPTIONS } from "@/lib/orders";
 import { parseScaledDecimal } from "@/lib/picking/validation";
 import type { RecordDeliveryInput } from "@/lib/fulfilment/validation";
+import { createClaimFromDelivery } from "@/lib/invoice-claims/create-delivery-claim";
 
 /**
  * Milestone 10 (Communication Channels & Fulfilment). Delivery outcome
@@ -13,14 +15,25 @@ import type { RecordDeliveryInput } from "@/lib/fulfilment/validation";
  * had exceptions, recorded as one event, never a line-by-line drip of
  * separate delivery calls for the same truck.
  *
- * Never creates an InvoiceClaim itself -- see DeliveryRecord's own schema
- * comment for why a rejection here is surfaced to the UI as a link into
- * the EXISTING /invoice-claims/new flow (Milestone 6A) rather than this
- * function reaching into that model.
+ * Standalone lost-sales correction: a rejection recorded here IS the
+ * business's "claim" (goods refused at the customer and returned to
+ * Willsgrove). So, in the SAME transaction as the delivery itself, every
+ * delivery line with a rejected quantity is turned into a product-level claim
+ * line (lib/invoice-claims/create-delivery-claim.ts). That is what feeds the
+ * Invoice Claims register, the Confirmed Loss (Returned Goods) figure and the
+ * lost-sales reports -- there is no separate manual step to forget.
+ * Idempotent: DeliveryRecord is unique per dispatch, and the claim is unique
+ * per delivery record / delivery line.
  */
 
 export type RecordDeliveryResult =
-  | { ok: true; deliveryRecordId: string; outcome: "ACCEPTED_IN_FULL" | "PARTIALLY_REJECTED" | "FULLY_REJECTED" }
+  | {
+      ok: true;
+      deliveryRecordId: string;
+      outcome: "ACCEPTED_IN_FULL" | "PARTIALLY_REJECTED" | "FULLY_REJECTED";
+      /** Set when the rejected quantities were turned into a claim (null when nothing was rejected). */
+      claim: { id: string; claimReference: string; lineCount: number } | null;
+    }
   | { ok: false; status: number; message: string };
 
 export async function recordDelivery(
@@ -94,7 +107,9 @@ export async function recordDelivery(
       ? "PARTIALLY_REJECTED"
       : "FULLY_REJECTED";
 
-  const created = await prisma.$transaction(async (tx) => {
+  let created: { id: string; claim: Awaited<ReturnType<typeof createClaimFromDelivery>> };
+  try {
+    created = await prisma.$transaction(async (tx) => {
     const delivery = await tx.deliveryRecord.create({
       data: {
         dispatchRecordId,
@@ -118,12 +133,27 @@ export async function recordDelivery(
 
     await tx.dispatchRecord.update({ where: { id: dispatchRecordId }, data: { status: "DELIVERED" } });
 
+    const claimResult = await createClaimFromDelivery(tx, { deliveryRecordId: delivery.id, actorId });
+
     await tx.auditEvent.create({
       data: { actorId, action: "DELIVERY_RECORDED", entityType: "DeliveryRecord", entityId: delivery.id, afterData: { dispatchRecordId, outcome } },
     });
 
-    return delivery;
-  }, TRANSACTION_OPTIONS);
+    return { id: delivery.id, claim: claimResult };
+    }, TRANSACTION_OPTIONS);
+  } catch (error) {
+    // Two simultaneous submissions for the same dispatch: DeliveryRecord is unique per
+    // dispatch, so the loser rolls back completely (no half-created claim) and is told so.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return { ok: false, status: 409, message: "A delivery outcome has already been recorded for this dispatch." };
+    }
+    throw error;
+  }
 
-  return { ok: true, deliveryRecordId: created.id, outcome };
+  return {
+    ok: true,
+    deliveryRecordId: created.id,
+    outcome,
+    claim: created.claim.created ? { id: created.claim.claimId, claimReference: created.claim.claimReference, lineCount: created.claim.lineCount } : null,
+  };
 }

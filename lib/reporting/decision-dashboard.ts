@@ -303,8 +303,8 @@ export async function getDecisionDashboard(viewerId: string, viewerRole: string,
       unit: "currency",
       comparison: { kind: "pointInTime", asOfLabel: "current position" },
       visibility: "management",
-      drillDown: { label: "View financial exposure", href: "/reports/financial-exposure" },
-      definition: "Confirmed loss from returns: of goods physically returned against a claim, the confirmed value of whatever was found DAMAGED, EXPIRED or otherwise unsellable -- a confirmed outcome, not a dispute estimate. Never summed with Source A (Claims Financial Exposure) for the same claim; see the financial exposure report's own note.",
+      drillDown: { label: "View returned goods", href: "/lost-sales/returned-goods" },
+      definition: "Confirmed loss from returned goods: the value of products rejected at delivery and returned to Willsgrove (returned quantity x the order line's unit price), taken straight from Record Delivery. Delivered quantities are never counted. Separate from Unfulfilled Demand (never supplied). Never summed with Claims Financial Exposure for the same claim.",
     },
   ];
 

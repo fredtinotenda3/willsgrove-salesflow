@@ -126,7 +126,10 @@ export async function listReturnedProducts(filter: ReturnedProductsFilter, page:
     const order = orderLine.order;
     const rejected = line.rejectedQuantity.toString();
     const accepted = line.acceptedQuantity.toString();
-    const returned = sumQuantities(orderLine.claimLines.flatMap((cl) => cl.returns.map((r) => r.receivedQuantity.toString())));
+    // A rejection recorded at delivery IS a return: the goods came back to
+    // Willsgrove with the delivery vehicle. The recorded rejected quantity is
+    // therefore the returned quantity (no separate manual receipt is needed).
+    const returned = rejected;
     const price = (orderLine.approvedUnitPrice ?? orderLine.customerUnitPrice)?.toString() ?? null;
     const claims = new Map<string, { id: string; claimReference: string; status: string }>();
     for (const cl of orderLine.claimLines) claims.set(cl.claim.id, cl.claim);

@@ -10,8 +10,6 @@ import {
   ORDER_STATUS_LABELS,
   getEffectiveOrderStatus,
   getOrderLifecycleSteps,
-  VERIFICATION_STATUS_LABELS,
-  VERIFICATION_STATUS_STYLES,
   DOCUMENT_TYPE_LABELS,
   orderSourceLabel,
   formatOrderDate,
@@ -23,7 +21,6 @@ import {
   initialsFor,
   avatarColorFor,
   type OrderStatusValue,
-  type VerificationStatusValue,
   type DocumentTypeValue,
 } from "@/lib/order-display";
 import { INVOICE_RECONCILIATION_STATUS_LABELS, INVOICE_RECONCILIATION_STATUS_STYLES } from "@/lib/invoice-reconciliation/display";
@@ -272,9 +269,9 @@ export default async function OrderDetailPage({ params }: RouteParams) {
           <section className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
             <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-600" />
             <p className="text-xs text-amber-800">
-              Verification and approval workflows are not built yet. Line prices are taken from the
-              customer&apos;s price list when the order is created (or entered manually) and are kept as a
-              snapshot, so later price-list changes never alter this order.
+              Line prices come from the customer&apos;s own price (if one is set) or their price list when the
+              order is created, or are entered manually. They are kept as a snapshot, so later price changes never
+              alter this order.
             </p>
           </section>
 
@@ -309,17 +306,10 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                         <TableHead className="w-32 px-4 text-right text-[10px] uppercase tracking-wider text-gray-400">Unit Price</TableHead>
                         <TableHead className="w-28 px-4 text-right text-[10px] uppercase tracking-wider text-gray-400">Tax</TableHead>
                         <TableHead className="w-32 px-4 text-right text-[10px] uppercase tracking-wider text-gray-400">Line Total</TableHead>
-                        <TableHead className="hidden w-28 px-4 text-[10px] uppercase tracking-wider text-gray-400 xl:table-cell">Verification</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {order.lines.map((line) => {
-                        const verificationLabel =
-                          VERIFICATION_STATUS_LABELS[line.verificationStatus as VerificationStatusValue] ??
-                          line.verificationStatus;
-                        const verificationStyle =
-                          VERIFICATION_STATUS_STYLES[line.verificationStatus as VerificationStatusValue] ??
-                          "bg-gray-100 text-gray-500";
                         // SAP-reconciled lineTotal wins once it exists; before that
                         // the derived (subtotal + configured tax) total is shown.
                         const lineAmount = formatLineAmountWithEstimate(line.lineTotal, line.estimatedLineTotal, order.currency);
@@ -333,7 +323,6 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                                 <p className="mt-0.5 text-[10px] text-gray-400">SAP item: {line.sapItemCodeSnapshot}</p>
                               )}
                               {line.salesNotes && <p className="mt-0.5 text-[10px] italic text-gray-400">{line.salesNotes}</p>}
-                              <Badge className={`mt-1 xl:hidden ${verificationStyle}`}>{verificationLabel}</Badge>
                             </TableCell>
                             <TableCell className="px-4 text-right align-top text-xs text-gray-600">
                               {line.requestedQuantity} {line.requestedUnitCode}
@@ -391,9 +380,6 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                               ) : (
                                 lineAmount.text
                               )}
-                            </TableCell>
-                            <TableCell className="hidden px-4 align-top xl:table-cell">
-                              <Badge className={verificationStyle}>{verificationLabel}</Badge>
                             </TableCell>
                           </TableRow>
                         );

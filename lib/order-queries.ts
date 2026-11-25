@@ -295,7 +295,6 @@ export async function getOrderById(id: string) {
           customerUnitPrice: true,
           approvedUnitPrice: true,
           lineTotal: true,
-          verificationStatus: true,
           salesNotes: true,
           // Milestone 3 completion (Warehouse Assembly Form). The
           // assembly form (app/orders/[id]/assembly-form/page.tsx) needs
@@ -603,7 +602,6 @@ export async function getOrderById(id: string) {
       lineTax: pricing.lines[index].tax,
       lineTaxConfigured: pricing.lines[index].taxConfigured,
       estimatedLineTotal: pricing.lines[index].total,
-      verificationStatus: line.verificationStatus,
       salesNotes: line.salesNotes,
       // Milestone 3 completion. Null when this line's product has since
       // been removed from the catalogue (onDelete: SetNull) or never
@@ -671,14 +669,13 @@ export async function getOrderById(id: string) {
  * Stanley to confirm against how SAP B1 actually reports this.
  */
 export async function getDashboardOrderCounts() {
-  const [total, pendingVerification, awaitingFulfilment, completedDeliveries] = await Promise.all([
+  const [total, awaitingFulfilment, completedDeliveries] = await Promise.all([
     prisma.customerOrder.count({ where: { isDemo: false } }),
-    prisma.customerOrder.count({ where: { isDemo: false, status: OrderStatus.PENDING_VERIFICATION } }),
     prisma.customerOrder.count({
       where: { isDemo: false, status: OrderStatus.APPROVED, handedToSapAt: null },
     }),
     prisma.customerOrder.count({ where: { isDemo: false, invoicedAt: { not: null } } }),
   ]);
 
-  return { total, pendingVerification, awaitingFulfilment, completedDeliveries };
+  return { total, awaitingFulfilment, completedDeliveries };
 }

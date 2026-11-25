@@ -39,7 +39,7 @@ export async function getCommandCentre(presetRaw: string | undefined, now = new 
 
   const [
     ordersCreated, quotationsCreated, claimsCreated, invoicesImported,
-    openOrders, unassignedOrders, stuckOrders, verificationQueue, awaitingApproval,
+    openOrders, unassignedOrders, stuckOrders, awaitingApproval,
     openQuotes, expiringQuotes,
     openClaims, unassignedClaims, unmatchedInvoices, reconRequired,
     activeUsers, mustChange, administrators,
@@ -54,7 +54,6 @@ export async function getCommandCentre(presetRaw: string | undefined, now = new 
     prisma.customerOrder.count({ where: { status: open } }),
     prisma.customerOrder.count({ where: { status: open, salespersonId: null } }),
     prisma.customerOrder.count({ where: { status: open, updatedAt: { lt: stuckBefore } } }),
-    prisma.customerOrder.count({ where: { status: "PENDING_VERIFICATION" } }),
     prisma.customerOrder.count({ where: { status: "READY_FOR_APPROVAL" } }),
     prisma.quotation.count({ where: { status: { in: ["DRAFT", "ISSUED"] }, supersededAt: null } }),
     prisma.quotation.count({ where: { status: "ISSUED", supersededAt: null, validUntil: { lt: new Date(now.getTime() + 7 * 86_400_000) } } }),
@@ -93,7 +92,6 @@ export async function getCommandCentre(presetRaw: string | undefined, now = new 
     },
     queues: {
       openOrders: plain(openOrders, "/admin/orders?scope=open"),
-      verificationQueue: plain(verificationQueue, "/admin/orders?status=PENDING_VERIFICATION"),
       awaitingApproval: plain(awaitingApproval, "/admin/orders?status=READY_FOR_APPROVAL"),
       openQuotations: plain(openQuotes, "/admin/quotations?scope=open"),
       openClaims: plain(openClaims, "/admin/claims?scope=open"),

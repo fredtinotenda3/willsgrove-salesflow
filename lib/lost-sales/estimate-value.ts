@@ -76,6 +76,23 @@ export async function resolveEstimatedLostSaleValue(
     }
   }
 
+  // Unfulfilled-demand values are USD figures (see getAutomaticLostSalesValue),
+  // so only USD prices may feed them: a ZWG price is never summed into USD.
+  // Precedence matches order pricing: the customer's own override first.
+  if (params.productId) {
+    const override = await tx.customerProductPrice.findUnique({
+      where: { customerId_productId: { customerId: params.customerId, productId: params.productId } },
+      select: { unitPrice: true, currencyCode: true },
+    });
+    if (override && override.currencyCode === "USD") {
+      const unitPrice = override.unitPrice.toString();
+      const value = multiplyDecimalStrings(unitPrice, params.quantity);
+      // Stored under PRICE_LIST_ENTRY: the persisted source enum has no override value and a
+      // schema change is not warranted for a label (the value itself is what matters).
+      if (value !== null) return { unitPrice, value, source: "PRICE_LIST_ENTRY" };
+    }
+  }
+
   const customer = await tx.customer.findUnique({
     where: { id: params.customerId },
     select: { priceListId: true },

@@ -7,6 +7,7 @@ import { firstParam as one } from "@/lib/admin/paging";
 import { fmtDate, fmtDateTime, fmtMoney, humanize } from "@/lib/admin/format";
 import { KeyValueGrid, Notice, PageHeader, Panel, Tabs } from "../../_components/ui";
 import { AuditTrail, DeleteSection, MiniTable } from "../../_components/detail-parts";
+import { OrderTotalCell } from "../../_components/order-total-cell";
 import { requireAdminPage } from "../../_components/admin-shell";
 import { ActionDialog } from "../../_components/action-dialog";
 import { StatusBadge, userOptions } from "../../_components/status-badge";
@@ -21,7 +22,7 @@ export default async function AdminOrderDetailPage({ params, searchParams }: { p
   if (!isValidId(id)) notFound();
   const detail = await getAdminOrderDetail(id);
   if (!detail) notFound();
-  const { order: o, history, canEdit, canCancel, canReopen, canDelete } = detail;
+  const { order: o, history, canEdit, canCancel, canReopen, canDelete, pricing, orderTotal } = detail;
   const requested = one((await searchParams).tab);
   const tab = (TABS as readonly string[]).includes(requested ?? "") ? (requested as (typeof TABS)[number]) : "overview";
   const assignees = tab === "actions" ? await listActiveAssignees() : [];
@@ -32,7 +33,7 @@ export default async function AdminOrderDetailPage({ params, searchParams }: { p
       <PageHeader back={{ href: "/admin/orders", label: "All orders" }} title={o.reference} description={`${o.customer.name} · ${o.salesperson ? `Salesperson ${o.salesperson.name}` : "No salesperson assigned"}`}
         actions={<><StatusBadge status={o.status} /><Link href={`/orders/${o.id}`} className="rounded-lg border border-[#DDE3DC] bg-white px-3 py-2 text-sm font-semibold hover:bg-[#F7F8F6]">Open operational view</Link></>} />
       <Tabs basePath={`/admin/orders/${o.id}`} active={tab} tabs={[
-        { key: "overview", label: "Overview" }, { key: "lines", label: "Lines", count: o._count.lines }, { key: "pricing", label: "Pricing & verification" }, { key: "documents", label: "Documents", count: o._count.documents },
+        { key: "overview", label: "Overview" }, { key: "lines", label: "Lines", count: o._count.lines }, { key: "pricing", label: "Pricing" }, { key: "documents", label: "Documents", count: o._count.documents },
         { key: "approvals", label: "Approvals", count: o.approvalRequests.length + o.approvals.length }, { key: "picking", label: "Picking", count: o.pickingSessions.length }, { key: "invoicing", label: "SAP & invoicing" },
         { key: "delivery", label: "Delivery", count: o.dispatchRecords.length }, { key: "activity", label: "Activity" }, { key: "actions", label: "Actions" },
       ]} />
@@ -42,7 +43,7 @@ export default async function AdminOrderDetailPage({ params, searchParams }: { p
           <Panel title="Order"><KeyValueGrid items={[
             { label: "Customer", value: link(`/admin/customers/${o.customer.id}`, o.customer.name) }, { label: "Source", value: humanize(o.source) }, { label: "Customer PO", value: o.customerPoReference ?? "—" },
             { label: "Requested delivery", value: fmtDate(o.requestedDeliveryDate) }, { label: "Delivery address", value: o.deliveryAddress ?? "—" }, { label: "Internal notes", value: <span className="whitespace-pre-wrap">{o.internalNotes ?? "—"}</span> },
-            { label: "Subtotal", value: o.subtotal === null ? "—" : fmtMoney(o.currency, o.subtotal) }, { label: "Tax", value: o.taxTotal === null ? "—" : fmtMoney(o.currency, o.taxTotal) }, { label: "Total", value: o.total === null ? "—" : fmtMoney(o.currency, o.total) },
+            { label: "Currency", value: o.currency }, { label: "Subtotal", value: orderTotal.basis === "STORED" ? (o.subtotal === null ? "—" : fmtMoney(o.currency, o.subtotal)) : pricing.subtotal === null ? "—" : fmtMoney(o.currency, pricing.subtotal) }, { label: "Tax", value: orderTotal.basis === "STORED" ? (o.taxTotal === null ? "—" : fmtMoney(o.currency, o.taxTotal)) : pricing.taxTotal === null ? "—" : fmtMoney(o.currency, pricing.taxTotal) }, { label: "Total", value: <span><OrderTotalCell total={orderTotal} />{orderTotal.warning ? <span className="mt-1 block text-xs text-amber-800">{orderTotal.warning}</span> : null}</span> },
             { label: "Created", value: `${fmtDateTime(o.createdAt)} by ${o.createdBy.name}` }, { label: "Source quotation", value: o.sourceQuotation ? link(`/admin/quotations/${o.sourceQuotation.id}`, o.sourceQuotation.quotationNumber) : "—" }, { label: "Demo data", value: o.isDemo ? "Yes" : "No" },
           ]} /></Panel>
           <Panel title="Status history"><div className="divide-y divide-[#EEF1ED] text-sm">{o.statusHistory.length === 0 ? <p className="p-4 text-[#849087]">No status changes recorded.</p> : o.statusHistory.map((h) => <div key={h.id} className="px-4 py-2"><div className="flex justify-between gap-3"><span>{h.fromStatus ? `${humanize(h.fromStatus)} → ` : ""}<strong>{humanize(h.toStatus)}</strong></span><span className="shrink-0 text-xs text-[#849087]">{h.changedBy?.name ?? "System"} · {fmtDateTime(h.createdAt)}</span></div>{h.notes ? <p className="text-xs text-[#5F6F66]">{h.notes}</p> : null}</div>)}</div></Panel>
@@ -50,14 +51,20 @@ export default async function AdminOrderDetailPage({ params, searchParams }: { p
       ) : null}
 
       {tab === "lines" ? (
-        <Panel title="Order lines" description="Read-only here. Lines carry the verified product, quantity and price used for invoicing, so they are changed in the operational view where verification and approval run." flush>
-          <MiniTable empty="This order has no lines." head={["#", "Product", "SAP item", "Quantity", "Customer price", "Approved price", "Line total", "Verification"]} rows={o.lines.map((l) => [l.lineNumber, <div key="d">{l.product ? link(`/admin/products/${l.product.id}`, l.product.itemName) : l.originalProductDescription}{l.product ? <div className="text-xs text-[#849087]">As ordered: {l.originalProductDescription}</div> : null}</div>, l.sapItemCodeSnapshot ?? "—", `${l.requestedQuantity.toString()} ${l.requestedUnitCode ?? ""}`, l.customerUnitPrice?.toString() ?? "—", l.approvedUnitPrice?.toString() ?? "—", l.lineTotal?.toString() ?? "—", <StatusBadge key="s" status={l.verificationStatus} />])} />
+        <Panel title="Order lines" description="Read-only here. Each line keeps the unit price it was created with (the price snapshot); later price-list or customer-price changes never alter it." flush>
+          <MiniTable empty="This order has no lines." head={["#", "Product", "SAP item", "Quantity", `Unit price (${o.currency})`, `Line total (${o.currency})`]} rows={o.lines.map((l, i) => [l.lineNumber, <div key="d">{l.product ? link(`/admin/products/${l.product.id}`, l.product.itemName) : l.originalProductDescription}{l.product ? <div className="text-xs text-[#849087]">As ordered: {l.originalProductDescription}</div> : null}</div>, l.sapItemCodeSnapshot ?? "—", `${l.requestedQuantity.toString()} ${l.requestedUnitCode ?? ""}`, (l.approvedUnitPrice ?? l.customerUnitPrice)?.toString() ?? <span key="np" className="rounded bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800">No price</span>, pricing.lines[i]?.subtotal ?? "—"])} />
         </Panel>
       ) : null}
 
       {tab === "pricing" ? (
-        <Panel title="Verification & price decisions" description="The latest verification and price decision recorded for each line." flush>
-          <MiniTable empty="No lines." head={["#", "Product", "Verification", "Checked by", "Price decision", "Decided by", "Notes"]} rows={o.lines.map((l) => { const v = l.verifications[0]; const p = l.priceDecisions[0]; return [l.lineNumber, l.product?.itemName ?? l.originalProductDescription, v ? <div key="v"><StatusBadge status={v.status} /><div className="text-xs text-[#849087]">{[v.productMatched && "product", v.quantityChecked && "quantity", v.unitMatched && "unit"].filter(Boolean).join(", ") || "nothing confirmed"}</div></div> : "—", v ? `${v.verifiedBy?.name ?? "—"} · ${fmtDate(v.createdAt)}` : "—", p ? <div key="p"><StatusBadge status={p.status} /><div className="text-xs text-[#849087]">{p.customerUnitPrice?.toString() ?? "—"} → {p.approvedUnitPrice?.toString() ?? "—"}</div></div> : "—", p ? `${p.decidedBy?.name ?? "—"} · ${fmtDate(p.createdAt)}` : "—", p?.notes ?? l.salesNotes ?? "—"]; })} />
+        <Panel title="Order total" description="Calculated by the same shared service as the operational order list, from each line's stored price. Currency is the order's currency." >
+          <div className="space-y-3 p-4 text-sm">
+            <KeyValueGrid items={[
+              { label: "Currency", value: o.currency }, { label: "Basis", value: orderTotal.basis === "STORED" ? "Stored (approved) total" : orderTotal.basis === "CALCULATED" ? "Calculated from line prices" : orderTotal.basis === "PARTIAL" ? "Partial — see warning" : "Unavailable" },
+              { label: "Priced lines", value: `${pricing.pricedLineCount} of ${pricing.pricedLineCount + pricing.unpricedLineCount}` }, { label: "Total", value: <OrderTotalCell total={orderTotal} /> },
+            ]} />
+            {orderTotal.warning ? <Notice tone="warn" title="Data quality">{orderTotal.warning}</Notice> : null}
+          </div>
         </Panel>
       ) : null}
 
@@ -113,7 +120,7 @@ export default async function AdminOrderDetailPage({ params, searchParams }: { p
               {!canReopen.ok && (o.status === "CANCELLED" || o.status === "REJECTED") ? <p>Reopen unavailable: {canReopen.message}</p> : null}
             </div>
           </Panel>
-          <Notice tone="info">Line-level changes (adding, removing or correcting lines and prices) are intentionally not offered here: they must pass verification and price approval, which only the operational view enforces.</Notice>
+          <Notice tone="info">Line-level changes (adding, removing or correcting lines and prices) are intentionally not offered here: they are handled in the operational view.</Notice>
           <DeleteSection verdict={canDelete} noun="draft order" endpoint={`/api/admin/orders/${o.id}`} confirmText={o.reference} redirect="/admin/orders" alternative="Orders that have progressed are cancelled instead of deleted, so numbering, approvals and history stay intact." lines={o._count.lines ? [`${o._count.lines} line(s) belonging only to this draft are removed with it.`] : []} />
         </div>
       ) : null}

@@ -123,7 +123,7 @@ export function getEffectiveOrderStatus({ status, dispatchStatuses }: EffectiveO
  * lifecycle/progress indicator on relevant detail pages."
  *
  * Returns the ordered stage list for the one real order lifecycle this
- * codebase actually implements: Received -> Verification -> Approval ->
+ * codebase actually implements: Received -> Approval ->
  * Picking -> Ready for Invoice -> Invoiced -> Dispatched -> Delivered.
  * (Lost Sales is a branch off Picking, not a stage every order passes
  * through, so it is surfaced separately as a related record rather than
@@ -131,11 +131,11 @@ export function getEffectiveOrderStatus({ status, dispatchStatuses }: EffectiveO
  * records on the invoice/delivered-order side, not lifecycle steps:
  * neither happens to every order, and both can recur.)
  *
- * This NEVER introduces a second stored status. Steps 0-4 read straight
+ * This NEVER introduces a second stored status. Steps 0-3 read straight
  * off the real, already-stored `status` (the only thing CustomerOrder.
  * status can express, since it freezes at READY_TO_INVOICE -- see this
  * file's own module comment and prisma/schema.prisma's OrderStatus
- * comment). Steps 5-7 read the three independent signals that are the
+ * comment). Steps 4-6 read the three independent signals that are the
  * only way to know what happened AFTER that freeze: whether an SAP
  * invoice has been matched, whether any dispatch has left (or
  * delivered), and whether that invoice's own delivery outcome has been
@@ -160,7 +160,6 @@ export type OrderLifecycleInput = {
 
 const LIFECYCLE_STAGE_LABELS = [
   "Received",
-  "Verification",
   "Approval",
   "Picking",
   "Ready for Invoice",
@@ -178,16 +177,18 @@ export function getOrderLifecycleSteps(input: OrderLifecycleInput): OrderLifecyc
 
   const statusStageIndex: Record<string, number> = {
     RECEIVED: 0,
-    PENDING_VERIFICATION: 1,
-    READY_FOR_APPROVAL: 2,
-    APPROVED: 2,
-    PICKING: 3,
-    READY_TO_INVOICE: 4,
+    // Deprecated status: the Pricing & Verification step no longer exists, so any
+    // order still sitting in it simply shows as Received.
+    PENDING_VERIFICATION: 0,
+    READY_FOR_APPROVAL: 1,
+    APPROVED: 1,
+    PICKING: 2,
+    READY_TO_INVOICE: 3,
   };
 
   let stageIndex = statusStageIndex[status] ?? 0;
-  if (hasMatchedInvoice) stageIndex = Math.max(stageIndex, 5);
-  if (dispatchStatuses.some((s) => s === "DEPARTED" || s === "DELIVERED")) stageIndex = Math.max(stageIndex, 6);
+  if (hasMatchedInvoice) stageIndex = Math.max(stageIndex, 4);
+  if (dispatchStatuses.some((s) => s === "DEPARTED" || s === "DELIVERED")) stageIndex = Math.max(stageIndex, 5);
   // An order is Delivered once EITHER the matched invoice's delivery outcome
   // has been recorded (`delivered`) OR every non-cancelled dispatch has been
   // physically delivered. The second signal matters for the native flow: the
@@ -196,7 +197,7 @@ export function getOrderLifecycleSteps(input: OrderLifecycleInput): OrderLifecyc
   // this, a physically delivered order with no recorded invoice outcome showed
   // a "Delivered" badge beside a stepper whose last step was still pending.
   const allDispatchesDelivered = dispatchStatuses.length > 0 && dispatchStatuses.every((s) => s === "DELIVERED");
-  if (delivered || allDispatchesDelivered) stageIndex = Math.max(stageIndex, 7);
+  if (delivered || allDispatchesDelivered) stageIndex = Math.max(stageIndex, 6);
 
   // Real-world fix ("7 Dispatched, 8 Delivered -- not ticking even when
   // marked Delivered"): every stage before `stageIndex` has always been

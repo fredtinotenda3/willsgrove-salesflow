@@ -482,6 +482,8 @@ model Customer {
   // see ClaimReturnLostSale's own comment.
   claimReturnLostSales ClaimReturnLostSale[]
 
+  productPrices CustomerProductPrice[]
+
   // Milestone 7 (Quotations Management).
   quotations Quotation[]
 
@@ -603,6 +605,7 @@ model Product {
   orderLines       OrderLine[]
   stockLines       StockSnapshotLine[]
   priceListEntries PriceListEntry[]
+  customerPrices   CustomerProductPrice[]
 
   // Milestone 2B.
   aliases                 ProductAlias[]
@@ -703,6 +706,62 @@ model PriceListEntry {
   @@index([validFrom, validTo])
   @@index([isDemo])
 }
+
+// Standalone customer-specific pricing. ONE row per (customer, product): an
+// explicit override that takes precedence over the price from the customer's
+// assigned PriceList. Because the row belongs to exactly one customer, editing
+// it can never touch another customer or the shared PriceListEntry rows.
+// Orders copy the resolved price onto OrderLine.customerUnitPrice, so changing
+// an override never alters historical orders.
+model CustomerProductPrice {
+  id           String  @id @default(cuid())
+  customerId   String
+  productId    String
+  currencyCode String // "USD" | "ZWG" -- must equal the customer's effective currency to be applied
+  unitPrice    Decimal @db.Decimal(18, 4)
+  notes        String?
+
+  createdById String?
+  updatedById String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([customerId, productId])
+  @@index([productId])
+  @@index([customerId, updatedAt])
+}
+
+enum CustomerPriceChangeType {
+  CREATED
+  UPDATED
+  REMOVED
+}
+
+// Append-only history of every override change. Deliberately has no foreign
+// keys (plain ids + snapshots) so the history survives later record deletion.
+model CustomerProductPriceHistory {
+  id                  String                  @id @default(cuid())
+  customerId          String
+  productId           String
+  sapItemCodeSnapshot String?
+  currencyCode        String
+  changeType          CustomerPriceChangeType
+  oldUnitPrice        Decimal?                @db.Decimal(18, 4)
+  newUnitPrice        Decimal?                @db.Decimal(18, 4)
+  source              String // "UI" | "BULK" | "IMPORT"
+  reason              String?
+  actorId             String?
+  createdAt           DateTime                @default(now()) @db.Timestamptz(6)
+
+  @@index([customerId, productId, createdAt])
+  @@index([customerId, createdAt])
+  @@index([createdAt])
+}
+
 
 model CustomerOrder {
   id                 String  @id @default(cuid())
@@ -2337,6 +2396,14 @@ model InvoiceClaim {
   // all, or before one is. Nullable FK, not a new required relation, so
   // every existing InvoiceClaim row remains valid with no backfill.
   invoiceDeliveryRecordId String?
+
+  // Standalone lost-sales correction: set ONLY on a claim the system created
+  // itself from a Record Delivery submission (lib/invoice-claims/
+  // create-delivery-claim.ts). @unique => at most ONE auto-claim per delivery
+  // outcome (the idempotency guarantee). Manually raised claims leave it null.
+  deliveryRecordId String?         @unique
+  deliveryRecord   DeliveryRecord? @relation("DeliveryRecordClaim", fields: [deliveryRecordId], references: [id], onDelete: Restrict)
+
   reportedById                String
   assignedToId                String? // "assigned person/team" -- a specific User; this codebase has no separate Team entity, so a team assignment is represented as a free-text note in customerCommunicationNotes/description if needed, not a new model
   priority                    InvoiceClaimPriority @default(MEDIUM)
@@ -2414,6 +2481,12 @@ model InvoiceClaimLine {
   // two tables cannot be expressed as a single-table CHECK constraint.
   sapInvoiceLineId String?
   orderLineId      String?
+
+  // Standalone lost-sales correction: the exact DeliveryLine (product-level
+  // delivery outcome) this claim line was created from. @unique => one
+  // delivery line can never produce two claim lines. Null for manual lines.
+  deliveryLineId String?       @unique
+  deliveryLine   DeliveryLine? @relation("DeliveryLineClaimLine", fields: [deliveryLineId], references: [id], onDelete: Restrict)
 
   // Snapshotted at creation time for display without a join -- NEVER
   // used for quantity/financial math, which always re-reads the live
@@ -4335,6 +4408,8 @@ model DeliveryRecord {
   lines            DeliveryLine[]
   outboundMessages OutboundMessage[]
 
+  invoiceClaim InvoiceClaim? @relation("DeliveryRecordClaim")
+
   @@index([outcome])
   @@index([isDemo])
 }
@@ -4361,6 +4436,8 @@ model DeliveryLine {
 
   deliveryRecord DeliveryRecord @relation(fields: [deliveryRecordId], references: [id], onDelete: Cascade)
   dispatchLine   DispatchLine   @relation(fields: [dispatchLineId], references: [id], onDelete: Restrict)
+
+  claimLine InvoiceClaimLine? @relation("DeliveryLineClaimLine")
 
   @@index([deliveryRecordId])
 }

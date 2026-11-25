@@ -573,8 +573,12 @@ export default function NewOrderPage() {
       cache: "no-store",
     })
       .then((res) => res.json())
-      .then((data: { success?: boolean; price?: { unitPrice: string; currencyCode: string; priceListCode: string } | null }) => {
-        if (!data.success || !data.price) return;
+      .then((data: { success?: boolean; price?: { unitPrice: string; currencyCode: string; priceListCode: string; source?: "CUSTOMER_OVERRIDE" | "PRICE_LIST" } | null }) => {
+        if (!data.success) return;
+        if (!data.price) {
+          setLines((prev) => prev.map((line) => (line.key === key && line.productId === productId && line.customerUnitPrice.trim() === "" ? { ...line, priceListHint: "No price on file for this customer. Enter a price, or ask an administrator to set one (Admin > Customer pricing)." } : line)));
+          return;
+        }
         setPriceListCurrency(data.price.currencyCode);
         setLines((prev) =>
           prev.map((line) =>
@@ -582,7 +586,7 @@ export default function NewOrderPage() {
               ? {
                   ...line,
                   customerUnitPrice: data.price!.unitPrice,
-                  priceListHint: `Prefilled from ${data.price!.priceListCode} price list (${data.price!.currencyCode})`,
+                  priceListHint: data.price!.source === "CUSTOMER_OVERRIDE" ? `Customer-specific price (${data.price!.currencyCode})` : `Prefilled from ${data.price!.priceListCode} price list (${data.price!.currencyCode})`,
                 }
               : line
           )

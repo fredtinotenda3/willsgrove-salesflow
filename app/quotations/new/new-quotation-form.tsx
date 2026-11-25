@@ -204,15 +204,19 @@ export default function NewQuotationForm({ defaultValidityDays }: { defaultValid
       cache: "no-store",
     })
       .then((res) => res.json())
-      .then((data: { success?: boolean; price?: { unitPrice: string; currencyCode: string; priceListCode: string } | null }) => {
-        if (!data.success || !data.price) return;
+      .then((data: { success?: boolean; price?: { unitPrice: string; currencyCode: string; priceListCode: string; source?: "CUSTOMER_OVERRIDE" | "PRICE_LIST" } | null }) => {
+        if (!data.success) return;
+        if (!data.price) {
+          setLines((prev) => prev.map((line) => (line.key === key && line.productId === productId && line.unitPrice.trim() === "" ? { ...line, priceListHint: "No price on file for this customer. Enter a price, or ask an administrator to set one (Admin > Customer pricing)." } : line)));
+          return;
+        }
         setLines((prev) =>
           prev.map((line) =>
             line.key === key && line.productId === productId && line.unitPrice.trim() === ""
               ? {
                   ...line,
                   unitPrice: data.price!.unitPrice,
-                  priceListHint: `Prefilled from ${data.price!.priceListCode} price list (${data.price!.currencyCode})`,
+                  priceListHint: data.price!.source === "CUSTOMER_OVERRIDE" ? `Customer-specific price (${data.price!.currencyCode})` : `Prefilled from ${data.price!.priceListCode} price list (${data.price!.currencyCode})`,
                 }
               : line
           )

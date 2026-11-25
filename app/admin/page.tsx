@@ -47,7 +47,7 @@ export default async function AdminCommandCentrePage({ searchParams }: { searchP
       <section aria-label="Open queues" className="space-y-2">
         <h2 className="text-sm font-semibold text-[#14211B]">Open queues <span className="font-normal text-[#7A887F]">· as of now</span></h2>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-          {queue("Open orders", c.queues.openOrders)}{queue("Awaiting verification", c.queues.verificationQueue)}{queue("Awaiting approval", c.queues.awaitingApproval, "warn")}{queue("Open quotations", c.queues.openQuotations)}{queue("Open claims", c.queues.openClaims)}{queue("Pending approvals", c.queues.pendingApprovals, "warn")}
+          {queue("Open orders", c.queues.openOrders)}{queue("Awaiting approval", c.queues.awaitingApproval, "warn")}{queue("Open quotations", c.queues.openQuotations)}{queue("Open claims", c.queues.openClaims)}{queue("Pending approvals", c.queues.pendingApprovals, "warn")}
         </div>
       </section>
 

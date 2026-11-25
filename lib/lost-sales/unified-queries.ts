@@ -4,6 +4,7 @@ import type { ReportFilters } from "@/lib/reporting/types";
 import { dateRangeToDateOnlyFilter, dateRangeToTimestampFilter, demoWhere } from "@/lib/reporting/filters";
 import { computeClaimLineDisputedValue } from "@/lib/invoice-claims/financial";
 import { resolveEffectiveLostValue } from "@/lib/lost-sales/effective-value";
+import { listDeliveryReturnRows } from "@/lib/lost-sales/delivery-returns";
 import { parseScaledDecimal } from "@/lib/picking/validation";
 import { formatScaledDecimal } from "@/lib/fulfilment/decimal";
 import {
@@ -72,11 +73,12 @@ export async function loadClaimFacts(filters: Pick<ReportFilters, "includeDemo" 
       status: true,
       customerId: true,
       customer: { select: { name: true } },
+      deliveryRecordId: true,
       sapInvoice: { select: { currencyCode: true } },
       order: { select: { currency: true } },
       creditNotes: { select: { amount: true } },
       resolutions: { select: { decision: true, approvedCreditAmount: true, approvedById: true, rejectedById: true, recordedAt: true }, orderBy: { recordedAt: "desc" } },
-      returnLostSales: { select: { currencyCode: true, estimatedValue: true, claimReturn: { select: { receivedQuantity: true, claimLine: { select: { sapInvoiceLine: { select: { unitOfMeasure: true } }, orderLine: { select: { requestedUnitCode: true } } } } } } } },
+      returnLostSales: { select: { currencyCode: true, estimatedValue: true, claimReturn: { select: { receivedQuantity: true, claimLine: { select: { orderLineId: true, sapInvoiceLine: { select: { unitOfMeasure: true, matchedOrderLineId: true } }, orderLine: { select: { requestedUnitCode: true } } } } } } } },
       lines: {
         select: {
           id: true,
@@ -86,6 +88,7 @@ export async function loadClaimFacts(filters: Pick<ReportFilters, "includeDemo" 
           reasonCategory: true,
           sapItemCodeSnapshot: true,
           sapItemDescriptionSnapshot: true,
+          deliveryLineId: true,
           sapInvoiceLine: { select: { unitPrice: true, unitOfMeasure: true } },
           orderLine: { select: { requestedUnitCode: true, approvedUnitPrice: true, customerUnitPrice: true } },
           returns: { select: { receivedQuantity: true } },
@@ -98,6 +101,12 @@ export async function loadClaimFacts(filters: Pick<ReportFilters, "includeDemo" 
   const lines: ClaimLineFact[] = [];
   const claimFacts: ClaimFact[] = [];
   const returnLosses: ReturnLossFact[] = [];
+
+  // Goods returned through Record Delivery: the primary, automatic source of
+  // "returned" and of Confirmed Loss (Returned Goods).
+  const range = dateRangeToTimestampFilter(filters);
+  const deliveryReturns = await listDeliveryReturnRows({ includeDemo: filters.includeDemo ?? false, customerId: filters.customerId, dateRange: range });
+  const deliveryCoveredOrderLineIds = new Set(deliveryReturns.rows.map((row) => row.orderLineId));
 
   for (const claim of claims.slice(0, MAX_CLAIMS)) {
     const currency = claim.sapInvoice?.currencyCode ?? claim.order?.currency ?? "UNKNOWN";
@@ -121,7 +130,10 @@ export async function loadClaimFacts(filters: Pick<ReportFilters, "includeDemo" 
         reasonCategory: line.reasonCategory,
         disputeType: line.disputeType as "QUANTITY" | "AMOUNT_ONLY",
         rejectedQuantity: dec(line.rejectedQuantity),
-        returnedQuantity: sum(line.returns.map((r) => r.receivedQuantity.toDecimalPlaces(4).toString())),
+        // A claim line created from a delivery outcome IS a returned line: the
+        // rejected goods came back with the delivery. Manual lines keep using
+        // the recorded ClaimReturn receipts.
+        returnedQuantity: line.deliveryLineId ? (dec(line.rejectedQuantity) ?? "0") : sum(line.returns.map((r) => r.receivedQuantity.toDecimalPlaces(4).toString())),
         value,
         currency,
       });
@@ -141,7 +153,12 @@ export async function loadClaimFacts(filters: Pick<ReportFilters, "includeDemo" 
       latestDecision: decisive[0]?.decision ?? null,
     });
 
-    for (const loss of claim.returnLostSales) {
+    // Legacy manual return losses: skipped when the units are already counted
+    // from the delivery outcome (claim created from a delivery, or the claimed
+    // order line has a delivery rejection) -- see lib/lost-sales/delivery-returns.ts.
+    for (const loss of claim.deliveryRecordId ? [] : claim.returnLostSales) {
+      const claimedOrderLineId = loss.claimReturn.claimLine?.orderLineId ?? loss.claimReturn.claimLine?.sapInvoiceLine?.matchedOrderLineId ?? null;
+      if (claimedOrderLineId && deliveryCoveredOrderLineIds.has(claimedOrderLineId)) continue;
       returnLosses.push({
         claimId: claim.id,
         currency: loss.currencyCode ?? currency,
@@ -152,7 +169,17 @@ export async function loadClaimFacts(filters: Pick<ReportFilters, "includeDemo" 
     }
   }
 
-  return { lines, claims: claimFacts, returnLosses, truncated };
+  for (const row of deliveryReturns.rows) {
+    returnLosses.push({
+      claimId: row.claimId ?? `delivery:${row.deliveryRecordId}`,
+      currency: row.currencyCode,
+      unit: row.unitOfMeasure,
+      quantity: row.returnedQuantity,
+      value: row.totalValue,
+    });
+  }
+
+  return { lines, claims: claimFacts, returnLosses, truncated: truncated || deliveryReturns.truncated };
 }
 
 export async function loadDemandFacts(filters: Pick<ReportFilters, "includeDemo" | "dateFrom" | "dateTo" | "customerId">): Promise<DemandFact[]> {

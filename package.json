@@ -13,6 +13,7 @@
     "db:seed": "tsx --conditions=react-server prisma/seed.ts",
     "db:reset-operational-data": "tsx --conditions=react-server scripts/reset-operational-data.ts",
     "db:reset-to-user-and-product": "tsx --conditions=react-server scripts/reset-to-user-and-product.ts",
+    "db:backfill-delivery-claims": "tsx --conditions=react-server scripts/backfill-delivery-claims.ts",
     "db:apply-price-list-assignments": "tsx --conditions=react-server scripts/apply-reviewed-price-list-assignments.ts",
     "db:backfill-lost-sale-estimates": "tsx --conditions=react-server scripts/backfill-lost-sale-estimates.ts",
     "quotations:expire": "tsx --conditions=react-server scripts/expire-quotations.ts",

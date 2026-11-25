@@ -5,6 +5,8 @@ import { checkOrderCancellable, checkOrderEditable, checkOrderReopenable, type O
 import { fail, type AdminFailure } from "./types";
 import { getOrderDeletionImpact } from "./record-deletion";
 import { orderByFor, type SortDir, type SortState } from "./list-query";
+import { loadTaxRatesByCode } from "@/lib/order-price-resolution";
+import { pricingFromLines, summariseOrderTotal } from "@/lib/order-totals";
 
 const TX = { maxWait: 15000, timeout: 15000 };
 
@@ -41,10 +43,22 @@ export async function listAdminOrders(f: OrderFilters, page: number, pageSize: n
       orderBy: orderByFor(sort, ORDER_SORTS, "created") as Prisma.CustomerOrderOrderByWithRelationInput[],
       skip: (page - 1) * pageSize,
       take: pageSize,
-      select: { id: true, reference: true, status: true, source: true, currency: true, total: true, createdAt: true, updatedAt: true, customerPoReference: true, customer: { select: { id: true, name: true } }, salesperson: { select: { id: true, name: true } }, _count: { select: { lines: true } } },
+      select: { id: true, reference: true, status: true, source: true, currency: true, total: true, createdAt: true, updatedAt: true, customerPoReference: true, customer: { select: { id: true, name: true } }, salesperson: { select: { id: true, name: true } }, _count: { select: { lines: true } },
+        // Lines come back in the SAME query (no per-order lookups) so the total is derived by the shared calculation.
+        lines: { select: { requestedQuantity: true, customerUnitPrice: true, approvedUnitPrice: true, product: { select: { vatCode: true } } } } },
     }),
   ]);
-  return { total, rows: rows.map((r) => ({ ...r, total: r.total === null ? null : r.total.toString(), lineCount: r._count.lines })) };
+  // One query for every VAT code on the page.
+  const taxRates = await loadTaxRatesByCode(rows.flatMap((r) => r.lines.map((l) => l.product?.vatCode)));
+  return {
+    total,
+    rows: rows.map(({ lines, total: storedTotal, ...r }) => ({
+      ...r,
+      total: storedTotal === null ? null : storedTotal.toString(),
+      orderTotal: summariseOrderTotal({ storedTotal, currency: r.currency, pricing: pricingFromLines(lines, taxRates) }),
+      lineCount: r._count.lines,
+    })),
+  };
 }
 
 async function guardFacts(db: PrismaTransactionClient | typeof prisma, id: string): Promise<(OrderGuardFacts & { reference: string }) | null> {
@@ -69,10 +83,8 @@ export async function getAdminOrderDetail(id: string) {
       lines: {
         orderBy: { lineNumber: "asc" },
         select: {
-          id: true, lineNumber: true, originalProductDescription: true, sapItemCodeSnapshot: true, requestedQuantity: true, requestedUnitCode: true, customerUnitPrice: true, approvedUnitPrice: true, lineTotal: true, verificationStatus: true, salesNotes: true,
-          product: { select: { id: true, itemName: true } },
-          verifications: { orderBy: { createdAt: "desc" }, take: 1, select: { status: true, productMatched: true, quantityChecked: true, unitMatched: true, createdAt: true, verifiedBy: { select: { name: true } } } },
-          priceDecisions: { orderBy: { createdAt: "desc" }, take: 1, select: { status: true, customerUnitPrice: true, approvedUnitPrice: true, notes: true, createdAt: true, decidedBy: { select: { name: true } } } },
+          id: true, lineNumber: true, originalProductDescription: true, sapItemCodeSnapshot: true, requestedQuantity: true, requestedUnitCode: true, customerUnitPrice: true, approvedUnitPrice: true, lineTotal: true, salesNotes: true,
+          product: { select: { id: true, itemName: true, vatCode: true } },
         },
       },
       documents: { orderBy: { createdAt: "desc" }, select: { id: true, originalFileName: true, mimeType: true, fileSize: true, documentType: true, classification: true, status: true, createdAt: true, uploadedBy: { select: { name: true } } } },
@@ -90,7 +102,11 @@ export async function getAdminOrderDetail(id: string) {
   const [facts, deletion] = await Promise.all([guardFacts(prisma, id), getOrderDeletionImpact(id)]);
   const history = await prisma.auditEvent.findMany({ where: { entityType: "CustomerOrder", entityId: id }, orderBy: { createdAt: "desc" }, take: 50, select: { id: true, action: true, beforeData: true, afterData: true, createdAt: true, actor: { select: { name: true } } } });
   const none = { ok: false as const, message: "" };
+  const taxRates = await loadTaxRatesByCode(order.lines.map((l) => l.product?.vatCode));
+  const pricing = pricingFromLines(order.lines, taxRates);
   return {
+    pricing,
+    orderTotal: summariseOrderTotal({ storedTotal: order.total, currency: order.currency, pricing }),
     order: { ...order, documents: order.documents.map((d) => ({ ...d, fileSize: Number(d.fileSize) })) },
     history,
     canEdit: facts ? checkOrderEditable(facts) : none,

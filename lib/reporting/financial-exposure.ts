@@ -193,7 +193,7 @@ export async function getFinancialExposureReport(filters: ReportFilters): Promis
     },
     sourceC: {
       label: "Confirmed loss from returned goods",
-      description: "Of goods physically received back against a claim, the value of whatever was found DAMAGED, EXPIRED or otherwise unsellable -- a confirmed outcome from the physical inspection, not a dispute estimate. Priced only where the returned line's real invoiced unit price was on record (never invented).",
+      description: "Goods rejected at delivery and returned to Willsgrove (Record Delivery): returned quantity x the order line's unit price. Legacy manual returns on claims that did not come from a delivery are added only where their units are not already counted from a delivery. A confirmed outcome, not a dispute estimate. Lines with no unit price are counted but never valued as zero.",
       ...returnedGoodsLoss,
     },
     note:

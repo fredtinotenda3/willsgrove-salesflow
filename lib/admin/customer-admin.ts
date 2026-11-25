@@ -1,4 +1,6 @@
 import "server-only";
+import { loadTaxRatesByCode } from "@/lib/order-price-resolution";
+import { pricingFromLines, summariseOrderTotal } from "@/lib/order-totals";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { writeAudit } from "./audit";
@@ -66,7 +68,7 @@ export async function getAdminCustomerDetail(id: string) {
   });
   if (!c) return null;
   const [orders, quotations, invoices, claims, invoiceTotals, openOrders, history, deletion] = await Promise.all([
-    prisma.customerOrder.findMany({ where: { customerId: id }, orderBy: { createdAt: "desc" }, take: 15, select: { id: true, reference: true, status: true, currency: true, total: true, createdAt: true } }),
+    prisma.customerOrder.findMany({ where: { customerId: id }, orderBy: { createdAt: "desc" }, take: 15, select: { id: true, reference: true, status: true, currency: true, total: true, createdAt: true, lines: { select: { requestedQuantity: true, customerUnitPrice: true, approvedUnitPrice: true, product: { select: { vatCode: true } } } } } }),
     prisma.quotation.findMany({ where: { customerId: id, supersededAt: null }, orderBy: { createdAt: "desc" }, take: 15, select: { id: true, quotationNumber: true, status: true, currency: true, total: true, createdAt: true } }),
     prisma.sapInvoice.findMany({ where: { matchedCustomerId: id }, orderBy: { createdAt: "desc" }, take: 15, select: { id: true, sapDocNum: true, invoiceDate: true, currencyCode: true, total: true, reconciliationStatus: true } }),
     prisma.invoiceClaim.findMany({ where: { customerId: id }, orderBy: { createdAt: "desc" }, take: 15, select: { id: true, claimReference: true, status: true, category: true, claimDate: true } }),
@@ -75,9 +77,10 @@ export async function getAdminCustomerDetail(id: string) {
     prisma.auditEvent.findMany({ where: { entityType: "Customer", entityId: id }, orderBy: { createdAt: "desc" }, take: 50, select: { id: true, action: true, beforeData: true, afterData: true, createdAt: true, actor: { select: { name: true } } } }),
     getCustomerDeletionImpact(id),
   ]);
+  const taxRates = await loadTaxRatesByCode(orders.flatMap((o) => o.lines.map((l) => l.product?.vatCode)));
   return {
     customer: { ...c, creditLimit: c.creditLimit?.toString() ?? null },
-    orders: orders.map((o) => ({ ...o, total: o.total?.toString() ?? null })), quotations: quotations.map((q) => ({ ...q, total: q.total.toString() })),
+    orders: orders.map(({ lines, ...o }) => ({ ...o, total: o.total?.toString() ?? null, orderTotal: summariseOrderTotal({ storedTotal: o.total, currency: o.currency, pricing: pricingFromLines(lines, taxRates) }) })), quotations: quotations.map((q) => ({ ...q, total: q.total.toString() })),
     invoices: invoices.map((i) => ({ ...i, total: i.total?.toString() ?? null })), claims, openOrders, history,
     invoiceTotals: invoiceTotals.map((t) => ({ currencyCode: t.currencyCode ?? "UNKNOWN", total: (t._sum.total ?? new Prisma.Decimal(0)).toString(), count: t._count._all })),
     canDelete: deletion?.verdict ?? ({ deletable: false, reason: "", blockers: [] } as const),

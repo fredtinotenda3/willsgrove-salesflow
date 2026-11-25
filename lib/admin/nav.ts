@@ -38,6 +38,7 @@ export const ADMIN_NAV: AdminNavGroup[] = [
   { id: "catalogue", label: "Catalogue & pricing", items: [
     { href: "/admin/products", label: "Products", icon: "products", description: "SAP item master, barcodes, aliases and status." },
     { href: "/admin/price-lists", label: "Price lists", icon: "pricing", description: "Price lists, entries, validity and conflicts." },
+    { href: "/admin/pricing", label: "Customer pricing", icon: "pricing", description: "Customer-specific prices, price sources and products without a price." },
     { href: "/admin/stock", label: "Stock snapshots", icon: "stock", description: "Imported stock snapshots (not live inventory)." },
   ] },
   { id: "logistics", label: "Logistics", items: [

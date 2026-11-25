@@ -2,7 +2,7 @@ import Link from "next/link";
 import { listAdminOrders, ORDER_SORTS, ORDER_STATUSES } from "@/lib/admin/order-admin";
 import { listActiveAssignees } from "@/lib/admin/assignment-queries";
 import { getSettingValues } from "@/lib/admin/settings-store";
-import { fmtDate, fmtMoney } from "@/lib/admin/format";
+import { fmtDate } from "@/lib/admin/format";
 import { DataTable, type Column } from "../_components/data-table/data-table";
 import { TableToolbar } from "../_components/data-table/table-toolbar";
 import { ActionDialog } from "../_components/action-dialog";
@@ -11,6 +11,7 @@ import { PageHeader } from "../_components/ui";
 import { daysFromNow } from "@/lib/admin/list-query";
 import { DateRangeFilter, opts, parseListParams } from "../_components/list-helpers";
 import { requireAdminPage } from "../_components/admin-shell";
+import { OrderTotalCell } from "../_components/order-total-cell";
 
 export const instant = false;
 const CANCELLABLE = new Set(["DRAFT", "RECEIVED", "PENDING_VERIFICATION", "READY_FOR_APPROVAL", "APPROVED"]);
@@ -38,7 +39,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
     { key: "salesperson", header: "Salesperson", sortKey: "salesperson", hideBelow: "md", render: (o) => o.salesperson?.name ?? <span className="rounded bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">Unassigned</span> },
     { key: "source", header: "Source", hideBelow: "lg", defaultHidden: true, render: (o) => o.source.replace(/_/g, " ").toLowerCase() },
     { key: "lines", header: "Lines", align: "right", hideBelow: "lg", render: (o) => o.lineCount },
-    { key: "total", header: "Total", sortKey: "total", align: "right", render: (o) => (o.total === null ? "—" : fmtMoney(o.currency, o.total)) },
+    { key: "total", header: "Total", align: "right", render: (o) => <OrderTotalCell total={o.orderTotal} /> },
     { key: "created", header: "Created", sortKey: "created", hideBelow: "md", render: (o) => fmtDate(o.createdAt) },
     { key: "updated", header: "Updated", sortKey: "updated", hideBelow: "xl", defaultHidden: true, render: (o) => fmtDate(o.updatedAt) },
   ];
