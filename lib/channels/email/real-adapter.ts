@@ -52,8 +52,17 @@ export class RealEmailAdapter implements ChannelAdapter {
           To: message.to,
           Subject: message.subject ?? "",
           TextBody: message.bodyText,
+          ...(message.attachments && message.attachments.length > 0
+            ? {
+                Attachments: message.attachments.map((file) => ({
+                  Name: file.name,
+                  Content: file.content.toString("base64"),
+                  ContentType: file.contentType,
+                })),
+              }
+            : {}),
         }),
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(message.attachments?.length ? 45_000 : 15_000),
       });
 
       const body = (await response.json().catch(() => null)) as { MessageID?: string; ErrorCode?: number; Message?: string } | null;

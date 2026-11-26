@@ -33,3 +33,15 @@ No schema change, no migration, no new dependency. Copy the files over your repo
 - The Admin status *filter* still filters on the stored status (the badge shows the derived one).
 - The PDF is hand-generated (standard Helvetica, Latin-1 characters only; others print as `?`).
 - Orders already dispatched before this change have no invoice: invoice them from the order page, then Mark as Done.
+
+## Round 3 -- storage (R2), handover Excel/CSV, email
+
+**Cause of `Unsupported STORAGE_DRIVER "r2"` (500 on `POST /api/orders/:id/handover`):** `lib/storage/index.ts` only implemented `local`. Every upload path (PO documents, delivery attachments, claim attachments, handovers) used it, so `r2` failed everywhere.
+
+- `lib/storage/r2-driver.ts` + `lib/storage/sigv4.ts`: Cloudflare R2 driver, no new dependency (hand-rolled AWS SigV4; unit-tested against AWS's published signature). Same random UUID keys, key re-validation, and size/checksum from real bytes as the local driver. Reads `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_ENDPOINT` (or `R2_ACCOUNT_ID`), `R2_REGION` (default `auto`), optional `R2_KEY_PREFIX`.
+- Handover panel: Excel/CSV download starts automatically after "Generate", every past handover has Download and **Email**.
+- `POST /api/orders/:id/handover/:handoverId/email`: emails the stored file (max 5 recipients, 10 MB, audit event `ORDER_HANDOVER_EMAILED`). Needs `CHANNEL_EMAIL_PROVIDER=live` + `CHANNEL_EMAIL_API_KEY` + `CHANNEL_EMAIL_FROM_ADDRESS`; otherwise it answers 503 "not configured" (no fake success).
+- Storage failures during generation now return 503 with the actionable message instead of a bare 500.
+- `.env.example` and `.env.production.example` list every variable.
+
+Production notes: keep the R2 bucket private; use the non-pooled Neon host for `DIRECT_URL`; do not set `RUN_DB_INTEGRATION_TESTS` in production.

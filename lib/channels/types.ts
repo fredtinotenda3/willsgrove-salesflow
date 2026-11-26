@@ -37,6 +37,8 @@ export interface ChannelOutboundMessage {
    * have no subject line. */
   subject?: string;
   bodyText: string;
+  /** Email only. Ignored by the WhatsApp adapter. */
+  attachments?: Array<{ name: string; contentType: string; content: Buffer }>;
 }
 
 export interface ChannelAdapter {

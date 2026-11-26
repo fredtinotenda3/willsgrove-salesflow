@@ -69,6 +69,11 @@ export async function POST(request: NextRequest, context: RouteContext) {
     return Response.json({ success: true, handover: result.handover }, { status: 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Handover generation failed:", error);
+    // Storage misconfiguration / outage: the messages from lib/storage never contain secrets, so surface them -- an operator can act on them.
+    const message = error instanceof Error ? error.message : "";
+    if (/^(R2 |STORAGE_|Unsupported STORAGE_DRIVER)/.test(message)) {
+      return Response.json({ success: false, message: `File storage problem: ${message}` }, { status: 503 });
+    }
     return Response.json({ success: false, message: "Unable to generate a handover for this order." }, { status: 500 });
   }
 }

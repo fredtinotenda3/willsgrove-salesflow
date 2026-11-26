@@ -2,7 +2,7 @@
 
 import { toast } from "sonner";
 import { useEffect, useState } from "react";
-import { Clipboard, Download, FileSpreadsheet, FileText, Loader2, RefreshCw } from "lucide-react";
+import { Clipboard, Download, FileSpreadsheet, FileText, Loader2, Mail, RefreshCw } from "lucide-react";
 
 /**
  * Milestone 2C, reworked in Milestone 3C (SAP Invoice Handover
@@ -86,6 +86,35 @@ export default function HandoverPanel({ orderId, readyToInvoice }: { orderId: st
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [clipboardStatus, setClipboardStatus] = useState<"idle" | "copied" | "copy-failed">("idle");
 
+  const [emailingId, setEmailingId] = useState<string | null>(null);
+  const [emailTo, setEmailTo] = useState("");
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+
+  async function sendEmail(handoverId: string) {
+    setEmailSending(true);
+    setEmailError(null);
+    try {
+      const response = await fetch(`/api/orders/${orderId}/handover/${handoverId}/email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: emailTo }),
+      });
+      const body = await readJson(response);
+      if (!response.ok || !body.success) {
+        setEmailError((body.message as string) ?? "Unable to send this email.");
+        return;
+      }
+      toast.success("Handover emailed", { description: ((body.sentTo as string[]) ?? []).join(", ") });
+      setEmailingId(null);
+      setEmailTo("");
+    } catch {
+      setEmailError("Could not reach the server.");
+    } finally {
+      setEmailSending(false);
+    }
+  }
+
   async function load() {
     setLoading(true);
     setListError(null);
@@ -133,7 +162,16 @@ export default function HandoverPanel({ orderId, readyToInvoice }: { orderId: st
       }
       toast.success("Handover generated");
 
-      const handover = body.handover as { clipboardText?: string };
+      const handover = body.handover as { clipboardText?: string; downloadUrl?: string };
+      if ((format === "EXCEL" || format === "CSV") && handover.downloadUrl) {
+        // Start the browser download straight away; the file also stays in "Past handovers".
+        const link = document.createElement("a");
+        link.href = handover.downloadUrl;
+        link.rel = "noopener";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
       if (format === "CLIPBOARD" && handover.clipboardText) {
         try {
           await navigator.clipboard.writeText(handover.clipboardText);
@@ -229,7 +267,7 @@ export default function HandoverPanel({ orderId, readyToInvoice }: { orderId: st
         ) : (
           <ul className="space-y-2">
             {handovers.map((handover) => (
-              <li key={handover.id} className="flex items-center justify-between rounded-lg border border-gray-100 px-3 py-2">
+              <li key={handover.id} className="flex flex-wrap items-center justify-between rounded-lg border border-gray-100 px-3 py-2">
                 <div className="min-w-0">
                   <p className="text-xs font-semibold text-gray-700">
                     {formatLabel(handover.format)}
@@ -246,15 +284,56 @@ export default function HandoverPanel({ orderId, readyToInvoice }: { orderId: st
                   </p>
                 </div>
                 {handover.downloadUrl ? (
-                  <a
-                    href={handover.downloadUrl}
-                    className="flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-[11px] font-semibold text-gray-600 transition hover:bg-gray-50"
-                  >
-                    <Download size={12} />
-                    Download
-                  </a>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEmailError(null);
+                        setEmailingId(emailingId === handover.id ? null : handover.id);
+                      }}
+                      className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-[11px] font-semibold text-gray-600 transition hover:bg-gray-50"
+                    >
+                      <Mail size={12} />
+                      Email
+                    </button>
+                    <a
+                      href={handover.downloadUrl}
+                      className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-[11px] font-semibold text-gray-600 transition hover:bg-gray-50"
+                    >
+                      <Download size={12} />
+                      Download
+                    </a>
+                  </div>
                 ) : (
                   <span className="shrink-0 text-[10px] text-gray-400">Not stored</span>
+                )}
+                {emailingId === handover.id && (
+                  <form
+                    className="mt-2 flex w-full flex-wrap items-center gap-2"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void sendEmail(handover.id);
+                    }}
+                  >
+                    <input
+                      type="text"
+                      inputMode="email"
+                      value={emailTo}
+                      onChange={(event) => setEmailTo(event.target.value)}
+                      placeholder="invoice@company.com (up to 5, comma-separated)"
+                      aria-label="Recipient email addresses"
+                      className="min-w-[220px] flex-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs"
+                    />
+                    <button
+                      type="submit"
+                      disabled={emailSending || emailTo.trim().length < 3}
+                      className="flex items-center gap-1.5 rounded-lg bg-[#173D2E] px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-50"
+                    >
+                      {emailSending ? <Loader2 size={12} className="animate-spin" /> : <Mail size={12} />}
+                      Send
+                    </button>
+                    {emailError && <p className="w-full text-[11px] text-[#9B3B3B]">{emailError}</p>}
+                  </form>
                 )}
               </li>
             ))}
