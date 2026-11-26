@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { computeExposureByCurrency } from "@/lib/invoice-claims/financial";
@@ -73,7 +74,19 @@ export async function getCommandCentre(presetRaw: string | undefined, now = new 
     prisma.integrationOperation.count({ where: { status: "FAILED" } }),
     prisma.integrationOperation.count({ where: { status: "UNCERTAIN" } }),
     prisma.integrationSyncJob.count({ where: { status: { in: ["FAILED", "PARTIAL"] } } }),
-    prisma.customerOrder.groupBy({ by: ["currency"], where: { createdAt: { gte: w.gte, lt: w.lt }, status: { not: "CANCELLED" } }, _sum: { total: true }, _count: { _all: true } }),
+    // An order's stored total is often null (priced lines only, see lib/orders.ts), which made this read $0.00
+    // while Admin > Orders showed real totals. Fall back, per order, to its line totals (or qty x unit price).
+    prisma.$queryRaw<{ currency: string; total: Prisma.Decimal | null; count: bigint }[]>`
+      SELECT o."currency" AS currency,
+             SUM(COALESCE(o."total", l.line_value, 0)) AS total,
+             COUNT(*) AS count
+      FROM "CustomerOrder" o
+      LEFT JOIN (
+        SELECT "orderId", SUM(COALESCE("lineTotal", "requestedQuantity" * COALESCE("approvedUnitPrice", "customerUnitPrice"))) AS line_value
+        FROM "OrderLine" GROUP BY "orderId"
+      ) l ON l."orderId" = o."id"
+      WHERE o."createdAt" >= ${w.gte} AND o."createdAt" < ${w.lt} AND o."status" <> 'CANCELLED'
+      GROUP BY o."currency"`.then((rows) => rows.map((r) => ({ currency: r.currency, _sum: { total: r.total }, _count: { _all: Number(r.count) } }))),
     prisma.invoiceClaim.findMany({ where: { status: openClaim }, orderBy: { createdAt: "desc" }, take: EXPOSURE_CLAIM_CAP, select: { id: true } }).then((c) => computeExposureByCurrency(c.map((x) => x.id))),
     prisma.auditEvent.findMany({ orderBy: { createdAt: "desc" }, take: 12, select: { id: true, action: true, entityType: true, entityId: true, createdAt: true, actor: { select: { name: true } } } }),
     prisma.quotation.groupBy({ by: ["currency"], where: { createdAt: { gte: w.gte, lt: w.lt }, supersededAt: null, status: { notIn: ["CANCELLED"] } }, _sum: { total: true } }),

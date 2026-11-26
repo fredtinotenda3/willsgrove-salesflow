@@ -50,7 +50,9 @@ type RouteParams = { searchParams: Promise<{ page?: string }> };
  */
 function pickingProgressLabel(
   status: string,
-  dispatchStatuses: string[]
+  dispatchStatuses: string[],
+  invoiceState: "NONE" | "PARTIAL" | "FULL",
+  completed: boolean
 ): { label: string; style: string } {
   if (status === "PICKING") {
     return { label: "Picking in progress", style: "bg-cyan-50 text-cyan-700" };
@@ -58,7 +60,7 @@ function pickingProgressLabel(
   if (status !== "READY_TO_INVOICE") {
     return { label: "Not started", style: "bg-gray-100 text-gray-500" };
   }
-  const effective = getEffectiveOrderStatus({ status, dispatchStatuses });
+  const effective = getEffectiveOrderStatus({ status, dispatchStatuses, invoiceState, completed });
   return { label: effective.label, style: effective.style };
 }
 
@@ -143,8 +145,10 @@ export default async function FulfilmentQueuePage({ searchParams }: RouteParams)
                       const { label: statusLabel, style: statusStyle } = getEffectiveOrderStatus({
                         status: order.status,
                         dispatchStatuses: order.dispatchStatuses,
+                        invoiceState: order.invoiceState,
+                        completed: order.completed,
                       });
-                      const progress = pickingProgressLabel(order.status, order.dispatchStatuses);
+                      const progress = pickingProgressLabel(order.status, order.dispatchStatuses, order.invoiceState, order.completed);
 
                       return (
                         <tr key={order.id} className="border-b border-gray-50">

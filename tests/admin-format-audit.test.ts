@@ -24,13 +24,13 @@ describe("audit event shape", () => {
 
 describe("display formatting", () => {
   it("formats money from the stored string without floating-point maths, and never mixes currencies", () => {
-    expect(fmtMoney("USD", "1234567.5")).toBe("USD 1,234,567.50");
+    expect(fmtMoney("USD", "1234567.5")).toBe("$1,234,567.50");
     expect(fmtMoney("ZWG", "0.1")).toBe("ZWG 0.10");
-    expect(fmtMoney("USD", "-1200")).toBe("USD -1,200.00");
+    expect(fmtMoney("USD", "-1200")).toBe("-$1,200.00");
     expect(fmtMoney("USD", "12abc")).toBe("—");
     expect(fmtMoney("USD", null)).toBe("—");
-    expect(fmtMoney(null, "5")).toBe("5.00");
-    expect(fmtMoney("USD", { toString: () => "19.999" })).toBe("USD 19.99");
+    expect(fmtMoney(null, "5")).toBe("$5.00");
+    expect(fmtMoney("USD", { toString: () => "19.999" })).toBe("$19.99");
   });
   it("formats dates defensively", () => {
     expect(fmtDate(new Date("2026-03-04T23:59:00Z"))).toBe("2026-03-04");

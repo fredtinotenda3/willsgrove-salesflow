@@ -11,6 +11,7 @@ import { toFlatSearchParams, toURLSearchParams, type ReportSearchParams } from "
 import Sidebar from "../../components/sidebar";
 import { PageHeader, SectionCard, MetricCard, DataQualityBadge, EmptyState } from "../../reports/_components/ui";
 import { ReportFilterBar } from "../../reports/_components/filter-bar";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 import { AlertCircle, ArrowLeft, Building2 } from "lucide-react";
 
 /**
@@ -266,7 +267,7 @@ export default async function CustomerProfilePage({ params, searchParams }: Rout
                     <MetricCard
                       key={row.currency}
                       title={`Lost Value (${row.currency})`}
-                      value={row.totalEstimatedValue}
+                      value={formatCurrencyAmount(row.currency, row.totalEstimatedValue)}
                       description={row.excludedCount > 0 ? `${row.excludedCount} record(s) excluded -- no estimated value recorded` : undefined}
                       dataQuality="provisional"
                     />

@@ -5,6 +5,7 @@ import { TRANSACTION_OPTIONS } from "@/lib/orders";
 import { parseScaledDecimal } from "@/lib/picking/validation";
 import type { RecordDeliveryInput } from "@/lib/fulfilment/validation";
 import { createClaimFromDelivery } from "@/lib/invoice-claims/create-delivery-claim";
+import { mapRejectionReasonToCategory } from "@/lib/invoice-claims/delivery-claim-core";
 
 /**
  * Milestone 10 (Communication Channels & Fulfilment). Delivery outcome
@@ -92,6 +93,24 @@ export async function recordDelivery(
     }
     if (rejected > BigInt(0) && !inputLine.rejectionReason) {
       return { ok: false, status: 400, message: `A rejection reason is required for dispatch line ${inputLine.dispatchLineId} since it has a rejected quantity.` };
+    }
+    // A claim reason only means something on a rejected (= returned) quantity. Silently accepting a reason
+    // beside a 0 rejected quantity is what made "Short Delivered" lines show as "Accepted in full" with no
+    // claim, no lost sale and nothing on the Claims page -- so it is refused outright.
+    if (rejected === BigInt(0) && inputLine.rejectionReason && inputLine.rejectionReason.trim() !== "") {
+      return {
+        ok: false,
+        status: 400,
+        message: `Dispatch line ${inputLine.dispatchLineId} has a claim reason but a rejected quantity of 0. Enter the rejected (returned) quantity, or clear the reason.`,
+      };
+    }
+    // Rejected products are recorded ONLY with one of the standardised claim reasons.
+    if (rejected > BigInt(0) && mapRejectionReasonToCategory(inputLine.rejectionReason) === null) {
+      return {
+        ok: false,
+        status: 400,
+        message: `Dispatch line ${inputLine.dispatchLineId}: choose one of the standardised claim reasons (Price Claim, Poor Quality Product, Short Delivered, OverSupply, Expire, No Barcode, Barcode Scanning Problems, Duplicates).`,
+      };
     }
     if (accepted > BigInt(0)) anyAccepted = true;
     if (rejected > BigInt(0)) anyRejected = true;

@@ -69,19 +69,20 @@ function generateNativeInvoiceReference(): string {
  * checking twice.
  */
 async function getRemainingToInvoice(tx: PrismaTransactionClient, orderLineId: string): Promise<Prisma.Decimal> {
-  const [dispatched, invoiced] = await Promise.all([
-    tx.dispatchLine.aggregate({
-      where: { orderLineId, dispatchRecord: { status: { not: "CANCELLED" } } },
-      _sum: { dispatchedQuantity: true },
+  // Invoicing precedes dispatch, so the ceiling is the quantity PICKED and authorised for the line.
+  const [picked, invoiced] = await Promise.all([
+    tx.pickingLine.aggregate({
+      where: { orderLineId, foundQuantity: { not: null }, pickingSession: { status: "AUTHORIZED" } },
+      _sum: { foundQuantity: true },
     }),
     tx.sapInvoiceLine.aggregate({
       where: { matchedOrderLineId: orderLineId, sapInvoice: { isCancelledOrReversed: false } },
       _sum: { quantityInvoiced: true },
     }),
   ]);
-  const dispatchedQuantity = dispatched._sum.dispatchedQuantity ?? new Prisma.Decimal(0);
+  const pickedQuantity = picked._sum.foundQuantity ?? new Prisma.Decimal(0);
   const invoicedQuantity = invoiced._sum.quantityInvoiced ?? new Prisma.Decimal(0);
-  return dispatchedQuantity.minus(invoicedQuantity);
+  return pickedQuantity.minus(invoicedQuantity);
 }
 
 export async function recordNativeInvoice(
@@ -102,11 +103,15 @@ export async function recordNativeInvoice(
       currency: true,
       customerId: true,
       isDemo: true,
+      status: true,
       customer: { select: { name: true, sapCustomerCode: true } },
     },
   });
   if (!order) {
     return { ok: false, status: 404, message: "Order not found." };
+  }
+  if (order.status !== "READY_TO_INVOICE") {
+    return { ok: false, status: 409, message: "An order can only be marked as Invoiced once picking is completed and authorised (status Ready to Invoice)." };
   }
 
   const orderLineIds = input.lines.map((line) => line.orderLineId);

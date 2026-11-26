@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, ArrowLeft, CheckCircle2, FileSpreadsheet, Upload } from "lucide-react";
 import Sidebar from "../../components/sidebar";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 import { CREDIT_NOTE_TARGET_FIELDS, REQUIRED_CREDIT_NOTE_FIELDS, type CreditNoteColumnMapping } from "@/lib/returns-credits/csv";
 
 /**
@@ -413,7 +414,7 @@ export default function CreditNoteImportPage() {
                                 <td className="py-2 pr-4 font-mono text-xs">{cn.docNum}</td>
                                 <td className="py-2 pr-4 text-xs">{cn.baseInvoiceDocNum ?? cn.baseInvoiceDocEntry ?? "-"}</td>
                                 <td className="py-2 pr-4 text-xs">
-                                  {cn.amount} {cn.currency ?? ""}
+                                  {formatCurrencyAmount(cn.currency, cn.amount)}
                                 </td>
                                 <td className="py-2 pr-4 text-xs">{cn.creditNoteDate ?? "-"}</td>
                                 <td className="py-2 text-xs">

@@ -1,6 +1,6 @@
 "use client";
 
-import { Printer, ArrowLeft } from "lucide-react";
+import { Printer, ArrowLeft, Download } from "lucide-react";
 
 /**
  * Milestone 3 completion (Warehouse Assembly Form & Partial Availability).
@@ -29,14 +29,24 @@ export default function AssemblyFormActions({ orderId }: { orderId: string }) {
         <ArrowLeft size={15} />
         Back to Order
       </a>
-      <button
-        type="button"
-        onClick={() => window.print()}
-        className="flex items-center gap-2 rounded-lg bg-[#173D2E] px-4 py-2.5 text-xs font-semibold text-white transition hover:brightness-110"
-      >
-        <Printer size={15} />
-        Print
-      </button>
+      <div className="flex items-center gap-2">
+        <a
+          href={`/orders/${orderId}/assembly-form/download`}
+          download
+          className="flex items-center gap-2 rounded-lg border border-[#173D2E] bg-white px-4 py-2.5 text-xs font-semibold text-[#173D2E] transition hover:bg-[#F1F5F2]"
+        >
+          <Download size={15} />
+          Download
+        </a>
+        <button
+          type="button"
+          onClick={() => window.print()}
+          className="flex items-center gap-2 rounded-lg bg-[#173D2E] px-4 py-2.5 text-xs font-semibold text-white transition hover:brightness-110"
+        >
+          <Printer size={15} />
+          Print
+        </button>
+      </div>
     </div>
   );
 }

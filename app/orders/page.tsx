@@ -58,6 +58,9 @@ type ApiOrderSummary = {
   lineCount: number;
   /** Final completion phase, section 7 -- non-CANCELLED DispatchRecord.status values, for getEffectiveOrderStatus. */
   dispatchStatuses: string[];
+  /** Invoice progress for READY_TO_INVOICE orders (lib/order-progress.ts). */
+  invoiceState: "NONE" | "PARTIAL" | "FULL";
+  completed: boolean;
 };
 
 type OrderListResponse = {
@@ -462,7 +465,7 @@ export default function OrdersPage() {
 
                           <td className="whitespace-nowrap px-6 py-4">
                             {(() => {
-                              const effective = getEffectiveOrderStatus({ status: order.status, dispatchStatuses: order.dispatchStatuses });
+                              const effective = getEffectiveOrderStatus({ status: order.status, dispatchStatuses: order.dispatchStatuses, invoiceState: order.invoiceState, completed: order.completed });
                               return (
                                 <span className={`rounded-full px-2.5 py-1.5 text-[10px] font-semibold ${effective.style}`}>
                                   {effective.label}

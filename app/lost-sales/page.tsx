@@ -10,6 +10,7 @@ import {
 import { unfulfilledDemandStatusValues } from "@/lib/lost-sales/validation";
 import { initialsFor, avatarColorFor } from "@/lib/order-display";
 import Sidebar from "../components/sidebar";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 import { TrendingDown, ChevronRight, ChevronLeft, PackageX, Ban } from "lucide-react";
 
 /**
@@ -152,7 +153,7 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
                 <TrendingDown size={18} />
               </div>
               <div>
-                <p className="text-lg font-bold text-[#17251E]">{automaticValue.estimatedValue}</p>
+                <p className="text-lg font-bold text-[#17251E]">{formatCurrencyAmount("USD", automaticValue.estimatedValue)}</p>
                 <p className="text-xs text-gray-400">
                   Lost Value (current)
                   {automaticValue.demandsWithoutEstimate > 0
@@ -240,7 +241,7 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{demand.outstandingQuantity}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{demand.confirmedLostQuantity}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">
-                          {demand.estimatedUnitPrice !== null ? `${demand.estimatedUnitPrice} ${demand.currencyCode}` : <span className="text-gray-300">--</span>}
+                          {demand.estimatedUnitPrice !== null ? formatCurrencyAmount(demand.currencyCode, demand.estimatedUnitPrice) : <span className="text-gray-300">--</span>}
                         </td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs font-semibold text-gray-700">
                           {/* Real-world fix ("lost sales... show unit price/currency, confirm
@@ -254,13 +255,13 @@ export default async function LostSalesPage({ searchParams }: RouteParams) {
                               hidden behind a single number. */}
                           {demand.estimatedValue !== null ? (
                             <span
-                              title={`${demand.confirmedLostQuantity} x ${demand.estimatedUnitPrice} ${demand.currencyCode} -- priced from ${
+                              title={`${demand.confirmedLostQuantity} x ${formatCurrencyAmount(demand.currencyCode, demand.estimatedUnitPrice)} -- priced from ${
                                 demand.estimatedValueSource === "ORDER_LINE_APPROVED_PRICE"
                                   ? "this order line's own price (approved price, or the price entered at order creation if none was separately approved)"
                                   : "the customer's assigned price list"
                               }`}
                             >
-                              {demand.estimatedValue} {demand.currencyCode}
+                              {formatCurrencyAmount(demand.currencyCode, demand.estimatedValue)}
                             </span>
                           ) : (
                             <span className="text-gray-300">--</span>

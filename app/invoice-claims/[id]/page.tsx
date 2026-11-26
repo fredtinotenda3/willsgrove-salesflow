@@ -20,6 +20,7 @@ import { RETURN_CONDITION_LABELS, RETURN_CONDITION_STYLES, CREDIT_NOTE_MATCH_STA
 import Sidebar from "../../components/sidebar";
 import { ArrowLeft, Paperclip } from "lucide-react";
 import ClaimActionsPanel from "./claim-actions-panel";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 import ReturnsCreditsPanel from "./returns-credits-panel";
 
 /**
@@ -175,7 +176,7 @@ export default async function InvoiceClaimDetailPage({ params }: RouteParams) {
                         </td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{invoicedOrOrderedQuantity}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{line.acceptedQuantity?.toString() ?? "-"}</td>
-                        <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{line.disputeType === "QUANTITY" ? (line.rejectedQuantity?.toString() ?? "-") : (line.disputedAmount?.toString() ?? "-")}</td>
+                        <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{line.disputeType === "QUANTITY" ? (line.rejectedQuantity?.toString() ?? "-") : (line.disputedAmount ? formatCurrencyAmount(financialSummary?.currencyCode, line.disputedAmount.toString()) : "-")}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">{value ?? "unpriced"}</td>
                         <td className="px-6 py-4 text-xs text-gray-600">
                           <p>{line.reason}</p>
@@ -277,7 +278,7 @@ export default async function InvoiceClaimDetailPage({ params }: RouteParams) {
                       <p className="mt-1 text-[10px] text-rose-700">
                         Lost sale recorded
                         {ret.lostSale.estimatedValue
-                          ? `: ~${ret.lostSale.estimatedValue.toString()} ${ret.lostSale.currencyCode ?? ""}`.trimEnd()
+                          ? `: ~${formatCurrencyAmount(ret.lostSale.currencyCode, ret.lostSale.estimatedValue.toString())}`
                           : " (value not available -- no invoiced price on record for this line)"}
                       </p>
                     ) : null}
@@ -304,7 +305,7 @@ export default async function InvoiceClaimDetailPage({ params }: RouteParams) {
                         {CREDIT_NOTE_MATCH_STATUS_LABELS[cn.matchStatus] ?? cn.matchStatus}
                       </span>
                     </div>
-                    <p className="mt-1 text-gray-600">Amount: {cn.amount.toString()} {cn.currencyCode ?? ""}</p>
+                    <p className="mt-1 text-gray-600">Amount: {formatCurrencyAmount(cn.currencyCode, cn.amount.toString())}</p>
                     {cn.notes && <p className="mt-1 text-gray-600">Notes: {cn.notes}</p>}
                     <p className="mt-2 text-[10px] text-gray-400">
                       Recorded by {cn.recordedBy.name} · {new Date(cn.recordedAt).toLocaleString()}

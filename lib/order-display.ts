@@ -24,7 +24,7 @@
  * genuinely missing (Final completion phase, section 7: "an order must
  * not remain stuck at Ready for Invoice after it has progressed") is a
  * derived, DISPLAY-ONLY label layered on top of the real status for the
- * UI, computed purely from this order's own DispatchRecord rows --
+ * UI, computed purely from this order's own invoice and DispatchRecord rows --
  * never a second stored status column that could drift out of sync with
  * the real one.
  *
@@ -71,6 +71,8 @@ export const ORDER_STATUS_STYLES: Record<OrderStatusValue, string> = {
   DRAFT: "bg-gray-100 text-gray-500",
 };
 
+export type OrderInvoiceState = "NONE" | "PARTIAL" | "FULL";
+
 export type EffectiveOrderStatusInput = {
   status: OrderStatusValue | string;
   /**
@@ -78,44 +80,100 @@ export type EffectiveOrderStatusInput = {
    * "DELIVERED") for this order, in any order. Only consulted when
    * `status` is READY_TO_INVOICE -- ignored for every other OrderStatus,
    * since this derivation exists solely to stop READY_TO_INVOICE orders
-   * from looking permanently stuck once dispatch/delivery has actually
-   * moved on.
+   * from looking permanently stuck once invoicing/dispatch/delivery has
+   * actually moved on.
    */
   dispatchStatuses: string[];
+  /**
+   * How much of the picked (authorised) quantity has been invoiced, from
+   * lib/order-progress.ts. Omitted by a caller that has not loaded it, in
+   * which case the order is treated as not yet invoiced (the previous
+   * behaviour), never guessed.
+   */
+  invoiceState?: OrderInvoiceState;
+  /** True once every active invoice of the order has its delivery outcome recorded (the order's "Mark as Done" step). */
+  completed?: boolean;
 };
 
 export type EffectiveOrderStatus = { label: string; style: string };
 
 /**
- * See this file's own module comment for the full rationale. Three
- * READY_TO_INVOICE outcomes, derived purely from already-recorded
- * DispatchRecord rows:
- *   - no dispatch yet, or every dispatch still PLANNED (not departed) ->
- *     unchanged "Ready to Invoice" (nothing has actually progressed yet).
- *   - every non-cancelled dispatch is DELIVERED -> "Delivered".
- *   - anything else (at least one DEPARTED or a mix of DEPARTED/DELIVERED
- *     across multiple dispatch batches for the same order) -> "Departed"
- *     (in progress -- has left, not yet fully confirmed delivered).
+ * See this file's own module comment for the full rationale. A
+ * READY_TO_INVOICE order's label is derived, highest stage first, purely
+ * from recorded facts (never a second stored status):
+ *   - every active invoice has its delivery outcome recorded -> "Completed"
+ *   - every non-cancelled dispatch is DELIVERED -> "Delivered"
+ *   - at least one dispatch DEPARTED (or a DEPARTED/DELIVERED mix) -> "Dispatched"
+ *   - everything picked has been invoiced -> "Invoiced"; some of it -> "Partially Invoiced"
+ *   - otherwise (nothing invoiced; a dispatch can only be PLANNED if it was
+ *     invoiced first) -> unchanged "Ready to Invoice".
  * Every other OrderStatus passes straight through unchanged.
  */
-export function getEffectiveOrderStatus({ status, dispatchStatuses }: EffectiveOrderStatusInput): EffectiveOrderStatus {
+export function getEffectiveOrderStatus({ status, dispatchStatuses, invoiceState = "NONE", completed = false }: EffectiveOrderStatusInput): EffectiveOrderStatus {
   const baseLabel = (ORDER_STATUS_LABELS as Record<string, string>)[status] ?? status;
   const baseStyle = (ORDER_STATUS_STYLES as Record<string, string>)[status] ?? "bg-gray-100 text-gray-500";
 
-  if (status !== "READY_TO_INVOICE" || dispatchStatuses.length === 0) {
+  if (status !== "READY_TO_INVOICE") {
     return { label: baseLabel, style: baseStyle };
+  }
+
+  if (completed) {
+    return { label: "Completed", style: "bg-gray-100 text-gray-700" };
   }
 
   const hasDeparted = dispatchStatuses.some((s) => s !== "PLANNED");
-  if (!hasDeparted) {
-    return { label: baseLabel, style: baseStyle };
+  if (hasDeparted) {
+    if (dispatchStatuses.every((s) => s === "DELIVERED")) {
+      return { label: "Delivered", style: "bg-teal-50 text-teal-700" };
+    }
+    return { label: "Dispatched", style: "bg-orange-50 text-orange-700" };
   }
 
-  if (dispatchStatuses.every((s) => s === "DELIVERED")) {
-    return { label: "Delivered", style: "bg-teal-50 text-teal-700" };
-  }
+  if (invoiceState === "FULL") return { label: "Invoiced", style: "bg-indigo-50 text-indigo-700" };
+  if (invoiceState === "PARTIAL") return { label: "Partially Invoiced", style: "bg-indigo-50 text-indigo-700" };
 
-  return { label: "Departed", style: "bg-orange-50 text-orange-700" };
+  return { label: baseLabel, style: baseStyle };
+}
+
+export type OrderNextActionKey = "INVOICE" | "DISPATCH" | "RECORD_DELIVERY" | "MARK_DONE";
+export type OrderNextAction = { key: OrderNextActionKey; label: string };
+
+/**
+ * The button(s) that move a READY_TO_INVOICE order to its next stage, in the
+ * required sequence -- Invoiced BEFORE Dispatched, never skipped:
+ *
+ *   nothing invoiced               -> Mark as Invoiced
+ *   some invoiced                  -> Dispatch (and Mark remaining as Invoiced)
+ *   everything picked invoiced     -> Dispatch
+ *   a dispatch has left            -> Record delivery
+ *   every dispatch delivered       -> Mark as Done
+ *   completed / earlier status     -> nothing
+ *
+ * Pure and client-safe, so the rule is unit-tested without a database. The
+ * server independently enforces every one of these gates (dispatch requires
+ * invoiced quantity; completion requires delivered dispatches), so this only
+ * decides which button to SHOW.
+ */
+export function getOrderNextActions({ status, dispatchStatuses, invoiceState = "NONE", completed = false }: EffectiveOrderStatusInput): OrderNextAction[] {
+  if (status !== "READY_TO_INVOICE" || completed) return [];
+
+  const departedNotDelivered = dispatchStatuses.some((s) => s === "DEPARTED");
+  const hasPlanned = dispatchStatuses.some((s) => s === "PLANNED");
+  const allDelivered = dispatchStatuses.length > 0 && dispatchStatuses.every((s) => s === "DELIVERED");
+  const actions: OrderNextAction[] = [];
+
+  // A delivered order is finished with: no invoicing/dispatch buttons, only "Mark as Done". (Orders delivered before
+  // the invoice step existed have no invoice on file; completing them records it -- see lib/order-completion.ts.)
+  if (allDelivered) {
+    actions.push({ key: "MARK_DONE", label: "Mark as Done" });
+    return actions;
+  }
+  if (invoiceState === "NONE") actions.push({ key: "INVOICE", label: "Mark as Invoiced" });
+  else if (invoiceState === "PARTIAL") actions.push({ key: "INVOICE", label: "Mark remaining as Invoiced" });
+
+  if (departedNotDelivered) actions.push({ key: "RECORD_DELIVERY", label: "Record delivery" });
+  else if (invoiceState !== "NONE") actions.push({ key: "DISPATCH", label: hasPlanned ? "Open dispatch" : "Dispatch" });
+  return actions;
 }
 
 /**
@@ -303,12 +361,18 @@ export function formatOrderDateTime(iso: string | null): string {
   });
 }
 
+/** "$" for USD (every USD amount carries the sign); any other currency keeps its code, e.g. "ZWG 1,200.00". */
+export function moneyPrefix(currency: string | null | undefined): string {
+  const code = (currency ?? "USD").trim().toUpperCase();
+  return code === "USD" || code === "" ? "$" : `${code} `;
+}
+
 /** `total` is a nullable Decimal-as-string; null means "not priced yet" (see lib/orders.ts), never zero. */
 export function formatOrderAmount(total: string | null, currency: string): string {
   if (total === null) return "Pending pricing";
   const value = Number(total);
   if (!Number.isFinite(value)) return "Pending pricing";
-  return `${currency} ${value.toLocaleString("en-US", {
+  return `${value < 0 ? "-" : ""}${moneyPrefix(currency)}${Math.abs(value).toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
@@ -344,7 +408,7 @@ export function formatOrderAmountWithEstimate(
   if (!Number.isFinite(value)) {
     return { text: "Pending pricing", isEstimate: false, isPartialEstimate: false };
   }
-  const formatted = `${currency} ${value.toLocaleString("en-US", {
+  const formatted = `${value < 0 ? "-" : ""}${moneyPrefix(currency)}${Math.abs(value).toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
@@ -378,7 +442,7 @@ export function formatLineAmountWithEstimate(
   if (!Number.isFinite(value)) {
     return { text: "Pending", isEstimate: false };
   }
-  const formatted = `${currency} ${value.toLocaleString("en-US", {
+  const formatted = `${value < 0 ? "-" : ""}${moneyPrefix(currency)}${Math.abs(value).toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;

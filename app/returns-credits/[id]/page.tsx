@@ -6,6 +6,7 @@ import { getCreditNoteDetail } from "@/lib/returns-credits/queries";
 import { CREDIT_NOTE_MATCH_STATUS_LABELS, CREDIT_NOTE_MATCH_STATUS_STYLES } from "@/lib/returns-credits/display";
 import Sidebar from "../../components/sidebar";
 import { ArrowLeft } from "lucide-react";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 import CreditNotePanel from "./credit-note-panel";
 
 /**
@@ -65,7 +66,7 @@ export default async function CreditNoteDetailPage({ params }: RouteParams) {
 
           <section className="grid grid-cols-1 gap-4 rounded-xl border border-[#E8EBE6] bg-white p-5 sm:grid-cols-4">
             <Field label="DocEntry" value={creditNote.sapCreditNoteDocEntry ?? "-"} />
-            <Field label="Amount" value={`${creditNote.amount.toString()} ${creditNote.currencyCode ?? ""}`} />
+            <Field label="Amount" value={formatCurrencyAmount(creditNote.currencyCode, creditNote.amount)} />
             <Field label="Credit note date" value={creditNote.creditNoteDate ? new Date(creditNote.creditNoteDate).toLocaleDateString() : "-"} />
             <Field label="Recorded" value={`${creditNote.recordedBy.name} · ${new Date(creditNote.recordedAt).toLocaleString()}`} />
             <Field

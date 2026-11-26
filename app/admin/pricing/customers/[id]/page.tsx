@@ -7,6 +7,7 @@ import { getCustomerPriceView, listCustomerPriceHistory } from "@/lib/pricing/cu
 import { PageHeader, Panel, Stat, Notice, Tabs } from "../../../_components/ui";
 import { requireAdminPage } from "../../../_components/admin-shell";
 import { ImportPanel, PriceEditor } from "./price-editor";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 
 export const instant = false;
 const PAGE_SIZE = 50;
@@ -74,7 +75,7 @@ async function History({ customerId }: { customerId: string }) {
         <div className="overflow-x-auto"><table className="w-full text-left text-sm">
           <thead className="bg-[#F7F8F6] text-xs uppercase tracking-wide text-[#849087]"><tr><th className="px-4 py-2">When</th><th className="px-4 py-2">Item</th><th className="px-4 py-2">Change</th><th className="px-4 py-2">Old</th><th className="px-4 py-2">New</th><th className="px-4 py-2">By</th><th className="px-4 py-2">Via</th></tr></thead>
           <tbody>{rows.map((h) => (
-            <tr key={h.id} className="border-t border-[#EEF1ED]"><td className="px-4 py-2 text-xs">{fmtDateTime(h.createdAt)}</td><td className="px-4 py-2 font-mono text-xs">{h.sapItemCode ?? h.productId}</td><td className="px-4 py-2 text-xs font-semibold">{h.changeType}</td><td className="px-4 py-2 tabular-nums">{h.oldUnitPrice ? `${h.currencyCode} ${h.oldUnitPrice}` : "—"}</td><td className="px-4 py-2 tabular-nums">{h.newUnitPrice ? `${h.currencyCode} ${h.newUnitPrice}` : "—"}</td><td className="px-4 py-2 text-xs">{h.actorName ?? "—"}</td><td className="px-4 py-2 text-xs">{h.source}{h.reason ? ` · ${h.reason}` : ""}</td></tr>))}</tbody>
+            <tr key={h.id} className="border-t border-[#EEF1ED]"><td className="px-4 py-2 text-xs">{fmtDateTime(h.createdAt)}</td><td className="px-4 py-2 font-mono text-xs">{h.sapItemCode ?? h.productId}</td><td className="px-4 py-2 text-xs font-semibold">{h.changeType}</td><td className="px-4 py-2 tabular-nums">{h.oldUnitPrice ? formatCurrencyAmount(h.currencyCode, h.oldUnitPrice, 4) : "—"}</td><td className="px-4 py-2 tabular-nums">{h.newUnitPrice ? formatCurrencyAmount(h.currencyCode, h.newUnitPrice, 4) : "—"}</td><td className="px-4 py-2 text-xs">{h.actorName ?? "—"}</td><td className="px-4 py-2 text-xs">{h.source}{h.reason ? ` · ${h.reason}` : ""}</td></tr>))}</tbody>
         </table></div>
       )}
     </Panel>

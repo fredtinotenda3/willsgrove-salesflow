@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/lib/auth/current-user";
 import { listCreditNotes } from "@/lib/returns-credits/queries";
 import { CREDIT_NOTE_MATCH_STATUS_LABELS, CREDIT_NOTE_MATCH_STATUS_STYLES } from "@/lib/returns-credits/display";
 import Sidebar from "../components/sidebar";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 import { Undo2, ChevronRight, ChevronLeft, Upload, History } from "lucide-react";
 
 /**
@@ -148,7 +149,7 @@ export default async function ReturnsCreditsPage({ searchParams }: RouteParams) 
                           )}
                         </td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-xs text-gray-600">
-                          {creditNote.amount.toString()} {creditNote.currencyCode ?? ""}
+                          {formatCurrencyAmount(creditNote.currencyCode, creditNote.amount)}
                         </td>
                         <td className="whitespace-nowrap px-6 py-4">
                           <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${CREDIT_NOTE_MATCH_STATUS_STYLES[creditNote.matchStatus] ?? "bg-gray-100 text-gray-500"}`}>

@@ -30,6 +30,7 @@ import {
   Receipt,
   Wallet,
 } from "lucide-react";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 
 // Cache Components (next.config.ts: cacheComponents: true) can't prerender
 // a request-time auth + DB read into the static shell -- this page reads
@@ -115,7 +116,7 @@ function KpiCard({ kpi }: { kpi: DashboardKpi }) {
 
       {kpi.currencyBreakdown && kpi.currencyBreakdown.length > 1 && (
         <p className="mt-1 text-[10px] text-gray-400">
-          {kpi.currencyBreakdown.map((b) => `${b.currencyCode} ${b.amount}`).join(" · ")}
+          {kpi.currencyBreakdown.map((b) => formatCurrencyAmount(b.currencyCode, b.amount)).join(" · ")}
         </p>
       )}
 
@@ -569,6 +570,8 @@ export default async function Home() {
                     const { label: statusLabel, style: statusStyle } = getEffectiveOrderStatus({
                       status: order.status,
                       dispatchStatuses: order.dispatchStatuses,
+                      invoiceState: order.invoiceState,
+                      completed: order.completed,
                     });
 
                     return (

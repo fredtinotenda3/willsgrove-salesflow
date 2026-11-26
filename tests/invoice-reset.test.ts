@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Prisma } from "@prisma/client";
 
 /**
  * Invoice-recording protection: pure rules + the reset service's decision
@@ -11,6 +12,8 @@ const tx = {
   $queryRaw: vi.fn(),
   sapInvoice: { findFirst: vi.fn(), update: vi.fn() },
   auditEvent: { create: vi.fn() },
+  sapInvoiceLine: { findMany: vi.fn(), aggregate: vi.fn() },
+  dispatchLine: { aggregate: vi.fn() },
 };
 
 vi.mock("@/lib/prisma", () => ({
@@ -61,6 +64,20 @@ describe("resetNativeInvoice", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     tx.$queryRaw.mockResolvedValue([]);
+    // Default: nothing has been dispatched against this invoice's lines.
+    tx.sapInvoiceLine.findMany.mockResolvedValue([]);
+    tx.sapInvoiceLine.aggregate.mockResolvedValue({ _sum: { quantityInvoiced: null } });
+    tx.dispatchLine.aggregate.mockResolvedValue({ _sum: { dispatchedQuantity: null } });
+  });
+
+  it("refuses when goods have already been dispatched against the invoice", async () => {
+    tx.sapInvoice.findFirst.mockResolvedValue(invoiceFixture());
+    tx.sapInvoiceLine.findMany.mockResolvedValue([{ matchedOrderLineId: "ol1", quantityInvoiced: new Prisma.Decimal(10) }]);
+    tx.sapInvoiceLine.aggregate.mockResolvedValue({ _sum: { quantityInvoiced: new Prisma.Decimal(10) } });
+    tx.dispatchLine.aggregate.mockResolvedValue({ _sum: { dispatchedQuantity: new Prisma.Decimal(4) } });
+    const result = await resetNativeInvoice("ord1", "inv1", "mgr1", { reason: "Wrong quantities" });
+    expect(result).toMatchObject({ ok: false, status: 409 });
+    expect(tx.sapInvoice.update).not.toHaveBeenCalled();
   });
 
   it("voids a native invoice, locks the order first, and writes an audit event", async () => {

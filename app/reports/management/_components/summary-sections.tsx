@@ -7,6 +7,7 @@ import type { OperationalSummaryPeriod, LostSalesManagementReport } from "@/lib/
 import { LOST_SALE_REASON_LABELS } from "@/lib/lost-sales/display";
 import { CLAIM_CATEGORY_LABELS, CLAIM_PRIORITY_LABELS, CLAIM_STATUS_LABELS } from "@/lib/invoice-claims/display";
 import { QUOTATION_STATUS_LABELS } from "@/lib/quotations/display";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 import { SectionCard, MetricCard, BarRow, RateStat, EmptyState } from "../../_components/ui";
 
 /**
@@ -37,9 +38,10 @@ import { SectionCard, MetricCard, BarRow, RateStat, EmptyState } from "../../_co
  * ever one place this data is rendered from.
  */
 
-function money(value: string): string {
-  const n = Number.parseFloat(value);
-  return Number.isFinite(n) ? n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : value;
+/** Money with its currency sign: "$1,234.50" for USD (the default when a figure carries no currency), "ZWG 1,234.50" otherwise. */
+function money(value: string, currency: string = "USD"): string {
+  const formatted = formatCurrencyAmount(currency, value);
+  return formatted === "—" ? value : formatted;
 }
 
 function quantity(value: string): string {
@@ -360,7 +362,7 @@ export function FinancialExposureSections({ data }: { data: FinancialExposureRep
         <div className="mb-5 grid grid-cols-2 gap-4 sm:grid-cols-4">
           <MetricCard title="Average resolution time" value={claims.averageResolutionDays === null ? "Not available" : `${claims.averageResolutionDays} day(s)`} dataQuality={claims.averageResolutionDays === null ? "missing" : "calculated"} />
           {claims.exposureByCurrency.map((bucket) => (
-            <MetricCard key={bucket.currencyCode} title={`${bucket.currencyCode} exposure (potential / approved / actual)`} value={`${money(bucket.potentialCreditExposure)} / ${money(bucket.approvedCreditExposure)} / ${money(bucket.actualSapCreditedAmount)}`} description={`${bucket.claimCount} claim(s)`} dataQuality="actual" />
+            <MetricCard key={bucket.currencyCode} title={`${bucket.currencyCode} exposure (potential / approved / actual)`} value={`${money(bucket.potentialCreditExposure, bucket.currencyCode)} / ${money(bucket.approvedCreditExposure, bucket.currencyCode)} / ${money(bucket.actualSapCreditedAmount, bucket.currencyCode)}`} description={`${bucket.claimCount} claim(s)`} dataQuality="actual" />
           ))}
         </div>
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -422,7 +424,7 @@ export function FinancialExposureSections({ data }: { data: FinancialExposureRep
               ) : (
                 lostSales.sourceA.exposureByCurrency.map((bucket) => (
                   <p key={bucket.currencyCode} className="text-sm tabular-nums text-[#17251E]">
-                    {bucket.currencyCode} {money(bucket.potentialCreditExposure)} <span className="text-xs text-[#849087]">({bucket.claimCount} claims)</span>
+                    {money(bucket.potentialCreditExposure, bucket.currencyCode)} <span className="text-xs text-[#849087]">({bucket.claimCount} claims)</span>
                   </p>
                 ))
               )}
@@ -489,7 +491,7 @@ export function QuotationsPerformanceSections({ data }: { data: QuotationsPerfor
                     {rows.map((row) => (
                       <tr key={row.status}>
                         <td className="py-1.5 text-[#536158]">{QUOTATION_STATUS_LABELS[row.status] ?? row.status}</td>
-                        <td className="py-1.5 text-right tabular-nums font-semibold text-[#17251E]">{money(row.total)}</td>
+                        <td className="py-1.5 text-right tabular-nums font-semibold text-[#17251E]">{money(row.total, currency)}</td>
                       </tr>
                     ))}
                   </tbody>

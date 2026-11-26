@@ -22,7 +22,7 @@ export default async function AdminOrderDetailPage({ params, searchParams }: { p
   if (!isValidId(id)) notFound();
   const detail = await getAdminOrderDetail(id);
   if (!detail) notFound();
-  const { order: o, history, canEdit, canCancel, canReopen, canDelete, pricing, orderTotal } = detail;
+  const { order: o, history, canEdit, canCancel, canReopen, canDelete, pricing, orderTotal, effectiveStatus } = detail;
   const requested = one((await searchParams).tab);
   const tab = (TABS as readonly string[]).includes(requested ?? "") ? (requested as (typeof TABS)[number]) : "overview";
   const assignees = tab === "actions" ? await listActiveAssignees() : [];
@@ -31,7 +31,7 @@ export default async function AdminOrderDetailPage({ params, searchParams }: { p
   return (
     <div className="space-y-4">
       <PageHeader back={{ href: "/admin/orders", label: "All orders" }} title={o.reference} description={`${o.customer.name} · ${o.salesperson ? `Salesperson ${o.salesperson.name}` : "No salesperson assigned"}`}
-        actions={<><StatusBadge status={o.status} /><Link href={`/orders/${o.id}`} className="rounded-lg border border-[#DDE3DC] bg-white px-3 py-2 text-sm font-semibold hover:bg-[#F7F8F6]">Open operational view</Link></>} />
+        actions={<><StatusBadge status={effectiveStatus} /><Link href={`/orders/${o.id}`} className="rounded-lg border border-[#DDE3DC] bg-white px-3 py-2 text-sm font-semibold hover:bg-[#F7F8F6]">Open operational view</Link></>} />
       <Tabs basePath={`/admin/orders/${o.id}`} active={tab} tabs={[
         { key: "overview", label: "Overview" }, { key: "lines", label: "Lines", count: o._count.lines }, { key: "pricing", label: "Pricing" }, { key: "documents", label: "Documents", count: o._count.documents },
         { key: "approvals", label: "Approvals", count: o.approvalRequests.length + o.approvals.length }, { key: "picking", label: "Picking", count: o.pickingSessions.length }, { key: "invoicing", label: "SAP & invoicing" },

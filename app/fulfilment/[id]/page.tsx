@@ -55,7 +55,7 @@ export default async function FulfilmentOrderPage({ params }: RouteParams) {
   const customerName = order.customer?.name ?? "Unknown customer";
   // Final completion phase, section 7: derived label, not the raw
   // status -- see lib/order-display.ts's getEffectiveOrderStatus.
-  const { label: statusLabel, style: statusStyle } = getEffectiveOrderStatus({ status: order.status, dispatchStatuses: order.dispatchStatuses });
+  const { label: statusLabel, style: statusStyle } = getEffectiveOrderStatus({ status: order.status, dispatchStatuses: order.dispatchStatuses, invoiceState: order.invoiceState, completed: order.completed });
   const canAuthorize = user.role === "SALES_MANAGER" || user.role === "ADMINISTRATOR";
   const notPickable = NOT_PICKABLE_STATUSES.has(order.status);
 
@@ -220,7 +220,10 @@ export default async function FulfilmentOrderPage({ params }: RouteParams) {
               order's dispatch history stays relevant even once picking
               itself is done; the panel's own empty state covers "nothing
               outstanding yet." */}
-          <DispatchPanel orderId={order.id} />
+          <DispatchPanel
+            orderId={order.id}
+            locked={order.completed || (order.dispatchStatuses.length > 0 && order.dispatchStatuses.every((status) => status === "DELIVERED" || status === "CANCELLED") && order.dispatchStatuses.some((status) => status === "DELIVERED"))}
+          />
 
           <footer className="flex items-center justify-between pb-2 text-[10px] text-gray-400">
             <p>Willsgrove SalesFlow © 2026</p>

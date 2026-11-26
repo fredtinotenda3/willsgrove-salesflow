@@ -10,6 +10,7 @@ import { toFlatSearchParams, toURLSearchParams, type ReportSearchParams } from "
 import Sidebar from "../../components/sidebar";
 import { PageHeader, SectionCard, MetricCard, EmptyState } from "../_components/ui";
 import { ReportFilterBar } from "../_components/filter-bar";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 import { AlertCircle } from "lucide-react";
 
 export const instant = false;
@@ -211,7 +212,7 @@ export default async function SalesPerformanceReportPage({ searchParams }: Route
                   Lost Value (not an authoritative SAP figure), never summed across currency:
                   {report.lostSales.estimatedValueByCurrency.map((row) => (
                     <span key={row.currency} className="ml-2 font-semibold text-[#17251E]">
-                      {row.currency} {row.totalEstimatedValue}
+                      {formatCurrencyAmount(row.currency, row.totalEstimatedValue)}
                     </span>
                   ))}
                 </div>

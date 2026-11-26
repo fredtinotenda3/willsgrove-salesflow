@@ -1,4 +1,5 @@
 import "server-only";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { TRANSACTION_OPTIONS } from "@/lib/orders";
 import { isNativelyRecordedInvoice } from "@/lib/invoice-recording/queries";
@@ -10,7 +11,7 @@ import { describeResetBlockers, type ResetNativeInvoiceInput } from "@/lib/invoi
  * Deliberately NO schema migration, and no deletion: the invoice is marked
  * `isCancelledOrReversed = true`, the field every consumer already honours
  * (remaining-to-invoice maths, revenue reports, the invoice register,
- * claim creation). Setting it therefore frees the dispatched quantity to be
+ * claim creation). Setting it therefore frees the picked quantity to be
  * invoiced again without any consumer needing to learn about "reset".
  * Provenance of the reset (who/when/why) is written both to the invoice's
  * own rawSourceData and to the audit history, so nothing is lost.
@@ -57,10 +58,29 @@ export async function resetNativeInvoice(
       return { ok: false, status: 409, message: "This invoice has already been reset." };
     }
 
+    // Goods already dispatched against this invoice make a reset unsafe: voiding it would leave goods that
+    // have left the door without an invoice. Checked per line against what the OTHER active invoices cover.
+    const ownLines = await tx.sapInvoiceLine.findMany({
+      where: { sapInvoiceId: invoice.id, matchedOrderLineId: { not: null } },
+      select: { matchedOrderLineId: true, quantityInvoiced: true },
+    });
+    const ownByLine = new Map<string, Prisma.Decimal>();
+    for (const l of ownLines) ownByLine.set(l.matchedOrderLineId as string, (ownByLine.get(l.matchedOrderLineId as string) ?? new Prisma.Decimal(0)).plus(l.quantityInvoiced));
+    let dispatchedLines = 0;
+    for (const [orderLineId, ownQuantity] of ownByLine) {
+      const [dispatched, invoiced] = await Promise.all([
+        tx.dispatchLine.aggregate({ where: { orderLineId, dispatchRecord: { status: { not: "CANCELLED" } } }, _sum: { dispatchedQuantity: true } }),
+        tx.sapInvoiceLine.aggregate({ where: { matchedOrderLineId: orderLineId, sapInvoice: { isCancelledOrReversed: false } }, _sum: { quantityInvoiced: true } }),
+      ]);
+      const stillInvoiced = (invoiced._sum.quantityInvoiced ?? new Prisma.Decimal(0)).minus(ownQuantity);
+      if ((dispatched._sum.dispatchedQuantity ?? new Prisma.Decimal(0)).greaterThan(stillInvoiced)) dispatchedLines += 1;
+    }
+
     const blockers = describeResetBlockers({
       claims: invoice._count.claims,
       creditNotes: invoice._count.creditNotes,
       hasDeliveryRecord: invoice.deliveryRecord !== null,
+      dispatchedLines,
     });
     if (blockers.length > 0) {
       return { ok: false, status: 409, message: `This invoice cannot be reset because ${blockers.join(" and ")}.` };

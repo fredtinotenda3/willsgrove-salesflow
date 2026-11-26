@@ -8,6 +8,7 @@ import Sidebar from "../../components/sidebar";
 import { PageHeader, SectionCard, MetricCard, EmptyState, Pagination } from "../_components/ui";
 import { ReportFilterBar } from "../_components/filter-bar";
 import { AlertCircle } from "lucide-react";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 
 export const instant = false;
 
@@ -166,7 +167,7 @@ export default async function CustomerIntelligenceOverviewPage({ searchParams }:
                           </Link>
                         </td>
                         <td className="px-5 py-3 text-[#536158]">
-                          {row.revenueByCurrency.length === 0 ? "—" : row.revenueByCurrency.map((r) => `${r.currency} ${r.lineValueTotal} (#${r.rank})`).join(" · ")}
+                          {row.revenueByCurrency.length === 0 ? "—" : row.revenueByCurrency.map((r) => `${formatCurrencyAmount(r.currency, r.lineValueTotal)} (#${r.rank})`).join(" · ")}
                         </td>
                         <td className="px-5 py-3 tabular-nums">
                           {row.purchaseFrequencyInPeriod} (#{row.purchaseFrequencyRank})

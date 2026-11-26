@@ -1,5 +1,6 @@
 import ExcelJS from "exceljs";
 import type { ManagementPack, PackMoneyRow } from "@/lib/reporting/management-pack-types";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 
 /**
  * Builds the management-pack workbook from an already-assembled pack. No
@@ -21,7 +22,7 @@ function header(sheet: ExcelJS.Worksheet, titles: string[]) {
 }
 
 function money(rows: PackMoneyRow[]): string {
-  return rows.length === 0 ? "None" : rows.map((r) => `${r.currency} ${r.value}`).join(" | ");
+  return rows.length === 0 ? "None" : rows.map((r) => formatCurrencyAmount(r.currency, r.value)).join(" | ");
 }
 
 function pct(value: number | null): string {

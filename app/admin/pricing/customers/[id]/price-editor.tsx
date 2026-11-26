@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 
 export type EditorRow = {
   productId: string;
@@ -95,7 +96,7 @@ export function PriceEditor({ customerId, rows, effectiveCurrency }: Props) {
             {rows.map((r) => (
               <tr key={r.productId} className="border-t border-[#EEF1ED] align-top">
                 <td className="px-4 py-2"><span className="font-mono text-xs text-[#849087]">{r.sapItemCode}</span><div>{r.itemName}{r.unitOfMeasure ? <span className="ml-1 text-xs text-[#849087]">/ {r.unitOfMeasure}</span> : null}</div></td>
-                <td className="px-4 py-2 tabular-nums">{r.unitPrice ? `${r.currencyCode} ${r.unitPrice}` : <span className="rounded bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800">No price</span>}</td>
+                <td className="px-4 py-2 tabular-nums">{r.unitPrice ? formatCurrencyAmount(r.currencyCode, r.unitPrice, 4) : <span className="rounded bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800">No price</span>}</td>
                 <td className="px-4 py-2 text-xs">
                   {r.source === "CUSTOMER_OVERRIDE" ? <span className="rounded bg-blue-50 px-2 py-0.5 font-semibold text-blue-800">Customer override</span> : r.source === "PRICE_LIST" ? <span className="rounded bg-gray-100 px-2 py-0.5 font-semibold text-gray-700">Inherited · {r.priceListCode}</span> : "—"}
                   {r.currencyMismatch ? <div className="mt-1 text-amber-700">Override ignored: wrong currency.</div> : null}

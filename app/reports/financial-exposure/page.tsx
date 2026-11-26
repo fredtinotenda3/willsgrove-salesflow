@@ -9,6 +9,7 @@ import { toFlatSearchParams, toURLSearchParams, type ReportSearchParams } from "
 import Sidebar from "../../components/sidebar";
 import { PageHeader, SectionCard, MetricCard, EmptyState } from "../_components/ui";
 import { ReportFilterBar } from "../_components/filter-bar";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 import { AlertCircle } from "lucide-react";
 
 export const instant = false;
@@ -216,7 +217,7 @@ export default async function FinancialExposureReportPage({ searchParams }: Rout
                 <p className="text-xs font-semibold text-[#17251E]">{report.lostSalesBySource.sourceB.label}</p>
                 <p className="mt-1 text-[11px] text-[#849087]">{report.lostSalesBySource.sourceB.description}</p>
                 <div className="mt-3 space-y-2 text-sm">
-                  <Row label="Estimated supply lost sales value" value={report.lostSalesBySource.sourceB.estimatedValue} />
+                  <Row label="Estimated supply lost sales value" value={formatCurrencyAmount("USD", report.lostSalesBySource.sourceB.estimatedValue)} />
                   <Row label="Lost-sale records priced" value={String(report.lostSalesBySource.sourceB.recordsWithEstimate)} />
                   <Row label="Lost-sale records without a price (excluded)" value={String(report.lostSalesBySource.sourceB.recordsWithoutEstimate)} />
                 </div>

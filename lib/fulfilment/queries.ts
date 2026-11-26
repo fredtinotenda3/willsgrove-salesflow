@@ -1,4 +1,5 @@
 import "server-only";
+import { loadOrderProgress } from "@/lib/order-progress";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { sumDecimalStrings, formatScaledDecimal, clampedDifference } from "@/lib/fulfilment/decimal";
@@ -23,8 +24,17 @@ export type OrderLineFulfilmentStatus = {
   authorizedFoundQuantity: string;
   /** Total DispatchLine.dispatchedQuantity across every non-CANCELLED DispatchRecord for this line. */
   dispatchedQuantity: string;
-  /** authorizedFoundQuantity - dispatchedQuantity, clamped at zero. What can still be dispatched for this line. */
+  /** authorizedFoundQuantity - dispatchedQuantity, clamped at zero. What was picked and is not yet dispatched. */
   outstandingQuantity: string;
+  /** Total SapInvoiceLine.quantityInvoiced matched to this line across every ACTIVE (non-voided) invoice, native or SAP-imported. */
+  invoicedQuantity: string;
+  /**
+   * What can be dispatched RIGHT NOW: min(picked, invoiced) - dispatched, clamped at zero. Goods must be invoiced
+   * before they leave, so picked-but-not-yet-invoiced quantity is outstanding but NOT dispatchable.
+   */
+  dispatchableQuantity: string;
+  /** Picked quantity still waiting to be invoiced: authorizedFoundQuantity - invoicedQuantity, clamped at zero. */
+  awaitingInvoiceQuantity: string;
 };
 
 export type OrderFulfilmentStatus = {
@@ -70,7 +80,7 @@ export async function getOrderFulfilmentStatus(orderId: string): Promise<OrderFu
   });
   if (!order) return null;
 
-  const [authorizedPickingLines, dispatchLines] = await Promise.all([
+  const [authorizedPickingLines, dispatchLines, invoiceLines] = await Promise.all([
     prisma.pickingLine.findMany({
       where: { pickingSession: { orderId, status: "AUTHORIZED" }, foundQuantity: { not: null } },
       select: { orderLineId: true, foundQuantity: true },
@@ -79,7 +89,22 @@ export async function getOrderFulfilmentStatus(orderId: string): Promise<OrderFu
       where: { orderLine: { orderId }, dispatchRecord: { status: { not: "CANCELLED" } } },
       select: { orderLineId: true, dispatchedQuantity: true },
     }),
+    prisma.sapInvoiceLine.findMany({
+      where: { matchedOrderLine: { orderId }, sapInvoice: { isCancelledOrReversed: false } },
+      select: { matchedOrderLineId: true, quantityInvoiced: true },
+    }),
   ]);
+
+  const invoicedByLine = new Map<string, string[]>();
+  for (const line of invoiceLines) {
+    if (!line.matchedOrderLineId) continue;
+    const existing = invoicedByLine.get(line.matchedOrderLineId);
+    if (existing) {
+      existing.push(line.quantityInvoiced.toString());
+    } else {
+      invoicedByLine.set(line.matchedOrderLineId, [line.quantityInvoiced.toString()]);
+    }
+  }
 
   const foundByLine = new Map<string, string[]>();
   for (const line of authorizedPickingLines) {
@@ -106,6 +131,11 @@ export async function getOrderFulfilmentStatus(orderId: string): Promise<OrderFu
     const authorizedFoundScaled = sumDecimalStrings(foundByLine.get(line.id) ?? ["0"]);
     const dispatchedScaled = sumDecimalStrings(dispatchedByLine.get(line.id) ?? ["0"]);
     const outstandingScaled = clampedDifference(authorizedFoundScaled, dispatchedScaled);
+    const invoicedScaled = sumDecimalStrings(invoicedByLine.get(line.id) ?? ["0"]);
+    // Dispatchable = min(picked, invoiced) - dispatched.
+    const coveredScaled = invoicedScaled < authorizedFoundScaled ? invoicedScaled : authorizedFoundScaled;
+    const dispatchableScaled = clampedDifference(coveredScaled, dispatchedScaled);
+    const awaitingInvoiceScaled = clampedDifference(authorizedFoundScaled, invoicedScaled);
     return {
       orderLineId: line.id,
       lineNumber: line.lineNumber,
@@ -116,6 +146,9 @@ export async function getOrderFulfilmentStatus(orderId: string): Promise<OrderFu
       authorizedFoundQuantity: formatScaledDecimal(authorizedFoundScaled),
       dispatchedQuantity: formatScaledDecimal(dispatchedScaled),
       outstandingQuantity: formatScaledDecimal(outstandingScaled),
+      invoicedQuantity: formatScaledDecimal(invoicedScaled),
+      dispatchableQuantity: formatScaledDecimal(dispatchableScaled),
+      awaitingInvoiceQuantity: formatScaledDecimal(awaitingInvoiceScaled),
     };
   });
 
@@ -309,6 +342,9 @@ export type DispatchQueueOrderSummary = {
   createdAt: string;
   /** Final completion phase, section 7 -- non-CANCELLED DispatchRecord.status values, for getEffectiveOrderStatus. */
   dispatchStatuses: string[];
+  /** Invoice progress (lib/order-progress.ts): an order must be invoiced before it can be dispatched. */
+  invoiceState: "NONE" | "PARTIAL" | "FULL";
+  completed: boolean;
 };
 
 export type DispatchQueueResult = {
@@ -398,6 +434,8 @@ export async function listDispatchQueue(options: { page: number; pageSize: numbe
     }),
   ]);
 
+  const progress = await loadOrderProgress(rows.filter((order) => order.status === "READY_TO_INVOICE").map((order) => order.id));
+
   return {
     orders: rows.map((order) => {
       const nonCancelled = order.dispatchRecords.filter((d) => d.status !== "CANCELLED");
@@ -412,6 +450,8 @@ export async function listDispatchQueue(options: { page: number; pageSize: numbe
         isDemo: order.isDemo,
         createdAt: order.createdAt.toISOString(),
         dispatchStatuses: nonCancelled.map((d) => d.status),
+        invoiceState: progress.get(order.id)?.invoiceState ?? ("NONE" as const),
+        completed: progress.get(order.id)?.completed ?? false,
       };
     }),
     pagination: {
@@ -432,6 +472,8 @@ export type DeliveredOrderSummary = {
   /** The most recent DeliveryRecord.recordedAt across this order's dispatches -- when it actually finished, not when the order was created. */
   lastDeliveredAt: string | null;
   isDemo: boolean;
+  /** True once every active invoice has its delivery outcome recorded ("Mark as Done"). */
+  completed: boolean;
 };
 
 export type DeliveredOrdersResult = {
@@ -477,6 +519,8 @@ export async function listDeliveredOrders(options: { page: number; pageSize: num
     }),
   ]);
 
+  const progress = await loadOrderProgress(rows.map((order) => order.id));
+
   return {
     orders: rows.map((order) => {
       const deliveredTimestamps = order.dispatchRecords
@@ -492,6 +536,7 @@ export async function listDeliveredOrders(options: { page: number; pageSize: num
         requestedDeliveryDate: order.requestedDeliveryDate ? order.requestedDeliveryDate.toISOString() : null,
         lastDeliveredAt: lastDeliveredAt ? lastDeliveredAt.toISOString() : null,
         isDemo: order.isDemo,
+        completed: progress.get(order.id)?.completed ?? false,
       };
     }),
     pagination: {

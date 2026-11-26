@@ -1,3 +1,4 @@
+import { loadOrderProgress, loadSingleOrderProgress } from "@/lib/order-progress";
 import { Prisma, OrderStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { computeOrderPricing, describePricingGaps, resolveVatRatePercent } from "@/lib/order-pricing";
@@ -218,6 +219,8 @@ export async function listOrders(query: OrderListQuery) {
   ]);
 
   const taxRates = await loadTaxRatesByCode(rows.flatMap((order) => order.lines.map((line) => line.product?.vatCode)));
+  // Invoice progress is only meaningful (and only loaded) for READY_TO_INVOICE orders -- one batched read, never per order.
+  const progress = await loadOrderProgress(rows.filter((order) => order.status === "READY_TO_INVOICE").map((order) => order.id));
 
   return {
     orders: rows.map((order) => {
@@ -239,6 +242,8 @@ export async function listOrders(query: OrderListQuery) {
         customer: order.customer,
         lineCount: order._count.lines,
         dispatchStatuses: order.dispatchRecords.map((d) => d.status),
+        invoiceState: progress.get(order.id)?.invoiceState ?? ("NONE" as const),
+        completed: progress.get(order.id)?.completed ?? false,
       };
     }),
     pagination: {
@@ -414,6 +419,8 @@ export async function getOrderById(id: string) {
       // exactly the invoice /delivered-orders itself would show for it,
       // never a second, line-level reading that could disagree).
       matchedSapInvoices: {
+        // A voided (reset) invoice is not an invoice any more -- it must not make the order look invoiced.
+        where: { isCancelledOrReversed: false },
         select: {
           id: true,
           sapDocNum: true,
@@ -464,6 +471,7 @@ export async function getOrderById(id: string) {
   const currentListPricesUsable = currentListPrices?.currencyCode === order.currency;
   const taxRates = await loadTaxRatesByCode(order.lines.map((line) => line.product?.vatCode));
   const assignmentHistory = await loadDispatchAssignmentHistory(order.dispatchRecords.map((dispatch) => dispatch.id));
+  const orderProgress = await loadSingleOrderProgress(order.id);
 
   const pricedLines = order.lines.map((line) => {
     const snapshot = (line.approvedUnitPrice ?? line.customerUnitPrice)?.toString() ?? null;
@@ -493,6 +501,8 @@ export async function getOrderById(id: string) {
     customerPoReference: order.customerPoReference,
     status: order.status,
     dispatchStatuses: order.dispatchRecords.map((d) => d.status),
+    invoiceState: orderProgress.invoiceState,
+    completed: orderProgress.completed,
     // Section 7 follow-up (see the select above's comment): same field
     // names/shape as getDeliveredOrderDetail's pickingSessions/dispatches,
     // deliberately, so a future shared component could render either.

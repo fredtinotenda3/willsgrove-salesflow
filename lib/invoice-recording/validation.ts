@@ -42,13 +42,12 @@ export type RecordNativeInvoiceInput = z.infer<typeof recordNativeInvoiceSchema>
 /**
  * quantityInvoiced for a line must be greater than zero and may never
  * exceed what is actually still outstanding to invoice on that line --
- * dispatched so far, minus whatever an earlier invoice (native OR
- * SAP-imported; see getInvoiceRecordingEligibility's own comment) already
- * covered. This is the same "never invoice more than went out the door"
- * guarantee a real SAP export gets implicitly (a SapInvoiceLine can only
- * exist for a line SAP itself has already invoiced) -- here it has to be
- * enforced explicitly, since nothing else stops an operator from typing
- * an arbitrary quantity.
+ * the quantity picked and authorised for it, minus whatever an earlier
+ * invoice (native OR SAP-imported; see getInvoiceRecordingEligibility's
+ * own comment) already covered. Invoicing happens BEFORE dispatch (goods
+ * may only leave once invoiced), so the ceiling is what was picked, never
+ * what has already been dispatched. Nothing else stops an operator from
+ * typing an arbitrary quantity, so it is enforced explicitly.
  */
 export function validateNativeInvoiceLineQuantity(
   remainingToInvoiceRaw: string,
@@ -65,7 +64,7 @@ export function validateNativeInvoiceLineQuantity(
   if (quantity > remaining) {
     return {
       ok: false,
-      message: "Quantity invoiced cannot exceed what is still outstanding to invoice on this line (dispatched so far, minus any earlier invoice).",
+      message: "Quantity invoiced cannot exceed what is still outstanding to invoice on this line (picked and authorised, minus any earlier invoice).",
     };
   }
   return { ok: true };
@@ -92,6 +91,8 @@ export type ResetBlockerCounts = {
   claims: number;
   creditNotes: number;
   hasDeliveryRecord: boolean;
+  /** Order lines on this invoice whose dispatched quantity would exceed the still-invoiced quantity if this invoice were voided. */
+  dispatchedLines?: number;
 };
 
 /**
@@ -105,5 +106,6 @@ export function describeResetBlockers(counts: ResetBlockerCounts): string[] {
   if (counts.claims > 0) blockers.push(`${counts.claims} invoice claim(s) are raised against it`);
   if (counts.creditNotes > 0) blockers.push(`${counts.creditNotes} credit note(s) are recorded against it`);
   if (counts.hasDeliveryRecord) blockers.push("a delivery outcome (No Claim / With Claim) has been recorded for it");
+  if ((counts.dispatchedLines ?? 0) > 0) blockers.push(`goods on ${counts.dispatchedLines} line(s) have already been dispatched against it`);
   return blockers;
 }

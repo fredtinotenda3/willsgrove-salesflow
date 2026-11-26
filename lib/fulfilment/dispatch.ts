@@ -1,4 +1,5 @@
 import "server-only";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { TRANSACTION_OPTIONS } from "@/lib/orders";
 import { parseScaledDecimal } from "@/lib/picking/validation";
@@ -90,6 +91,7 @@ export async function createDispatchRecord(orderId: string, actorId: string, inp
 
     const requestedScaled = parseScaledDecimal(requestedLine.quantity);
     const outstandingScaled = parseScaledDecimal(status.outstandingQuantity);
+    const dispatchableScaled = parseScaledDecimal(status.dispatchableQuantity);
     if (requestedScaled === null || requestedScaled <= BigInt(0)) {
       return { ok: false, status: 400, message: `Line ${status.lineNumber}: dispatch quantity must be a positive number.` };
     }
@@ -100,9 +102,37 @@ export async function createDispatchRecord(orderId: string, actorId: string, inp
         message: `Line ${status.lineNumber}: cannot dispatch ${requestedLine.quantity} -- only ${status.outstandingQuantity} is outstanding (authorized as found and not yet dispatched).`,
       };
     }
+    // Invoice-before-dispatch: goods may only leave once they have been invoiced. The step is never skipped.
+    if (dispatchableScaled === null || requestedScaled > dispatchableScaled) {
+      return {
+        ok: false,
+        status: 409,
+        message: `Line ${status.lineNumber}: cannot dispatch ${requestedLine.quantity} -- only ${status.dispatchableQuantity} is invoiced and not yet dispatched. Mark the order (or this line) as Invoiced before dispatching it.`,
+      };
+    }
   }
 
-  const created = await prisma.$transaction(async (tx) => {
+  let created: { id: string };
+  try {
+  created = await prisma.$transaction(async (tx) => {
+    // Re-check "invoiced and not yet dispatched" under the same order lock invoice recording/reset take, so a
+    // concurrent invoice reset (or a second dispatch for the same goods) can never slip between the check above
+    // and this insert.
+    await tx.$queryRaw`SELECT "id" FROM "CustomerOrder" WHERE "id" = ${orderId} FOR UPDATE`;
+    for (const requestedLine of input.lines) {
+      const [picked, invoiced, dispatched] = await Promise.all([
+        tx.pickingLine.aggregate({ where: { orderLineId: requestedLine.orderLineId, foundQuantity: { not: null }, pickingSession: { status: "AUTHORIZED" } }, _sum: { foundQuantity: true } }),
+        tx.sapInvoiceLine.aggregate({ where: { matchedOrderLineId: requestedLine.orderLineId, sapInvoice: { isCancelledOrReversed: false } }, _sum: { quantityInvoiced: true } }),
+        tx.dispatchLine.aggregate({ where: { orderLineId: requestedLine.orderLineId, dispatchRecord: { status: { not: "CANCELLED" } } }, _sum: { dispatchedQuantity: true } }),
+      ]);
+      const pickedQty = picked._sum.foundQuantity ?? new Prisma.Decimal(0);
+      const invoicedQty = invoiced._sum.quantityInvoiced ?? new Prisma.Decimal(0);
+      const covered = invoicedQty.lessThan(pickedQty) ? invoicedQty : pickedQty;
+      const available = covered.minus(dispatched._sum.dispatchedQuantity ?? new Prisma.Decimal(0));
+      if (new Prisma.Decimal(requestedLine.quantity).greaterThan(available)) {
+        throw new DispatchNotInvoicedError();
+      }
+    }
     const record = await tx.dispatchRecord.create({
       data: {
         orderId,
@@ -145,8 +175,20 @@ export async function createDispatchRecord(orderId: string, actorId: string, inp
 
     return record;
   }, TRANSACTION_OPTIONS);
+  } catch (error) {
+    if (error instanceof DispatchNotInvoicedError) {
+      return { ok: false, status: 409, message: "Goods must be invoiced before they are dispatched. Mark the order (or the lines) as Invoiced first -- the invoiced quantity changed while this dispatch was being created." };
+    }
+    throw error;
+  }
 
   return { ok: true, dispatchRecordId: created.id };
+}
+
+class DispatchNotInvoicedError extends Error {
+  constructor() {
+    super("Goods must be invoiced before they are dispatched.");
+  }
 }
 
 export type DepartDispatchResult = { ok: true } | { ok: false; status: number; message: string };

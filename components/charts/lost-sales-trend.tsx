@@ -81,7 +81,7 @@ export function RequestedVsUnavailableTrendChart({
         <CartesianGrid vertical={false} />
         <XAxis dataKey="label" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} />
         <YAxis tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} width={48} />
-        <ChartTooltip content={<TrendTooltipContent basePath={basePath} baseQuery={baseQuery} />} />
+        <ChartTooltip wrapperStyle={{ zIndex: 50, outline: "none" }} isAnimationActive={false} content={<TrendTooltipContent basePath={basePath} baseQuery={baseQuery} />} />
         <ChartLegend content={<ChartLegendContent />} />
         <Area type="monotone" dataKey="unavailableQuantity" fill="var(--color-unavailableQuantity)" stroke="var(--color-unavailableQuantity)" fillOpacity={0.18} strokeWidth={2} />
         <Line type="monotone" dataKey="requestedQuantity" stroke="var(--color-requestedQuantity)" strokeWidth={2} dot={{ r: 3 }} />
@@ -120,7 +120,7 @@ export function EstimatedLostValueTrendChart({
         <CartesianGrid vertical={false} />
         <XAxis dataKey="label" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} />
         <YAxis tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} width={56} />
-        <ChartTooltip content={<ValueTrendTooltipContent basePath={basePath} baseQuery={baseQuery} />} />
+        <ChartTooltip wrapperStyle={{ zIndex: 50, outline: "none" }} isAnimationActive={false} content={<ValueTrendTooltipContent basePath={basePath} baseQuery={baseQuery} />} />
         <ChartLegend content={<ChartLegendContent />} />
         <Area type="monotone" dataKey="estimatedLostValue" fill="var(--color-estimatedLostValue)" stroke="var(--color-estimatedLostValue)" fillOpacity={0.18} strokeWidth={2} />
         <Line type="monotone" dataKey="requestedValue" stroke="var(--color-requestedValue)" strokeWidth={2} dot={{ r: 3 }} />

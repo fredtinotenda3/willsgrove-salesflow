@@ -1,4 +1,5 @@
 import "server-only";
+import { loadOrderProgress } from "@/lib/order-progress";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
@@ -142,6 +143,8 @@ export type PickingQueueOrderSummary = {
   createdAt: string;
   /** Final completion phase, section 7 -- non-CANCELLED DispatchRecord.status values, for getEffectiveOrderStatus (an order can be dispatched/delivered before a handover is ever generated for it, independent of this queue's own handedToSapAt exit condition). */
   dispatchStatuses: string[];
+  invoiceState: "NONE" | "PARTIAL" | "FULL";
+  completed: boolean;
 };
 
 export type PickingQueueResult = {
@@ -202,6 +205,8 @@ export async function listPickingQueue(options: {
     }),
   ]);
 
+  const progress = await loadOrderProgress(rows.filter((order) => order.status === "READY_TO_INVOICE").map((order) => order.id));
+
   return {
     orders: rows.map((order) => ({
       id: order.id,
@@ -214,6 +219,8 @@ export async function listPickingQueue(options: {
       isDemo: order.isDemo,
       createdAt: order.createdAt.toISOString(),
       dispatchStatuses: order.dispatchRecords.map((d) => d.status),
+      invoiceState: progress.get(order.id)?.invoiceState ?? ("NONE" as const),
+      completed: progress.get(order.id)?.completed ?? false,
     })),
     pagination: {
       page: options.page,

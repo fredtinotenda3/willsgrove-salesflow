@@ -144,7 +144,7 @@ export function TopUnavailableBarChart({
         <CartesianGrid horizontal={false} />
         <XAxis type="number" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} />
         <YAxis dataKey="displayLabel" type="category" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} width={140} />
-        <ChartTooltip content={entityTooltip(kind, basePath, baseQuery)} />
+        <ChartTooltip wrapperStyle={{ zIndex: 50, outline: "none" }} isAnimationActive={false} content={entityTooltip(kind, basePath, baseQuery)} />
         <Bar dataKey="unavailableQuantityNum" fill="var(--color-unavailableQuantity)" radius={4} maxBarSize={22} />
       </BarChart>
     </ChartContainer>
@@ -193,7 +193,7 @@ export function RequestedFoundUnavailableChart({
         <CartesianGrid horizontal={false} />
         <XAxis type="number" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} />
         <YAxis dataKey="displayLabel" type="category" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} width={140} />
-        <ChartTooltip content={<ProductBarTooltipContent basePath={basePath} baseQuery={baseQuery} />} />
+        <ChartTooltip wrapperStyle={{ zIndex: 50, outline: "none" }} isAnimationActive={false} content={<ProductBarTooltipContent basePath={basePath} baseQuery={baseQuery} />} />
         <ChartLegend content={<ChartLegendContent />} />
         <Bar dataKey="requestedQuantity" fill="var(--color-requestedQuantity)" radius={3} maxBarSize={14} />
         <Bar dataKey="foundQuantity" fill="var(--color-foundQuantity)" radius={3} maxBarSize={14} />
@@ -238,7 +238,7 @@ export function RequestedFoundUnavailableValueChart({
         <CartesianGrid horizontal={false} />
         <XAxis type="number" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} />
         <YAxis dataKey="displayLabel" type="category" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} width={140} />
-        <ChartTooltip content={<ProductBarTooltipContent basePath={basePath} baseQuery={baseQuery} />} />
+        <ChartTooltip wrapperStyle={{ zIndex: 50, outline: "none" }} isAnimationActive={false} content={<ProductBarTooltipContent basePath={basePath} baseQuery={baseQuery} />} />
         <ChartLegend content={<ChartLegendContent />} />
         <Bar dataKey="requestedValue" fill="var(--color-requestedValue)" radius={3} maxBarSize={14} />
         <Bar dataKey="foundValue" fill="var(--color-foundValue)" radius={3} maxBarSize={14} />
@@ -293,7 +293,7 @@ export function ShortageRateBarChart({
         <CartesianGrid horizontal={false} />
         <XAxis type="number" domain={[0, 100]} tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} unit="%" />
         <YAxis dataKey="displayLabel" type="category" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} width={140} />
-        <ChartTooltip content={entityTooltip(kind, basePath, baseQuery)} />
+        <ChartTooltip wrapperStyle={{ zIndex: 50, outline: "none" }} isAnimationActive={false} content={entityTooltip(kind, basePath, baseQuery)} />
         <Bar dataKey="shortageRatePercentNum" fill="var(--color-shortageRatePercent)" radius={4} maxBarSize={22} />
       </BarChart>
     </ChartContainer>
@@ -390,7 +390,7 @@ export function UnavailableQuantityDistribution({ distribution }: { distribution
           <CartesianGrid vertical={false} />
           <XAxis dataKey="rangeLabel" tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} />
           <YAxis tickLine={false} axisLine={false} tick={AXIS_TICK_STYLE} width={36} allowDecimals={false} />
-          <ChartTooltip content={<ChartTooltipContent labelKey="rangeLabel" />} />
+          <ChartTooltip wrapperStyle={{ zIndex: 50, outline: "none" }} isAnimationActive={false} content={<ChartTooltipContent labelKey="rangeLabel" />} />
           <Bar dataKey="count" fill="var(--color-count)" radius={3} maxBarSize={32} />
         </BarChart>
       </ChartContainer>

@@ -6,10 +6,12 @@ import { isValidId } from "@/lib/http";
 import Sidebar from "../../components/sidebar";
 import OrderLifecycleStepper from "../../components/order-lifecycle-stepper";
 import RecordInvoicePanel from "./record-invoice-panel";
+import OrderNextStep from "./order-next-step";
 import {
   ORDER_STATUS_LABELS,
   getEffectiveOrderStatus,
   getOrderLifecycleSteps,
+  getOrderNextActions,
   DOCUMENT_TYPE_LABELS,
   orderSourceLabel,
   formatOrderDate,
@@ -57,6 +59,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import DispatchAssignmentHistory from "../../components/dispatch-assignment-history";
 import HandoverPanel from "./handover-panel";
 import SapIntegrationPanel from "./sap-integration-panel";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 
 // Milestone 3 completion (Warehouse Assembly Form & Partial Availability).
 // Hidden only for a dead order -- nothing to assemble for one that's
@@ -105,7 +108,14 @@ export default async function OrderDetailPage({ params }: RouteParams) {
   // statusHistory timeline) intentionally keeps reading the REAL stored
   // status, since those are genuine workflow/business-rule checks, not a
   // user-facing "what state is this order in" label.
-  const { label: statusLabel, style: statusStyle } = getEffectiveOrderStatus({ status: order.status, dispatchStatuses: order.dispatchStatuses });
+  const { label: statusLabel, style: statusStyle } = getEffectiveOrderStatus({ status: order.status, dispatchStatuses: order.dispatchStatuses, invoiceState: order.invoiceState, completed: order.completed });
+
+  const nextActions = getOrderNextActions({
+    status: order.status,
+    dispatchStatuses: order.dispatchStatuses,
+    invoiceState: order.invoiceState,
+    completed: order.completed,
+  });
 
   // Part 3: lifecycle indicator + related-records panel, both derived
   // from data getOrderById already returns (see that function's own Part
@@ -264,7 +274,11 @@ export default async function OrderDetailPage({ params }: RouteParams) {
               its own when this order has nothing dispatched-but-
               uninvoiced (the common case) -- see record-invoice-panel.tsx's
               own comment for what this closes. */}
-          <RecordInvoicePanel orderId={order.id} />
+          <OrderNextStep orderId={order.id} actions={nextActions} statusLabel={statusLabel} />
+          <RecordInvoicePanel
+            orderId={order.id}
+            readOnly={order.completed || (order.dispatchStatuses.length > 0 && order.dispatchStatuses.every((status) => status === "DELIVERED" || status === "CANCELLED") && order.dispatchStatuses.some((status) => status === "DELIVERED"))}
+          />
 
           <section className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
             <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-600" />
@@ -331,7 +345,7 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                               {line.unitPrice !== null ? (
                                 <>
                                   <span>
-                                    {order.currency} {line.unitPrice}
+                                    {formatCurrencyAmount(order.currency, line.unitPrice)}
                                   </span>
                                   {line.priceSource === "PRICE_LIST_CURRENT" && (
                                     <Tooltip>
@@ -357,7 +371,7 @@ export default async function OrderDetailPage({ params }: RouteParams) {
                             </TableCell>
                             <TableCell className="px-4 text-right align-top text-xs text-gray-600">
                               {line.lineTax !== null ? (
-                                `${order.currency} ${Number(line.lineTax).toFixed(2)}`
+                                formatCurrencyAmount(order.currency, line.lineTax)
                               ) : line.lineSubtotal !== null ? (
                                 <Tooltip>
                                   <TooltipTrigger asChild>

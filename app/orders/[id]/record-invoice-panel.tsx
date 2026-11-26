@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
-import { ChevronDown, ChevronUp, FileText, Loader2, Check, RotateCcw, Lock } from "lucide-react";
+import { ChevronDown, ChevronUp, FileText, Loader2, Check, RotateCcw, Lock, Truck } from "lucide-react";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -16,20 +17,22 @@ import {
 } from "@/components/ui/alert-dialog";
 
 /**
- * Real-world fix (native invoice recording) -- see lib/invoice-recording/
- * validation.ts's own comment for the full design this closes
- * (Delivered Orders / "No Claim, With Claim" being unreachable for an
- * order with no imported SAP invoice).
+ * The "Mark as Invoiced" step of the order workflow (see lib/invoice-
+ * recording/validation.ts's own comment for the underlying design).
  *
- * Shown on the order detail page only once GET /api/orders/[id]/
- * record-invoice reports at least one line that's been dispatched but
- * not yet (fully) invoiced -- an order nothing has shipped on yet, or
- * one already fully invoiced, renders nothing here at all, never an
- * empty/disabled panel.
+ * Invoicing comes BEFORE dispatch and is never skipped: once picking is
+ * authorised (Ready to Invoice) this panel is where the order is marked as
+ * invoiced -- the full order in one go, or line by line -- and only
+ * invoiced goods can then be dispatched (lib/fulfilment/dispatch.ts). Once
+ * everything picked is invoiced the panel offers the "Dispatch" button.
+ *
+ * Renders nothing for an order with nothing picked yet and nothing ever
+ * invoiced, never an empty/disabled panel.
  */
 
 type EligibilityLine = {
   orderLineId: string;
+  pickedQuantity: string;
   lineNumber: number;
   description: string;
   sapItemCode: string | null;
@@ -75,14 +78,19 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
   }
 }
 
-export default function RecordInvoicePanel({ orderId }: { orderId: string }) {
+/**
+ * `readOnly`: the order has been delivered / completed. Invoicing is closed -- the recorded invoices stay
+ * visible, but no invoicing form, reset or Dispatch button is offered (a delivered order is a finished record).
+ */
+export default function RecordInvoicePanel({ orderId, readOnly = false }: { orderId: string; readOnly?: boolean }) {
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
   const [eligibility, setEligibility] = useState<Eligibility | null>(null);
   const [recorded, setRecorded] = useState<RecordedInvoice[]>([]);
-  const [canReset, setCanReset] = useState(false);
+  const [canResetRaw, setCanReset] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const initialised = useRef(false);
   const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [drafts, setDrafts] = useState<Record<string, LineDraft>>({});
   const [submitting, setSubmitting] = useState(false);
@@ -109,6 +117,12 @@ export default function RecordInvoicePanel({ orderId }: { orderId: string }) {
         setEligibility(loaded);
         setRecorded((data.recordedInvoices as RecordedInvoice[] | undefined) ?? []);
         setCanReset(data.canReset === true);
+        // First load only: open the panel straight away when there is something to invoice, so the
+        // required step is visible rather than hidden behind a collapsed header.
+        if (!initialised.current) {
+          initialised.current = true;
+          setExpanded(loaded.lines.length > 0);
+        }
         const initialDrafts: Record<string, LineDraft> = {};
         for (const line of loaded.lines) {
           initialDrafts[line.orderLineId] = {
@@ -217,13 +231,21 @@ export default function RecordInvoicePanel({ orderId }: { orderId: string }) {
     }
   }
 
+  const canReset = canResetRaw && !readOnly;
   const activeInvoices = recorded.filter((invoice) => invoice.state === "RECORDED");
-  const hasRemaining = (eligibility?.lines.length ?? 0) > 0;
-  // Nothing dispatched yet and nothing ever recorded: nothing to show.
+  // True when every outstanding line is ticked at its full remaining quantity: the "invoice the whole order" case.
+  const invoicingEverything =
+    (eligibility?.lines.length ?? 0) > 0 &&
+    (eligibility?.lines ?? []).every((line) => {
+      const draft = drafts[line.orderLineId];
+      return draft?.include && draft.quantityInvoiced.trim() === line.remainingToInvoice;
+    });
+  const hasRemaining = !readOnly && (eligibility?.lines.length ?? 0) > 0;
+  // Nothing to invoice and nothing ever recorded (or a delivered order with no invoice on file): nothing to show.
   if (loading || !eligibility || (!hasRemaining && recorded.length === 0)) return null;
 
   return (
-    <section className="rounded-xl border border-[#E8EBE6] bg-white">
+    <section id="invoice" className="scroll-mt-24 rounded-xl border border-[#E8EBE6] bg-white">
       <button
         type="button"
         onClick={() => setExpanded((prev) => !prev)}
@@ -231,10 +253,10 @@ export default function RecordInvoicePanel({ orderId }: { orderId: string }) {
       >
         <span className="flex items-center gap-2 text-sm font-semibold text-[#17251E]">
           <FileText size={16} className="text-[#315C43]" />
-          {hasRemaining ? "Record Invoice" : "Invoice recorded"}
+          {hasRemaining ? "Mark as Invoiced" : "Invoiced"}
           {hasRemaining ? (
             <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
-              {eligibility.lines.length} line(s) dispatched, not yet invoiced
+              {eligibility.lines.length} line(s) picked, not yet invoiced
             </span>
           ) : (
             <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
@@ -258,7 +280,7 @@ export default function RecordInvoicePanel({ orderId }: { orderId: string }) {
                     </span>
                     <span className="tabular-nums text-gray-500">
                       {invoice.invoiceDate ?? "—"} · {invoice.lineCount} line(s)
-                      {invoice.total ? ` · ${invoice.currencyCode ?? ""} ${Number(invoice.total).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ""}
+                      {invoice.total ? ` · ${formatCurrencyAmount(invoice.currencyCode, invoice.total)}` : ""}
                     </span>
                     <span className="ml-auto flex items-center gap-3">
                       {invoice.state === "RECORDED" && (
@@ -297,18 +319,25 @@ export default function RecordInvoicePanel({ orderId }: { orderId: string }) {
 
           {!hasRemaining && (
             <p className="text-xs text-gray-500">
-              Everything dispatched so far has been invoiced, so recording is disabled for this order.
-              {activeInvoices.length > 0 && canReset ? " A Sales Manager or Administrator can reset an invoice to correct a mistake." : ""}
+              {readOnly ? "This order has been delivered, so invoicing is closed and shown read-only." : "Everything picked has been invoiced."}
+              {activeInvoices.length > 0 && canReset && !readOnly ? " A Sales Manager or Administrator can reset an invoice to correct a mistake." : ""}
             </p>
+          )}
+
+          {!hasRemaining && !readOnly && activeInvoices.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg bg-emerald-50 p-3 text-xs">
+              <span className="font-semibold text-emerald-700">Next step: dispatch the invoiced goods.</span>
+              <Link href={`/fulfilment/${orderId}`} className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-[#173D2E] px-4 py-2 font-semibold text-white hover:brightness-110">
+                <Truck size={14} /> Dispatch
+              </Link>
+            </div>
           )}
 
           {hasRemaining && (<>
           <p className="text-xs text-gray-500">
-            Records this order as invoiced directly in SalesFlow -- for the normal case where no SAP invoice file has
-            been (or will be) imported for it. Once recorded, this order appears on the Delivered Orders page and a
-            delivery outcome (No Claim / With Claim) can be recorded against it, exactly as for a SAP-imported
-            invoice. Only lines that have actually been dispatched can be invoiced, up to what&apos;s still
-            outstanding on each.
+            Mark the full order as invoiced, or untick lines and invoice them one by one. Goods can only be
+            dispatched once invoiced, so this step cannot be skipped. Quantities are limited to what was picked
+            and authorised for each line.
           </p>
 
           <div className="mt-4">
@@ -335,7 +364,7 @@ export default function RecordInvoicePanel({ orderId }: { orderId: string }) {
                     />
                     Line {line.lineNumber} -- {line.sapItemCode ?? "?"} ({line.description})
                     <span className="ml-auto font-normal text-gray-400">
-                      Dispatched {line.dispatchedQuantity} {line.unitCode}
+                      Picked {line.pickedQuantity} {line.unitCode}
                       {Number(line.alreadyInvoicedQuantity) > 0 ? ` -- ${line.alreadyInvoicedQuantity} already invoiced` : ""}
                     </span>
                   </label>
@@ -378,9 +407,12 @@ export default function RecordInvoicePanel({ orderId }: { orderId: string }) {
                 <Check size={14} />
                 {success}
               </p>
+              <Link href={`/fulfilment/${orderId}`} className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-[#173D2E] px-3 py-1.5 font-semibold text-white hover:brightness-110">
+                <Truck size={14} /> Go to Dispatch
+              </Link>
               {recordedInvoiceId && (
-                <Link href={`/invoice-reconciliation/${recordedInvoiceId}`} className="mt-1 inline-block font-semibold text-[#173D2E] hover:underline">
-                  Record delivery outcome (No Claim / With Claim) for this invoice &rarr;
+                <Link href={`/invoice-reconciliation/${recordedInvoiceId}`} className="ml-3 inline-block font-semibold text-[#173D2E] hover:underline">
+                  Open invoice &rarr;
                 </Link>
               )}
             </div>
@@ -394,7 +426,7 @@ export default function RecordInvoicePanel({ orderId }: { orderId: string }) {
               className="flex items-center gap-1.5 rounded-lg bg-[#173D2E] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
             >
               {submitting ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
-              Record Invoice
+              {invoicingEverything ? "Mark full order as Invoiced" : "Mark selected lines as Invoiced"}
             </button>
           </div>
           </>)}

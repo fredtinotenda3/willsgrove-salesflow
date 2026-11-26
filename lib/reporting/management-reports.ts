@@ -10,6 +10,7 @@ import { getCommunicationsMonitoringReport } from "@/lib/reporting/communication
 import { getLostSalesReportSummary, getAutomaticLostSalesValue, type LostSalesReportSummary } from "@/lib/lost-sales/queries";
 import { getQuotationDashboardCounts } from "@/lib/quotations/queries";
 import { utcDateToDateOnlyString } from "@/lib/dates";
+import { loadOrderProgress, type OrderProgress } from "@/lib/order-progress";
 import { getEffectiveOrderStatus } from "@/lib/order-display";
 import { sumDecimalStrings, formatScaledDecimal } from "@/lib/fulfilment/decimal";
 import { multiplyDecimalStrings } from "@/lib/lost-sales/validation";
@@ -196,11 +197,16 @@ export type OutstandingOrderRow = {
   daysOutstanding: number | null;
 };
 
-function toOutstandingOrderRow(order: Prisma.CustomerOrderGetPayload<{ select: typeof orderListRowSelect }>): OutstandingOrderRow {
+function toOutstandingOrderRow(
+  order: Prisma.CustomerOrderGetPayload<{ select: typeof orderListRowSelect }>,
+  progress: ReadonlyMap<string, OrderProgress>
+): OutstandingOrderRow {
   const receivedAt = order.receivedAt;
   const { label: statusLabel } = getEffectiveOrderStatus({
     status: order.status,
     dispatchStatuses: order.dispatchRecords.map((d) => d.status),
+    invoiceState: progress.get(order.id)?.invoiceState,
+    completed: progress.get(order.id)?.completed,
   });
   return {
     id: order.id,
@@ -264,7 +270,8 @@ export async function listOutstandingOrders(filters: ReportFilters, pagination: 
     prisma.customerOrder.count({ where }),
     prisma.customerOrder.findMany({ where, select: orderListRowSelect, orderBy: { receivedAt: "asc" }, skip: (pagination.page - 1) * pagination.pageSize, take: pagination.pageSize }),
   ]);
-  return { rows: rows.map(toOutstandingOrderRow), pagination: { ...pagination, totalItems, totalPages: Math.max(1, Math.ceil(totalItems / pagination.pageSize)) } };
+  const progress = await loadOrderProgress(rows.filter((order) => order.status === "READY_TO_INVOICE").map((order) => order.id));
+  return { rows: rows.map((order) => toOutstandingOrderRow(order, progress)), pagination: { ...pagination, totalItems, totalPages: Math.max(1, Math.ceil(totalItems / pagination.pageSize)) } };
 }
 
 // Same AND-array pattern as buildOutstandingOrdersWhere above, and for the
@@ -291,7 +298,8 @@ export async function listOrdersAwaitingFulfilment(filters: ReportFilters, pagin
     prisma.customerOrder.count({ where }),
     prisma.customerOrder.findMany({ where, select: orderListRowSelect, orderBy: { approvedAt: "asc" }, skip: (pagination.page - 1) * pagination.pageSize, take: pagination.pageSize }),
   ]);
-  return { rows: rows.map(toOutstandingOrderRow), pagination: { ...pagination, totalItems, totalPages: Math.max(1, Math.ceil(totalItems / pagination.pageSize)) } };
+  const progress = await loadOrderProgress(rows.filter((order) => order.status === "READY_TO_INVOICE").map((order) => order.id));
+  return { rows: rows.map((order) => toOutstandingOrderRow(order, progress)), pagination: { ...pagination, totalItems, totalPages: Math.max(1, Math.ceil(totalItems / pagination.pageSize)) } };
 }
 
 export type OrderStatusBreakdownRow = { status: string; count: number };

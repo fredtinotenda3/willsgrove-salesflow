@@ -50,6 +50,12 @@ type FulfilmentLine = {
   authorizedFoundQuantity: string;
   dispatchedQuantity: string;
   outstandingQuantity: string;
+  /** Invoiced quantity (active invoices) for this line. */
+  invoicedQuantity: string;
+  /** min(picked, invoiced) - dispatched: what may be dispatched right now. */
+  dispatchableQuantity: string;
+  /** Picked but not yet invoiced: must be invoiced before it can be dispatched. */
+  awaitingInvoiceQuantity: string;
 };
 
 type DispatchSummary = {
@@ -115,7 +121,7 @@ function formatDateTime(iso: string | null): string {
 
 const STATUS_BADGE: Record<string, { label: string; style: string }> = {
   PLANNED: { label: "Planned", style: "bg-gray-100 text-gray-600" },
-  DEPARTED: { label: "Departed", style: "bg-cyan-50 text-cyan-700" },
+  DEPARTED: { label: "Dispatched", style: "bg-cyan-50 text-cyan-700" },
   DELIVERED: { label: "Delivered", style: "bg-emerald-50 text-emerald-700" },
   CANCELLED: { label: "Cancelled", style: "bg-red-50 text-red-700" },
 };
@@ -126,7 +132,18 @@ const OUTCOME_BADGE: Record<string, { label: string; style: string }> = {
   FULLY_REJECTED: { label: "Fully rejected", style: "bg-red-50 text-red-700" },
 };
 
-export default function DispatchPanel({ orderId }: { orderId: string }) {
+
+/** Decimal-safe (4 dp, matching NUMERIC(18,4)) "total minus part", floored at 0, as a trimmed string. */
+function balanceQuantity(total: string, part: string): string {
+  const t = Math.round(Number(total) * 10000);
+  const p = Math.round(Number(part) * 10000);
+  if (!Number.isFinite(t) || !Number.isFinite(p)) return "0";
+  const diff = Math.max(0, t - p) / 10000;
+  return String(diff);
+}
+
+/** `locked`: the order is delivered / completed -- creating further dispatches is closed (read-only record). */
+export default function DispatchPanel({ orderId, locked = false }: { orderId: string; locked?: boolean }) {
   const [lines, setLines] = useState<FulfilmentLine[] | null>(null);
   const [dispatches, setDispatches] = useState<DispatchSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -219,7 +236,7 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
   const defaultQuantities = useMemo(() => {
     const defaults: Record<string, string> = {};
     for (const line of lines ?? []) {
-      defaults[line.orderLineId] = line.outstandingQuantity;
+      defaults[line.orderLineId] = line.dispatchableQuantity;
     }
     return defaults;
   }, [lines]);
@@ -370,6 +387,20 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
       };
     });
 
+    for (const line of deliveryDetail.lines) {
+      const input = deliveryInputs[line.id];
+      if (!input) continue;
+      const rejected = Number(input.rejected.trim() || "0");
+      if (rejected > 0 && !input.reason.trim()) {
+        setDeliveryError(`Line #${line.lineNumber}: select a claim reason for the rejected quantity.`);
+        return;
+      }
+      if (!(rejected > 0) && input.reason.trim()) {
+        setDeliveryError(`Line #${line.lineNumber}: a claim reason needs a rejected quantity above 0.`);
+        return;
+      }
+    }
+
     setSubmittingDelivery(true);
     setDeliveryError(null);
     try {
@@ -429,7 +460,9 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
     );
   }
 
-  const dispatchableLines = (lines ?? []).filter((line) => Number(line.outstandingQuantity) > 0);
+  const dispatchableLines = locked ? [] : (lines ?? []).filter((line) => Number(line.dispatchableQuantity) > 0);
+  // Picked goods that have not been invoiced yet: they cannot be dispatched until the order (or line) is invoiced.
+  const awaitingInvoiceLines = locked ? [] : (lines ?? []).filter((line) => Number(line.awaitingInvoiceQuantity) > 0);
 
   return (
     <section className="space-y-4">
@@ -439,9 +472,9 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
             <div>
               <h2 className="text-[15px] font-bold text-[#17251E]">Dispatch</h2>
               <p className="mt-1 text-xs text-gray-400">
-                Lines are pre-filled with the invoiced/outstanding quantity (authorized &amp; found by picking,
-                minus what has already been dispatched). Edit a line if the actual quantity to dispatch now
-                differs, or reset it back to the invoiced amount.
+                Only invoiced goods can be dispatched. Lines are pre-filled with the invoiced quantity that has not
+                been dispatched yet. Edit a line if the actual quantity to dispatch now differs, or reset it back
+                to the invoiced amount.
               </p>
             </div>
             {dispatchableLines.length > 0 && (
@@ -455,8 +488,26 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
           </div>
         </div>
 
+        {awaitingInvoiceLines.length > 0 && (
+          <div className="mx-6 mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+            <span>
+              {awaitingInvoiceLines.length} line{awaitingInvoiceLines.length === 1 ? " is" : "s are"} picked but not invoiced yet
+              ({awaitingInvoiceLines.map((line) => `#${line.lineNumber}: ${line.awaitingInvoiceQuantity}`).join(", ")}). Goods must be invoiced before they are dispatched.
+            </span>
+            <a href={`/orders/${orderId}#invoice`} className="rounded-md bg-amber-600 px-3 py-1.5 font-semibold text-white hover:bg-amber-700">
+              Mark as Invoiced
+            </a>
+          </div>
+        )}
+
         {dispatchableLines.length === 0 ? (
-          <p className="px-6 pb-6 text-xs text-gray-400">Nothing outstanding to dispatch for this order right now.</p>
+          <p className="px-6 pb-6 text-xs text-gray-400">
+            {locked
+              ? "This order has been delivered. Dispatch is closed and the record is read-only."
+              : awaitingInvoiceLines.length > 0
+              ? "Nothing is invoiced and ready to dispatch yet."
+              : "Nothing outstanding to dispatch for this order right now."}
+          </p>
         ) : (
           <>
             <div className="overflow-x-auto">
@@ -467,7 +518,7 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                     <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Code</th>
                     <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Product</th>
                     <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">UOM</th>
-                    <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Invoiced / outstanding</th>
+                    <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Invoiced, not dispatched</th>
                     <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Dispatch now</th>
                   </tr>
                 </thead>
@@ -478,7 +529,7 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                       <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-500">{line.sapItemCodeSnapshot ?? "—"}</td>
                       <td className="px-6 py-4 text-xs font-medium text-gray-700">{line.originalProductDescription}</td>
                       <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-500">{line.requestedUnitCode}</td>
-                      <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">{line.outstandingQuantity}</td>
+                      <td className="whitespace-nowrap px-6 py-4 text-xs text-gray-600">{line.dispatchableQuantity}</td>
                       <td className="px-6 py-4">
                         <Input
                           type="text"
@@ -694,7 +745,10 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                                     inputMode="decimal"
                                     value={input.accepted}
                                     onChange={(e) =>
-                                      setDeliveryInputs((prev) => ({ ...prev, [line.id]: { ...input, accepted: e.target.value } }))
+                                      setDeliveryInputs((prev) => {
+                                        const rejected = balanceQuantity(line.dispatchedQuantity, e.target.value);
+                                        return { ...prev, [line.id]: { accepted: e.target.value, rejected, reason: Number(rejected) > 0 ? input.reason : "" } };
+                                      })
                                     }
                                    className="ml-1 w-20 h-8 text-xs md:text-xs" />
                                 </Label>
@@ -705,14 +759,28 @@ export default function DispatchPanel({ orderId }: { orderId: string }) {
                                     inputMode="decimal"
                                     value={input.rejected}
                                     onChange={(e) =>
-                                      setDeliveryInputs((prev) => ({ ...prev, [line.id]: { ...input, rejected: e.target.value } }))
+                                      setDeliveryInputs((prev) => {
+                                        const accepted = balanceQuantity(line.dispatchedQuantity, e.target.value);
+                                        return { ...prev, [line.id]: { accepted, rejected: e.target.value, reason: Number(e.target.value) > 0 ? input.reason : "" } };
+                                      })
                                     }
                                    className="ml-1 w-20 h-8 text-xs md:text-xs" />
                                 </Label>
                                 <Select
                                   value={input.reason || undefined}
                                   onValueChange={(value: string) =>
-                                    setDeliveryInputs((prev) => ({ ...prev, [line.id]: { ...input, reason: value } }))
+                                    setDeliveryInputs((prev) => {
+                                      // Choosing a claim reason means the product is rejected/returned. If no rejected
+                                      // quantity was entered yet, start from the whole line (editable) so the reason can
+                                      // never be left beside "Rejected 0".
+                                      const noRejected = !(Number(input.rejected) > 0);
+                                      return {
+                                        ...prev,
+                                        [line.id]: noRejected
+                                          ? { accepted: "0", rejected: line.dispatchedQuantity, reason: value }
+                                          : { ...input, reason: value },
+                                      };
+                                    })
                                   }
                                 >
                                   <SelectTrigger size="sm" className="h-auto w-48 rounded-lg border-gray-200 px-2 py-1 text-xs">

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { getEffectiveOrderStatus, getOrderLifecycleSteps, ORDER_STATUS_LABELS } from "@/lib/order-display";
+import { getEffectiveOrderStatus, getOrderNextActions, getOrderLifecycleSteps, ORDER_STATUS_LABELS } from "@/lib/order-display";
 
 /**
  * Final completion phase, section 7 ("an order must not remain stuck at
  * Ready for Invoice after it has progressed"). Covers
  * getEffectiveOrderStatus -- the pure, DB-free derivation that layers a
- * display-only Departed/Delivered label on top of READY_TO_INVOICE,
+ * display-only Dispatched/Delivered label on top of READY_TO_INVOICE,
  * computed from already-recorded DispatchRecord statuses, without ever
  * changing the real stored OrderStatus.
  */
@@ -37,26 +37,26 @@ describe("getEffectiveOrderStatus", () => {
 
   it("becomes 'Departed' once at least one dispatch has left but not everything is confirmed delivered", () => {
     const departedOnly = getEffectiveOrderStatus({ status: "READY_TO_INVOICE", dispatchStatuses: ["DEPARTED"] });
-    expect(departedOnly.label).toBe("Departed");
+    expect(departedOnly.label).toBe("Dispatched");
 
     // A second, still-planned dispatch batch for the same order -- the
     // exact "must not remain stuck" case: this order has genuinely moved
     // (one batch departed), so it must not still read "Ready to Invoice".
     const mixedPlannedAndDeparted = getEffectiveOrderStatus({ status: "READY_TO_INVOICE", dispatchStatuses: ["PLANNED", "DEPARTED"] });
-    expect(mixedPlannedAndDeparted.label).toBe("Departed");
+    expect(mixedPlannedAndDeparted.label).toBe("Dispatched");
 
     // One batch delivered, another only departed -- not EVERY dispatch is
-    // delivered yet, so this is "Departed" (in progress), not "Delivered".
+    // delivered yet, so this is "Dispatched" (in progress), not "Delivered".
     const mixedDepartedAndDelivered = getEffectiveOrderStatus({ status: "READY_TO_INVOICE", dispatchStatuses: ["DEPARTED", "DELIVERED"] });
-    expect(mixedDepartedAndDelivered.label).toBe("Departed");
+    expect(mixedDepartedAndDelivered.label).toBe("Dispatched");
   });
 
-  it("never mutates or references the real OrderStatus value for Departed/Delivered -- they are presentation-only labels", () => {
-    // Confirms "Departed"/"Delivered" are not themselves keys this module
+  it("never mutates or references the real OrderStatus value for Dispatched/Delivered -- they are presentation-only labels", () => {
+    // Confirms "Dispatched"/"Delivered" are not themselves keys this module
     // treats as real OrderStatus values anywhere (ORDER_STATUS_LABELS has
     // no such keys) -- the derivation layers a label on top, it never
     // invents a new status identifier.
-    expect(Object.values(ORDER_STATUS_LABELS)).not.toContain("Departed");
+    expect(Object.values(ORDER_STATUS_LABELS)).not.toContain("Dispatched");
     expect(Object.values(ORDER_STATUS_LABELS)).not.toContain("Delivered");
   });
 });
@@ -166,5 +166,32 @@ describe("getOrderLifecycleSteps", () => {
     const steps = getOrderLifecycleSteps({ status: "READY_TO_INVOICE", dispatchStatuses: ["DEPARTED"], hasMatchedInvoice: true, delivered: false })!;
     expect(steps[5]!.state).toBe("current");
     expect(steps[6]!.state).toBe("upcoming");
+  });
+});
+
+describe("invoice-aware effective status and next actions", () => {
+  const base = { status: "READY_TO_INVOICE" as const, dispatchStatuses: [] as string[] };
+
+  it("walks Ready to Invoice > Partially Invoiced > Invoiced > Dispatched > Delivered > Completed", () => {
+    expect(getEffectiveOrderStatus({ ...base, invoiceState: "NONE" }).label).toBe("Ready to Invoice");
+    expect(getEffectiveOrderStatus({ ...base, invoiceState: "PARTIAL" }).label).toBe("Partially Invoiced");
+    expect(getEffectiveOrderStatus({ ...base, invoiceState: "FULL" }).label).toBe("Invoiced");
+    expect(getEffectiveOrderStatus({ ...base, invoiceState: "FULL", dispatchStatuses: ["DEPARTED"] }).label).toBe("Dispatched");
+    expect(getEffectiveOrderStatus({ ...base, invoiceState: "FULL", dispatchStatuses: ["DELIVERED"] }).label).toBe("Delivered");
+    expect(getEffectiveOrderStatus({ ...base, invoiceState: "FULL", dispatchStatuses: ["DELIVERED"], completed: true }).label).toBe("Completed");
+  });
+
+  it("offers exactly the next button at each stage, invoice before dispatch", () => {
+    const keys = (input: Parameters<typeof getOrderNextActions>[0]) => getOrderNextActions(input).map((a) => a.key);
+    expect(keys({ ...base, invoiceState: "NONE" })).toEqual(["INVOICE"]);
+    expect(keys({ ...base, invoiceState: "PARTIAL" })).toEqual(["INVOICE", "DISPATCH"]);
+    expect(keys({ ...base, invoiceState: "FULL" })).toEqual(["DISPATCH"]);
+    expect(keys({ ...base, invoiceState: "FULL", dispatchStatuses: ["DEPARTED"] })).toEqual(["RECORD_DELIVERY"]);
+    expect(keys({ ...base, invoiceState: "FULL", dispatchStatuses: ["DELIVERED"] })).toEqual(["MARK_DONE"]);
+    expect(keys({ ...base, invoiceState: "FULL", dispatchStatuses: ["DELIVERED"], completed: true })).toEqual([]);
+    expect(keys({ status: "APPROVED", dispatchStatuses: [] })).toEqual([]);
+    // Delivered orders are read-only: no invoice/dispatch buttons, even a legacy one that was never invoiced.
+    expect(keys({ ...base, invoiceState: "NONE", dispatchStatuses: ["DELIVERED"] })).toEqual(["MARK_DONE"]);
+    expect(keys({ ...base, invoiceState: "NONE", dispatchStatuses: ["DEPARTED"] })).toEqual(["INVOICE", "RECORD_DELIVERY"]);
   });
 });

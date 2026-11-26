@@ -14,7 +14,7 @@ export const fmtDateTime = (d: Date | string | null | undefined): string => {
 
 export const humanize = (value: string | null | undefined): string => (value ? value.replace(/_/g, " ").toLowerCase().replace(/^\w/, (c) => c.toUpperCase()) : "—");
 
-/** "USD 1,234.50" from a decimal string/number. Groups the integer part only; the fraction is kept exactly as stored (max 2 shown). */
+/** "$1,234.50" for USD ("ZWG 1,234.50" for other currencies) from a decimal string/number. Groups the integer part only; the fraction is kept exactly as stored (max 2 shown). */
 export function fmtMoney(currency: string | null | undefined, amount: string | number | { toString(): string } | null | undefined): string {
   if (amount === null || amount === undefined) return "—";
   const raw = amount.toString();
@@ -23,7 +23,9 @@ export function fmtMoney(currency: string | null | undefined, amount: string | n
   const [int, frac = ""] = raw.replace("-", "").split(".");
   const grouped = int.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   const cents = frac.padEnd(2, "0").slice(0, 2);
-  return `${currency ?? ""} ${negative ? "-" : ""}${grouped}.${cents}`.trim();
+  const code = (currency ?? "USD").trim().toUpperCase();
+  const prefix = code === "USD" || code === "" ? "$" : `${code} `;
+  return `${negative ? "-" : ""}${prefix}${grouped}.${cents}`;
 }
 
 export const fmtInt = (n: number): string => n.toLocaleString("en-US");

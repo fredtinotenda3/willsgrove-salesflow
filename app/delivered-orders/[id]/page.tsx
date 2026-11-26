@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getOrderLifecycleSteps, formatFileSize, formatOrderAmount, ORDER_STATUS_LABELS, DOCUMENT_TYPE_LABELS, type OrderStatusValue, type DocumentTypeValue } from "@/lib/order-display";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 import { ArrowLeft, ArrowUpRight, Download } from "lucide-react";
 
 /**
@@ -289,7 +290,7 @@ export default async function DeliveredOrderDetailPage({ params }: { params: Pro
               <Field label="Invoice number" value={invoice.sapDocNum} />
               <Field label="Invoice date" value={formatDate(invoice.invoiceDate)} />
               <Field label="Currency" value={invoice.currencyCode} />
-              <Field label="Total" value={invoice.total ? `${invoice.currencyCode ?? ""} ${invoice.total}` : null} />
+              <Field label="Total" value={invoice.total ? formatCurrencyAmount(invoice.currencyCode, invoice.total) : null} />
               <Field label="SAP reconciliation status" value={invoice.reconciliationStatus} />
               <Field label="Cancelled/reversed in SAP" value={invoice.isCancelledOrReversed ? "Yes" : "No"} />
             </div>
@@ -449,7 +450,7 @@ export default async function DeliveredOrderDetailPage({ params }: { params: Pro
                               <td className="px-3 py-2">{line.description ?? "-"} {line.sapItemCode && <span className="text-[#A4ACA4]">({line.sapItemCode})</span>}</td>
                               <td className="px-3 py-2">{line.reasonLabel ?? "Not categorised (historical)"}</td>
                               <td className="px-3 py-2 text-right tabular-nums">{line.rejectedQuantity ?? "-"}</td>
-                              <td className="px-3 py-2 text-right tabular-nums">{line.disputedAmount ?? (line.disputedUnitPrice && line.rejectedQuantity ? "see unit price" : "-")}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{(line.disputedAmount ? formatCurrencyAmount(invoice.currencyCode, line.disputedAmount) : null) ?? (line.disputedUnitPrice && line.rejectedQuantity ? "see unit price" : "-")}</td>
                               <td className="px-3 py-2">{line.reason}</td>
                             </tr>
                           ))}

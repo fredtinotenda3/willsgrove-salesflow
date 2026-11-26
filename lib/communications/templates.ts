@@ -1,3 +1,4 @@
+import { formatCurrencyAmount, currencySymbolPrefix } from "@/lib/format/currency";
 /**
  * Milestone 10 (Communication Channels & Fulfilment). Plain-text message
  * bodies for every OutboundMessageType -- deliberately plain text, not
@@ -19,7 +20,9 @@
 export type Money = { amount: string; currency: string };
 
 function formatMoney(money: Money): string {
-  return `${money.currency} ${money.amount}`;
+  // Callers pass an already-grouped amount ("1,250.00") as well as raw decimals; keep a sign on whatever arrives.
+  const formatted = formatCurrencyAmount(money.currency, money.amount.replace(/,/g, ""));
+  return formatted === "—" ? `${currencySymbolPrefix(money.currency)}${money.amount}` : formatted;
 }
 
 function formatDate(date: Date): string {

@@ -105,6 +105,8 @@ export default async function DeliveriesQueuePage({ searchParams }: RouteParams)
                       const { label: statusLabel, style: statusStyle } = getEffectiveOrderStatus({
                         status: order.status,
                         dispatchStatuses: order.dispatchStatuses,
+                        invoiceState: order.invoiceState,
+                        completed: order.completed,
                       });
 
                       return (

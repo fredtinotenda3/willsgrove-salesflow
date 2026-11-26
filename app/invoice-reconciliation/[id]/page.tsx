@@ -15,6 +15,7 @@ import Sidebar from "../../components/sidebar";
 import { ArrowLeft, Ban } from "lucide-react";
 import ReconciliationPanel from "./reconciliation-panel";
 import ReconciliationNoteForm from "./reconciliation-note-form";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 import DeliveryOutcomePanel from "./delivery-outcome-panel";
 
 /**
@@ -84,7 +85,7 @@ export default async function InvoiceDetailPage({ params }: RouteParams) {
             <Field label="Customer" value={invoice.matchedCustomerName ?? invoice.customerName ?? "Unknown"} sub={invoice.customerSapCode} />
             <Field label="Invoice date" value={invoice.invoiceDate ? new Date(invoice.invoiceDate).toLocaleDateString() : "-"} />
             <Field label="SalesFlow order" value={invoice.matchedOrderReference ?? "Not fully resolved"} link={invoice.matchedOrderId ? `/orders/${invoice.matchedOrderId}` : undefined} />
-            <Field label="Total" value={invoice.total ? `${invoice.currencyCode ?? ""} ${invoice.total}` : "-"} />
+            <Field label="Total" value={invoice.total ? formatCurrencyAmount(invoice.currencyCode, invoice.total) : "-"} />
             <Field label="SAP order reference" value={invoice.sapOrderReference ?? "-"} />
             <Field label="Document status (raw)" value={invoice.documentStatusRaw ?? "-"} />
             <Field label="Import batch" value={invoice.importBatchFileName} />

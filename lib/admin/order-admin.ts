@@ -1,3 +1,5 @@
+import { getEffectiveOrderStatus, type EffectiveOrderStatusInput } from "@/lib/order-display";
+import { loadOrderProgress, loadSingleOrderProgress } from "@/lib/order-progress";
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma, type PrismaTransactionClient } from "@/lib/prisma";
@@ -34,6 +36,15 @@ export function orderWhere(f: OrderFilters): Prisma.CustomerOrderWhereInput {
   };
 }
 
+/**
+ * The order's CURRENT stage as an admin status key ("INVOICED", "DISPATCHED", "DELIVERED", "COMPLETED"...),
+ * derived by the same getEffectiveOrderStatus every operational page uses, so Admin can never show
+ * "Ready to Invoice" for an order that has already been invoiced, dispatched or delivered.
+ */
+function effectiveStatusKey(input: EffectiveOrderStatusInput): string {
+  return getEffectiveOrderStatus(input).label.toUpperCase().replace(/\s+/g, "_");
+}
+
 export async function listAdminOrders(f: OrderFilters, page: number, pageSize: number, sort: SortState = { key: "created", dir: "desc" }) {
   const where = orderWhere(f);
   const [total, rows] = await Promise.all([
@@ -45,15 +56,19 @@ export async function listAdminOrders(f: OrderFilters, page: number, pageSize: n
       take: pageSize,
       select: { id: true, reference: true, status: true, source: true, currency: true, total: true, createdAt: true, updatedAt: true, customerPoReference: true, customer: { select: { id: true, name: true } }, salesperson: { select: { id: true, name: true } }, _count: { select: { lines: true } },
         // Lines come back in the SAME query (no per-order lookups) so the total is derived by the shared calculation.
-        lines: { select: { requestedQuantity: true, customerUnitPrice: true, approvedUnitPrice: true, product: { select: { vatCode: true } } } } },
+        lines: { select: { requestedQuantity: true, customerUnitPrice: true, approvedUnitPrice: true, product: { select: { vatCode: true } } } },
+        // Dispatch states for the derived (dynamic) status below -- same query, no per-order lookups.
+        dispatchRecords: { where: { status: { not: "CANCELLED" } }, select: { status: true } } },
     }),
   ]);
-  // One query for every VAT code on the page.
+  // One query for every VAT code on the page, one for invoice progress of the READY_TO_INVOICE rows.
   const taxRates = await loadTaxRatesByCode(rows.flatMap((r) => r.lines.map((l) => l.product?.vatCode)));
+  const progress = await loadOrderProgress(rows.filter((r) => r.status === "READY_TO_INVOICE").map((r) => r.id));
   return {
     total,
-    rows: rows.map(({ lines, total: storedTotal, ...r }) => ({
+    rows: rows.map(({ lines, dispatchRecords, total: storedTotal, ...r }) => ({
       ...r,
+      effectiveStatus: effectiveStatusKey({ status: r.status, dispatchStatuses: dispatchRecords.map((d) => d.status), invoiceState: progress.get(r.id)?.invoiceState, completed: progress.get(r.id)?.completed }),
       total: storedTotal === null ? null : storedTotal.toString(),
       orderTotal: summariseOrderTotal({ storedTotal, currency: r.currency, pricing: pricingFromLines(lines, taxRates) }),
       lineCount: r._count.lines,
@@ -104,7 +119,9 @@ export async function getAdminOrderDetail(id: string) {
   const none = { ok: false as const, message: "" };
   const taxRates = await loadTaxRatesByCode(order.lines.map((l) => l.product?.vatCode));
   const pricing = pricingFromLines(order.lines, taxRates);
+  const orderProgress = await loadSingleOrderProgress(id);
   return {
+    effectiveStatus: effectiveStatusKey({ status: order.status, dispatchStatuses: order.dispatchRecords.filter((d) => d.status !== "CANCELLED").map((d) => d.status), invoiceState: orderProgress.invoiceState, completed: orderProgress.completed }),
     pricing,
     orderTotal: summariseOrderTotal({ storedTotal: order.total, currency: order.currency, pricing }),
     order: { ...order, documents: order.documents.map((d) => ({ ...d, fileSize: Number(d.fileSize) })) },

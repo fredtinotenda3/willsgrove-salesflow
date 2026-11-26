@@ -8,6 +8,7 @@ import { combineLostSales } from "@/lib/lost-sales/overall";
 import { CLAIM_LINE_REASON_CATEGORY_LABELS, type AnyStoredClaimLineReasonCategory } from "@/lib/invoice-claims/validation";
 import Sidebar from "../../components/sidebar";
 import { PackageX, RotateCcw } from "lucide-react";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 
 /**
  * Confirmed Loss (Returned Goods) -- the drill-down behind the dashboard card.
@@ -96,7 +97,7 @@ export default async function ReturnedGoodsPage({ searchParams }: RouteParams) {
               ) : (
                 headline.byCurrency.map((bucket) => (
                   <p key={bucket.currencyCode} className="mt-1 text-lg font-bold text-[#17251E]">
-                    {bucket.currencyCode} {bucket.estimatedValue}
+                    {formatCurrencyAmount(bucket.currencyCode, bucket.estimatedValue)}
                   </p>
                 ))
               )}
@@ -111,7 +112,7 @@ export default async function ReturnedGoodsPage({ searchParams }: RouteParams) {
               <p className="mt-1 text-lg font-bold text-[#17251E]">{summary.recordCount} returned line(s)</p>
               {summary.byCurrency.map((bucket) => (
                 <p key={bucket.currencyCode} className="text-xs text-gray-500">
-                  {bucket.currencyCode} {bucket.value}
+                  {formatCurrencyAmount(bucket.currencyCode, bucket.value)}
                 </p>
               ))}
               {summary.unpricedRecordCount > 0 && <p className="mt-1 text-[11px] text-amber-700">{summary.unpricedRecordCount} line(s) have no unit price and carry no value (never counted as zero).</p>}
@@ -196,8 +197,8 @@ export default async function ReturnedGoodsPage({ searchParams }: RouteParams) {
                         <td className="px-4 py-3 text-right tabular-nums">{row.orderedQuantity}</td>
                         <td className="px-4 py-3 text-right tabular-nums">{row.deliveredQuantity}</td>
                         <td className="px-4 py-3 text-right font-semibold tabular-nums text-red-700">{row.returnedQuantity}{row.unitOfMeasure ? <span className="ml-1 text-[10px] font-normal text-gray-400">{row.unitOfMeasure}</span> : null}</td>
-                        <td className="px-4 py-3 text-right tabular-nums">{row.unitPrice ? `${row.currencyCode} ${row.unitPrice}` : <span className="text-amber-700">No price</span>}</td>
-                        <td className="px-4 py-3 text-right tabular-nums">{row.totalValue ? `${row.currencyCode} ${row.totalValue}` : "—"}</td>
+                        <td className="px-4 py-3 text-right tabular-nums">{row.unitPrice ? formatCurrencyAmount(row.currencyCode, row.unitPrice) : <span className="text-amber-700">No price</span>}</td>
+                        <td className="px-4 py-3 text-right tabular-nums">{row.totalValue ? formatCurrencyAmount(row.currencyCode, row.totalValue) : "—"}</td>
                         <td className="px-4 py-3 text-xs">
                           {row.reasonCategory ? CLAIM_LINE_REASON_CATEGORY_LABELS[row.reasonCategory as AnyStoredClaimLineReasonCategory] : (row.reason ?? "—")}
                         </td>

@@ -35,7 +35,7 @@ describe("renderQuotationIssued", () => {
     expect(subject).toContain("QUO-0001");
     expect(bodyText).toContain("Acme Farms");
     expect(bodyText).toContain("QUO-0001");
-    expect(bodyText).toContain("USD 1,250.00");
+    expect(bodyText).toContain("$1,250.00");
     expect(bodyText).toContain("2026-12-31");
   });
 
@@ -94,7 +94,7 @@ describe("renderOrderConfirmation", () => {
     });
     expect(subject).toContain("SO-0042");
     expect(bodyText).toContain("SO-0042");
-    expect(bodyText).toContain("USD 1,250.00");
+    expect(bodyText).toContain("$1,250.00");
   });
 });
 

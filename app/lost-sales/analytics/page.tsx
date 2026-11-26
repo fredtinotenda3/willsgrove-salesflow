@@ -35,6 +35,7 @@ import {
   UnavailableQuantityDistribution,
 } from "./_components/charts";
 import { AlertCircle, ChevronRight, Download, Info } from "lucide-react";
+import { formatCurrencyAmount } from "@/lib/format/currency";
 
 /**
  * Additional Implementation Requirements (spec section 3: "Lost Sales
@@ -78,6 +79,12 @@ const EMPTY_FILTERS = {
 } as const;
 
 const PERIOD_LABELS: Record<LostSalesAnalyticsPeriod, string> = { day: "Daily", week: "Weekly", month: "Monthly" };
+
+/** Money with its sign: "$1,234.50" (USD, also used where the source figure carries no currency); other currencies keep their code. */
+function money(value: string, currency?: string | null): string {
+  const formatted = formatCurrencyAmount(currency ?? "USD", value);
+  return formatted === "—" ? value : formatted;
+}
 
 function formatQuantity(value: string): string {
   const n = Number.parseFloat(value);
@@ -233,7 +240,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
             <MetricCard
               title="Requested quantity"
               value={formatQuantity(analytics.kpis.totalRequestedQuantity)}
-              description={`≈ ${formatQuantity(analytics.kpis.totalRequestedValue)} in value${
+              description={`≈ ${money(analytics.kpis.totalRequestedValue)} in value${
                 analytics.kpis.demandsWithoutEstimate > 0 ? " (excludes demand(s) with no resolvable price)" : ""
               }`}
               dataQuality="actual"
@@ -241,7 +248,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
             <MetricCard
               title="Found quantity"
               value={formatQuantity(analytics.kpis.totalFoundQuantity)}
-              description={`≈ ${formatQuantity(analytics.kpis.totalFoundValue)} in value${
+              description={`≈ ${money(analytics.kpis.totalFoundValue)} in value${
                 analytics.kpis.demandsWithoutEstimate > 0 ? " (excludes demand(s) with no resolvable price)" : ""
               }`}
               dataQuality="actual"
@@ -249,7 +256,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
             <MetricCard
               title="Unavailable quantity"
               value={formatQuantity(analytics.kpis.totalUnavailableQuantity)}
-              description={`≈ ${formatQuantity(analytics.kpis.totalEstimatedLostValue)} Lost Value (priced demands only) -- see below for the confirmed figure`}
+              description={`≈ ${money(analytics.kpis.totalEstimatedLostValue)} Lost Value (priced demands only) -- see below for the confirmed figure`}
               dataQuality="actual"
             />
             <MetricCard title="Outstanding (awaiting supply)" value={formatQuantity(analytics.kpis.totalOutstandingQuantity)} dataQuality="actual" />
@@ -259,7 +266,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
           <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard
               title="Lost Value"
-              value={formatQuantity(analytics.kpis.totalEstimatedLostValue)}
+              value={money(analytics.kpis.totalEstimatedLostValue)}
               description={
                 analytics.kpis.demandsWithoutEstimate > 0
                   ? `${analytics.kpis.demandsWithoutEstimate} demand(s) in scope have no resolvable price and are excluded from this total`
@@ -269,7 +276,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
             />
             <MetricCard
               title="Confirmed lost value"
-              value={formatQuantity(analytics.kpis.totalConfirmedLostValue)}
+              value={money(analytics.kpis.totalConfirmedLostValue)}
               description="From actually-confirmed LostSaleRecord entries -- never blended with the estimated figure above"
               dataQuality="actual"
             />
@@ -351,9 +358,9 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
                         {consolidated.valueByCurrency.map((bucket) => (
                           <tr key={bucket.currencyCode}>
                             <td className="px-4 py-2 font-semibold text-[#17251E]">{bucket.currencyCode}</td>
-                            <td className="whitespace-nowrap px-4 py-2 text-right text-[#17251E]">{formatQuantity(bucket.shortageValue)}</td>
-                            <td className="whitespace-nowrap px-4 py-2 text-right text-[#17251E]">{formatQuantity(bucket.returnedValue)}</td>
-                            <td className="whitespace-nowrap px-4 py-2 text-right font-semibold text-[#17251E]">{formatQuantity(bucket.totalValue)}</td>
+                            <td className="whitespace-nowrap px-4 py-2 text-right text-[#17251E]">{money(bucket.shortageValue, bucket.currencyCode)}</td>
+                            <td className="whitespace-nowrap px-4 py-2 text-right text-[#17251E]">{money(bucket.returnedValue, bucket.currencyCode)}</td>
+                            <td className="whitespace-nowrap px-4 py-2 text-right font-semibold text-[#17251E]">{money(bucket.totalValue, bucket.currencyCode)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -380,7 +387,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
                       <p className="mt-1 text-[11px] text-[#9AA59E]">
                         {row.valueByCurrency.length === 0
                           ? "No priced records"
-                          : row.valueByCurrency.map((v) => `${v.currencyCode} ${formatQuantity(v.value)}`).join(" · ")}
+                          : row.valueByCurrency.map((v) => formatCurrencyAmount(v.currencyCode, v.value)).join(" · ")}
                         {row.recordsWithoutValue > 0 ? ` (+${row.recordsWithoutValue} unpriced)` : ""}
                       </p>
                     </Link>
@@ -408,7 +415,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
                           <p className="mt-0.5 text-[11px] text-[#9AA59E]">
                             {row.valueByCurrency.length === 0
                               ? "No priced records"
-                              : row.valueByCurrency.map((v) => `${v.currencyCode} ${formatQuantity(v.value)}`).join(" · ")}
+                              : row.valueByCurrency.map((v) => formatCurrencyAmount(v.currencyCode, v.value)).join(" · ")}
                           </p>
                         </div>
                       ))}
@@ -430,7 +437,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
                           <p className="mt-0.5 text-[11px] text-[#9AA59E]">
                             {row.valueByCurrency.length === 0
                               ? "No priced records"
-                              : row.valueByCurrency.map((v) => `${v.currencyCode} ${formatQuantity(v.value)}`).join(" · ")}
+                              : row.valueByCurrency.map((v) => formatCurrencyAmount(v.currencyCode, v.value)).join(" · ")}
                           </p>
                         </div>
                       ))}
@@ -489,10 +496,10 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
                           {formatQuantity(row.quantity)} {row.unitOfMeasure ?? ""}
                         </td>
                         <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">
-                          {row.unitPrice !== null ? formatQuantity(row.unitPrice) : <span className="text-[#C3CBC5]">--</span>}
+                          {row.unitPrice !== null ? money(row.unitPrice, row.currencyCode) : <span className="text-[#C3CBC5]">--</span>}
                         </td>
                         <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">
-                          {row.totalValue !== null ? `${row.currencyCode ?? "UNKNOWN"} ${formatQuantity(row.totalValue)}` : <span className="text-[#C3CBC5]">--</span>}
+                          {row.totalValue !== null ? money(row.totalValue, row.currencyCode) : <span className="text-[#C3CBC5]">--</span>}
                         </td>
                         <td className="whitespace-nowrap px-5 py-3">
                           <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold text-gray-500">
@@ -617,7 +624,7 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
                       color="bg-[#2a78d6]"
                     />
                     <p className="mt-1 text-[11px] text-[#9AA59E]">
-                      {formatQuantity(row.totalQuantity)} unit(s) -- confirmed value {formatQuantity(row.totalConfirmedValue)}
+                      {formatQuantity(row.totalQuantity)} unit(s) -- confirmed value {money(row.totalConfirmedValue)}
                     </p>
                   </Link>
                 ))}
@@ -668,10 +675,10 @@ export default async function LostSalesAnalyticsPage({ searchParams }: RoutePara
                         <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">{demand.outstandingQuantity}</td>
                         <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">{demand.confirmedLostQuantity}</td>
                         <td className="whitespace-nowrap px-5 py-3 text-right text-[#17251E]">
-                          {demand.estimatedUnitPrice !== null ? `${formatQuantity(demand.estimatedUnitPrice)} ${demand.currencyCode ?? ""}`.trimEnd() : <span className="text-[#C3CBC5]">--</span>}
+                          {demand.estimatedUnitPrice !== null ? money(demand.estimatedUnitPrice, demand.currencyCode) : <span className="text-[#C3CBC5]">--</span>}
                         </td>
                         <td className="whitespace-nowrap px-5 py-3 text-right font-semibold text-[#17251E]">
-                          {demand.estimatedValue !== null ? formatQuantity(demand.estimatedValue) : <span className="text-[#C3CBC5]">--</span>}
+                          {demand.estimatedValue !== null ? money(demand.estimatedValue, demand.currencyCode) : <span className="text-[#C3CBC5]">--</span>}
                         </td>
                         <td className="whitespace-nowrap px-5 py-3">
                           <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${UNFULFILLED_DEMAND_STATUS_STYLES[demand.status] ?? "bg-gray-100 text-gray-500"}`}>

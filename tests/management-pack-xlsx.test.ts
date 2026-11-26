@@ -40,7 +40,7 @@ describe("buildManagementPackWorkbook", () => {
     const rev = wb.getWorksheet("Invoiced revenue")!.getRow(2).values as unknown[];
     expect(rev.slice(1, 5)).toEqual(["USD", "1200.5", "n/a", "n/a"]);
     const claimsText = JSON.stringify(wb.getWorksheet("Unresolved claims")!.getSheetValues());
-    expect(claimsText).toContain("USD 75 | ZWG 300");
+    expect(claimsText).toContain("$75.00 | ZWG 300.00");
     expect(claimsText).toContain("(understated)");
   });
   it("renders explicit empty-state rows instead of blank sheets", async () => {

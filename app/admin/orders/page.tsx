@@ -35,7 +35,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
   const columns: Column<Row>[] = [
     { key: "reference", header: "Reference", sortKey: "reference", render: (o) => <div><Link href={`/admin/orders/${o.id}`} className="font-semibold text-[#1F7A4D] hover:underline">{o.reference}</Link>{o.customerPoReference ? <div className="text-xs text-[#849087]">PO {o.customerPoReference}</div> : null}</div> },
     { key: "customer", header: "Customer", sortKey: "customer", render: (o) => <Link href={`/admin/customers/${o.customer.id}`} className="hover:underline">{o.customer.name}</Link> },
-    { key: "status", header: "Status", sortKey: "status", render: (o) => <StatusBadge status={o.status} /> },
+    { key: "status", header: "Status", sortKey: "status", render: (o) => <StatusBadge status={o.effectiveStatus} /> },
     { key: "salesperson", header: "Salesperson", sortKey: "salesperson", hideBelow: "md", render: (o) => o.salesperson?.name ?? <span className="rounded bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">Unassigned</span> },
     { key: "source", header: "Source", hideBelow: "lg", defaultHidden: true, render: (o) => o.source.replace(/_/g, " ").toLowerCase() },
     { key: "lines", header: "Lines", align: "right", hideBelow: "lg", render: (o) => o.lineCount },
