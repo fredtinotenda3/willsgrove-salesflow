@@ -137,7 +137,13 @@ export async function dispatchExtraction(params: DispatchExtractionParams): Prom
       const input: ExtractionInput =
         params.sourceChannel === "PDF"
           ? { kind: "document", mimeType: "application/pdf", base64Data: params.fileBuffer.toString("base64"), fileName: "document.pdf" }
-          : { kind: "image", mimeType: "image/jpeg", base64Data: params.fileBuffer.toString("base64"), fileName: "document.jpg" };
+          : {
+              kind: "image",
+              // Sniff the real format: declaring a PNG as JPEG makes the vision API reject the request.
+              mimeType: params.fileBuffer.length > 4 && params.fileBuffer[0] === 0x89 && params.fileBuffer[1] === 0x50 ? "image/png" : "image/jpeg",
+              base64Data: params.fileBuffer.toString("base64"),
+              fileName: "document.jpg",
+            };
       const outcome = await provider.extract(input);
       const providerValue: ExtractionProvider = provider.providerName === "ANTHROPIC" ? "ANTHROPIC" : "MOCK";
       if (!outcome.ok) {

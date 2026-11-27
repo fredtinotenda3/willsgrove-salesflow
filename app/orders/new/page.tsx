@@ -68,6 +68,50 @@ type ProductSuggestion = {
   unitOfMeasure: string | null;
 };
 
+type ParsePoCandidate = { id: string; name: string; sapCustomerCode: string | null; storeCode: string | null; score: number };
+type ParsePoProduct = { id: string; sapItemCode: string; itemName: string; unitOfMeasure: string | null; packSize: string | null; score: number };
+type ParsePoResponse = {
+  success: boolean;
+  code?: string;
+  message?: string;
+  source?: "text" | "pdf-text" | "spreadsheet" | "vision";
+  notes?: string[];
+  header?: {
+    poNumber: string | null;
+    orderDate: string | null;
+    requestedDeliveryDate: string | null;
+    deliveryAddress: string | null;
+    currency: string | null;
+    customerNameCandidates: string[];
+  };
+  customer?:
+    | { status: "matched"; customer: ParsePoCandidate; matchedOn: string; note: string | null; alternatives: ParsePoCandidate[] }
+    | { status: "ambiguous"; searchedFor: string[]; candidates: ParsePoCandidate[] }
+    | { status: "not_found"; searchedFor: string[] }
+    | null;
+  lines?: Array<{
+    lineNumber: number;
+    rawText: string;
+    description: string;
+    quantity: string | null;
+    unit: string | null;
+    unitPrice: string | null;
+    warnings: string[];
+    matched: ParsePoProduct | null;
+    suggestions: ParsePoProduct[];
+  }>;
+};
+
+type PoAnalysisState = {
+  sourceLabel: string;
+  lineCount: number;
+  matchedCount: number;
+  attentionCount: number;
+  customer: ParsePoResponse["customer"];
+  headerNames: string[];
+  notes: string[];
+};
+
 // Milestone 12 (Sales Performance Intelligence).
 type SalespersonOption = { id: string; name: string; role: string; status: string };
 
@@ -93,6 +137,9 @@ type LineDraft = {
   // whether to change it. Mirrors app/quotations/new/new-quotation-form.
   // tsx's own identical priceListHint field + lookupPriceListPrice below.
   priceListHint: string | null;
+  // Auto-read from a pasted message / attached PO: what the reader wants the
+  // operator to double-check on this line (never blocks submission).
+  parseNote: string | null;
 };
 
 // `key` is an explicit parameter (rather than always generating one
@@ -122,6 +169,7 @@ function newLine(key?: string): LineDraft {
     showSuggestions: false,
     error: null,
     priceListHint: null,
+    parseNote: null,
   };
 }
 
@@ -225,6 +273,11 @@ export default function NewOrderPage() {
   // empty-state copy below and on the order detail page).
   const [pastedText, setPastedText] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  // Automatic reading of the pasted message / attached PO (POST /api/orders/parse-po).
+  const [analysing, setAnalysing] = useState(false);
+  const [analysis, setAnalysis] = useState<PoAnalysisState | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [lastAnalysedText, setLastAnalysedText] = useState("");
   // Currency of the price list that prefilled line prices. Sent with the order so
   // the order is priced and denominated in the same currency as its snapshot prices.
   const [priceListCurrency, setPriceListCurrency] = useState<string | null>(null);
@@ -548,6 +601,7 @@ export default function NewOrderPage() {
               suggestions: [],
               showSuggestions: false,
               priceListHint: null,
+              parseNote: null,
             }
           : line
       )
@@ -595,9 +649,117 @@ export default function NewOrderPage() {
       .catch(() => {});
   }
 
+  // Reads a pasted message or one attached file and pre-fills the customer,
+  // header fields and order lines. Fills only what is still blank/unset and
+  // appends lines after any the operator already entered -- it never
+  // overwrites manual work. Everything stays editable; nothing is submitted.
+  async function analysePo(input: { text?: string; file?: File }) {
+    setAnalysing(true);
+    setAnalysisError(null);
+    try {
+      const form = new FormData();
+      if (input.text) form.set("text", input.text);
+      if (input.file) form.set("file", input.file);
+      if (selectedCustomer) form.set("customerId", selectedCustomer.id);
+
+      const response = await fetch("/api/orders/parse-po", { method: "POST", body: form });
+      const data: ParsePoResponse = await response.json().catch(() => ({ success: false, message: "Unexpected response from the server." }));
+      if (!response.ok || !data.success || !data.lines) {
+        setAnalysis(null);
+        setAnalysisError(data.message ?? "The order could not be read automatically. Enter the lines manually.");
+        return;
+      }
+
+      let customerId: string | null = selectedCustomer?.id ?? null;
+      if (!selectedCustomer && data.customer?.status === "matched") {
+        const c = data.customer.customer;
+        setSelectedCustomer({ id: c.id, name: c.name, sapCustomerCode: c.sapCustomerCode, primaryLocation: null });
+        customerId = c.id;
+      }
+
+      const header = data.header;
+      if (header) {
+        if (header.poNumber) setCustomerPoReference((prev) => (prev.trim() ? prev : header.poNumber!));
+        if (header.orderDate) setOrderDate((prev) => prev || header.orderDate!);
+        if (header.requestedDeliveryDate) setRequestedDeliveryDate((prev) => prev || header.requestedDeliveryDate!);
+        if (header.deliveryAddress) setDeliveryAddress((prev) => (prev.trim() ? prev : header.deliveryAddress!));
+        if (header.currency && (header.currency === "USD" || header.currency === "ZWG")) setPriceListCurrency((prev) => prev ?? header.currency);
+      }
+
+      const created: LineDraft[] = data.lines.map((l) => {
+        const matched = l.matched;
+        const attention = !matched || l.warnings.length > 0 || !l.quantity || !l.unit;
+        return {
+          ...newLine(),
+          originalProductDescription: l.description,
+          productQuery: matched ? matched.itemName : "",
+          productId: matched ? matched.id : null,
+          sapItemCodeSnapshot: matched ? matched.sapItemCode : null,
+          requestedQuantity: l.quantity ?? "",
+          requestedUnitCode: l.unit ?? "",
+          customerUnitPrice: l.unitPrice ?? "",
+          priceListHint: l.unitPrice ? "From the customer's PO" : null,
+          suggestions: !matched ? l.suggestions.map((p) => ({ id: p.id, itemName: p.itemName, sapItemCode: p.sapItemCode, unitOfMeasure: p.unitOfMeasure })) : [],
+          showSuggestions: false,
+          parseNote: attention
+            ? [
+                ...l.warnings,
+                !l.quantity ? "Quantity not on the PO -- enter it." : null,
+                !l.unit ? "Unit not on the PO -- enter it." : null,
+              ]
+                .filter((w, i, arr): w is string => Boolean(w) && arr.indexOf(w) === i)
+                .join(" ")
+            : null,
+        };
+      });
+
+      setLines((prev) => {
+        const kept = prev.filter((line) => !isLineBlank(line));
+        return [...kept, ...created];
+      });
+
+      if (customerId) {
+        for (let i = 0; i < created.length; i++) {
+          const line = created[i]!;
+          if (line.productId && line.customerUnitPrice.trim() === "") lookupPriceListPrice(line.key, customerId, line.productId);
+        }
+      }
+
+      const matchedCount = data.lines.filter((l) => l.matched).length;
+      const attentionCount = created.filter((l) => l.parseNote).length;
+      setAnalysis({
+        sourceLabel: data.source === "vision" ? "image reader" : data.source === "pdf-text" ? "PDF" : data.source === "spreadsheet" ? "spreadsheet" : "text",
+        lineCount: data.lines.length,
+        matchedCount,
+        attentionCount,
+        customer: data.customer ?? null,
+        headerNames: header?.customerNameCandidates ?? [],
+        notes: data.notes ?? [],
+      });
+      toast.success(`Read ${data.lines.length} line${data.lines.length === 1 ? "" : "s"}`, {
+        description: `${matchedCount} matched to the catalogue${attentionCount > 0 ? `, ${attentionCount} need a quick check` : ""}.`,
+      });
+    } catch {
+      setAnalysisError("Could not reach the server to read the order. Enter the lines manually.");
+    } finally {
+      setAnalysing(false);
+    }
+  }
+
+  function chooseAnalysedCustomer(candidate: ParsePoCandidate) {
+    setSelectedCustomer({ id: candidate.id, name: candidate.name, sapCustomerCode: candidate.sapCustomerCode, primaryLocation: null });
+    setAnalysis((prev) => (prev ? { ...prev, customer: { status: "matched", customer: candidate, matchedOn: "", note: null, alternatives: [] } } : prev));
+    for (const line of lines) {
+      if (line.productId && line.customerUnitPrice.trim() === "") lookupPriceListPrice(line.key, candidate.id, line.productId);
+    }
+  }
+
   function handleFilesPicked(picked: File[]) {
     if (picked.length === 0) return;
     setSelectedFiles((prev) => [...prev, ...picked]);
+    // Read the first file straight away (one PO per file); the rest are
+    // kept as attachments and can be read by re-attaching them one at a time.
+    void analysePo({ file: picked[0] });
   }
 
   function removeSelectedFile(index: number) {
@@ -950,11 +1112,37 @@ export default function NewOrderPage() {
 <Textarea
                     value={pastedText}
                     onChange={(event) => setPastedText(event.target.value)}
+                    onPaste={(event) => {
+                      // Read automatically right after a paste (the pasted text is
+                      // not in state yet, so use the clipboard text plus what was there).
+                      const clip = event.clipboardData.getData("text");
+                      if (!clip.trim()) return;
+                      const target = event.currentTarget;
+                      const next = (target.value.slice(0, target.selectionStart) + clip + target.value.slice(target.selectionEnd)).slice(0, 5000);
+                      setLastAnalysedText(next);
+                      void analysePo({ text: next });
+                    }}
                     placeholder="Paste the customer's email or WhatsApp message here..."
                     rows={3}
                     maxLength={5000}
                     className="mt-1 min-h-0 text-xs md:text-xs"
                   />
+                  {pastedText.trim() !== "" && pastedText !== lastAnalysedText && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      disabled={analysing}
+                      onClick={() => {
+                        setLastAnalysedText(pastedText);
+                        void analysePo({ text: pastedText });
+                      }}
+                      className="mt-1.5 text-[11px]"
+                    >
+                      {analysing ? <Loader2 size={12} className="animate-spin" /> : null}
+                      Read message &amp; fill order
+                    </Button>
+                  )}
                 </div>
 
                 <div>
@@ -1000,6 +1188,59 @@ export default function NewOrderPage() {
               </div>
             )}
 </Card>
+
+          {(analysing || analysis || analysisError) && (
+            <Card className="gap-2 rounded-xl border-[#E8EBE6] bg-white px-5 py-4 shadow-none" aria-live="polite">
+              {analysing && (
+                <p className="flex items-center gap-2 text-xs font-medium text-gray-600">
+                  <Loader2 size={14} className="animate-spin" /> Reading the order...
+                </p>
+              )}
+              {analysisError && (
+                <Alert variant="destructive">
+                  <AlertCircle />
+                  <AlertDescription className="text-xs">{analysisError}</AlertDescription>
+                </Alert>
+              )}
+              {analysis && !analysing && (
+                <div className="space-y-2 text-xs text-gray-700">
+                  <p className="flex items-center gap-1.5 font-semibold text-[#17251E]">
+                    <CheckCircle2 size={14} className="text-[#315C43]" />
+                    Read {analysis.lineCount} line{analysis.lineCount === 1 ? "" : "s"} from the {analysis.sourceLabel}: {analysis.matchedCount} matched to the catalogue
+                    {analysis.attentionCount > 0 ? `, ${analysis.attentionCount} marked below for a quick check.` : "."}
+                  </p>
+                  {analysis.notes.map((note) => (
+                    <p key={note} className="text-amber-700">{note}</p>
+                  ))}
+                  {analysis.customer?.status === "matched" && analysis.customer.note && (
+                    <p className="text-amber-700">{analysis.customer.note}</p>
+                  )}
+                  {analysis.customer?.status === "ambiguous" && !selectedCustomer && (
+                    <div>
+                      <p className="font-medium text-amber-700">
+                        Several customers match &ldquo;{analysis.customer.searchedFor[0]}&rdquo; -- choose the right one:
+                      </p>
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {analysis.customer.candidates.map((candidate) => (
+                          <Button key={candidate.id} type="button" variant="outline" size="xs" onClick={() => chooseAnalysedCustomer(candidate)} className="text-[11px]">
+                            {candidate.name}
+                            {candidate.sapCustomerCode ? ` (${candidate.sapCustomerCode})` : ""}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {analysis.customer?.status === "not_found" && !selectedCustomer && (
+                    <p className="text-amber-700">
+                      {analysis.customer.searchedFor.length > 0
+                        ? `No customer matching "${analysis.customer.searchedFor[0]}" exists yet. Create the customer first (Customers page), or search for them below, then the lines above are kept.`
+                        : "The document does not name a customer. Select the customer below."}
+                    </p>
+                  )}
+                </div>
+              )}
+            </Card>
+          )}
 
           {/* Customer */}
 <Card className="gap-0 rounded-xl border-[#E8EBE6] bg-white p-6 shadow-none">
@@ -1378,6 +1619,14 @@ className="h-auto w-full flex-col items-start gap-0 rounded-none px-4 py-3 text-
                           )}
                         </TableCell>
                       </TableRow>
+                      {line.parseNote && (
+                        <TableRow className="border-b border-gray-100">
+                          <TableCell />
+                          <TableCell colSpan={8} className="px-2 py-1 text-[11px] text-amber-700">
+                            {line.parseNote}
+                          </TableCell>
+                        </TableRow>
+                      )}
                       {line.error && (
                         <TableRow className="border-b border-gray-100">
                           <TableCell />
